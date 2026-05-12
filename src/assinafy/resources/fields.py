@@ -8,11 +8,19 @@ from .base import BaseResource
 
 
 class FieldResource(BaseResource):
+    """Field-definition endpoints (custom and standard fields)."""
+
     def create(
         self,
         payload: dict[str, Any],
         account_id: str | None = None,
     ) -> dict[str, Any]:
+        """``POST /accounts/{account_id}/fields`` — create a custom field.
+
+        ``payload`` requires ``type`` (one of the values returned by
+        :meth:`list_types`) and ``name``. Optional: ``regex``, ``is_required``,
+        ``is_read_only``, ``is_visible``.
+        """
         if not payload.get("type"):
             raise ValidationError("type is required")
         if not payload.get("name"):
@@ -31,6 +39,11 @@ class FieldResource(BaseResource):
         params: dict[str, Any] | None = None,
         account_id: str | None = None,
     ) -> dict[str, Any]:
+        """``GET /accounts/{account_id}/fields``.
+
+        ``params`` accepts ``include_standard`` and ``include_inactive`` plus
+        the usual ``page`` / ``per_page`` / ``search`` / ``sort``.
+        """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
         return self._call_list(
@@ -39,6 +52,7 @@ class FieldResource(BaseResource):
         )
 
     def get(self, field_id: str, account_id: str | None = None) -> dict[str, Any]:
+        """``GET /accounts/{account_id}/fields/{field_id}``."""
         acc_id = self._account_id(account_id)
         fid = self._require_id(field_id, "Field ID")
         return self._call(
@@ -52,6 +66,7 @@ class FieldResource(BaseResource):
         payload: dict[str, Any],
         account_id: str | None = None,
     ) -> dict[str, Any]:
+        """``PUT /accounts/{account_id}/fields/{field_id}``."""
         acc_id = self._account_id(account_id)
         fid = self._require_id(field_id, "Field ID")
         body = clean_params(payload)
@@ -63,6 +78,7 @@ class FieldResource(BaseResource):
         )
 
     def delete(self, field_id: str, account_id: str | None = None) -> None:
+        """``DELETE /accounts/{account_id}/fields/{field_id}``."""
         acc_id = self._account_id(account_id)
         fid = self._require_id(field_id, "Field ID")
         self._call_void(
@@ -77,6 +93,11 @@ class FieldResource(BaseResource):
         signer_access_code: str | None = None,
         account_id: str | None = None,
     ) -> dict[str, Any]:
+        """``POST /accounts/{account_id}/fields/{field_id}/validate``.
+
+        Pass ``signer_access_code`` when validating in the signer flow; omit
+        when validating from an authenticated backend.
+        """
         acc_id = self._account_id(account_id)
         fid = self._require_id(field_id, "Field ID")
         return self._call(
@@ -97,6 +118,10 @@ class FieldResource(BaseResource):
         signer_access_code: str | None = None,
         account_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        """``POST /accounts/{account_id}/fields/validate-multiple``.
+
+        ``values`` is a list of ``{field_id, value}`` objects per the docs.
+        """
         if not values:
             raise ValidationError("At least one field value is required")
         acc_id = self._account_id(account_id)
@@ -114,6 +139,7 @@ class FieldResource(BaseResource):
         return result if isinstance(result, list) else []
 
     def list_types(self) -> list[dict[str, Any]]:
+        """``GET /field-types`` — global catalog of built-in field types."""
         result = self._call(
             "Failed to list field types",
             lambda: self._http.get("field-types"),

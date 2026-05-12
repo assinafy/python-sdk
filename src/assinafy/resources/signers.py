@@ -12,9 +12,17 @@ _SIGNATURE_TYPES = frozenset({"signature", "initial"})
 
 
 class SignerResource(BaseResource):
+    """Signer endpoints — workspace CRUD plus signer-access-code flows."""
+
     def create(
         self, payload: dict[str, Any], account_id: str | None = None
     ) -> dict[str, Any]:
+        """``POST /accounts/{account_id}/signers``.
+
+        ``payload`` requires ``full_name``. At least one of ``email`` or
+        ``whatsapp_phone_number`` should be present depending on the
+        verification/notification channels you plan to use.
+        """
         body = _build_signer_payload(payload, require_full_name=True)
         acc_id = self._account_id(account_id)
         self._logger.info("Creating signer", {"email": body.get("email")})
@@ -24,6 +32,7 @@ class SignerResource(BaseResource):
         )
 
     def get(self, signer_id: str, account_id: str | None = None) -> dict[str, Any]:
+        """``GET /accounts/{account_id}/signers/{signer_id}``."""
         acc_id = self._account_id(account_id)
         sid = self._require_id(signer_id, "Signer ID")
         return self._call(
@@ -36,6 +45,11 @@ class SignerResource(BaseResource):
         params: dict[str, Any] | None = None,
         account_id: str | None = None,
     ) -> dict[str, Any]:
+        """``GET /accounts/{account_id}/signers``.
+
+        ``params`` accepts ``page``, ``per_page``, ``search``, ``sort``.
+        Returns ``{"data": [...], "meta": {...}}``.
+        """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
         return self._call_list(
@@ -49,6 +63,12 @@ class SignerResource(BaseResource):
         payload: dict[str, Any],
         account_id: str | None = None,
     ) -> dict[str, Any]:
+        """``PUT /accounts/{account_id}/signers/{signer_id}``.
+
+        Verification integrity rules apply server-side: ``email`` cannot be
+        changed once email-verified for an in-flight document, and the same
+        for ``whatsapp_phone_number``.
+        """
         acc_id = self._account_id(account_id)
         sid = self._require_id(signer_id, "Signer ID")
         body = _build_signer_payload(payload, require_full_name=False)
@@ -63,6 +83,7 @@ class SignerResource(BaseResource):
         )
 
     def delete(self, signer_id: str, account_id: str | None = None) -> None:
+        """``DELETE /accounts/{account_id}/signers/{signer_id}``."""
         acc_id = self._account_id(account_id)
         sid = self._require_id(signer_id, "Signer ID")
         return self._call_void(
@@ -73,6 +94,12 @@ class SignerResource(BaseResource):
     def find_by_email(
         self, email: str, account_id: str | None = None
     ) -> dict[str, Any] | None:
+        """Convenience wrapper around ``list`` that filters by exact email.
+
+        Performs ``GET /accounts/{account_id}/signers?search={email}&per-page=100``
+        and returns the first signer whose ``email`` matches case-insensitively,
+        or ``None``.
+        """
         _assert_email(email)
         try:
             result = self.list({"search": email, "per_page": 100}, account_id)
@@ -87,6 +114,7 @@ class SignerResource(BaseResource):
         return None
 
     def get_self(self, signer_access_code: str) -> dict[str, Any]:
+        """``GET /signers/self?signer-access-code={access_code}``."""
         access_code = self._require_id(signer_access_code, "Signer access code")
         return self._call(
             "Failed to fetch signer self",
@@ -100,6 +128,7 @@ class SignerResource(BaseResource):
         )
 
     def accept_terms(self, signer_access_code: str) -> dict[str, Any]:
+        """``PUT /signers/accept-terms`` with documented hyphenated body."""
         access_code = self._require_id(signer_access_code, "Signer access code")
         return self._call(
             "Failed to accept signer terms",
@@ -114,6 +143,7 @@ class SignerResource(BaseResource):
         signer_access_code: str,
         verification_code: str,
     ) -> dict[str, Any]:
+        """``POST /verify`` — confirm the 6-digit token from ``send_token``."""
         access_code = self._require_id(signer_access_code, "Signer access code")
         code = self._require_id(verification_code, "Verification code")
         return self._call(
@@ -133,6 +163,12 @@ class SignerResource(BaseResource):
         signer_access_code: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        """``PUT /documents/{document_id}/signers/confirm-data``.
+
+        ``payload`` may include ``email``, ``whatsapp_phone_number`` and
+        ``has_accepted_terms``. Required fields depend on the signer's
+        verification / notification channel(s) — see the API docs.
+        """
         doc_id = self._require_id(document_id, "Document ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
         if payload.get("email"):
@@ -163,6 +199,11 @@ class SignerResource(BaseResource):
         signature_type: str = "signature",
         content_type: str = "image/png",
     ) -> None:
+        """``POST /signature?signer-access-code=...&type={signature|initial}``.
+
+        ``content_type`` must match the actual image bytes (``image/png`` or
+        ``image/jpeg`` per the docs).
+        """
         access_code = self._require_id(signer_access_code, "Signer access code")
         _assert_signature_type(signature_type)
         if not content:
@@ -188,6 +229,7 @@ class SignerResource(BaseResource):
         signer_access_code: str,
         signature_type: str = "signature",
     ) -> bytes:
+        """``GET /signature/{type}?signer-access-code=...``."""
         access_code = self._require_id(signer_access_code, "Signer access code")
         _assert_signature_type(signature_type)
         return self._call_binary(

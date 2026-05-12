@@ -1,3 +1,9 @@
+"""Assinafy Python SDK.
+
+Synchronous client for the Assinafy digital-signature API
+(https://api.assinafy.com.br/v1/docs).
+"""
+
 from .client import AssinafyClient
 from .errors import ApiError, AssinafyError, NetworkError, ValidationError
 from .resources.assignments import AssignmentResource
@@ -17,6 +23,8 @@ from .types import (
     SignerReference,
     WebhookEventType,
 )
+
+__version__ = "1.2.0"
 
 __all__ = [
     "ApiError",
@@ -39,4 +47,5 @@ __all__ = [
     "WebhookEventType",
     "WebhookResource",
     "WebhookVerifier",
+    "__version__",
 ]

@@ -16,11 +16,19 @@ _DEFAULT_EVENTS = [
 
 
 class WebhookResource(BaseResource):
+    """Webhook subscription, event-type discovery, and dispatch history."""
+
     def register(
         self,
         payload: dict[str, Any],
         account_id: str | None = None,
     ) -> dict[str, Any]:
+        """``PUT /accounts/{account_id}/webhooks/subscriptions`` — upsert subscription.
+
+        ``payload`` requires ``url`` and ``email``. ``events`` defaults to a
+        common subset when omitted; pass a list to override. ``is_active``
+        defaults to ``True``.
+        """
         if not payload.get("url"):
             raise ValidationError("Webhook URL is required")
         if not payload.get("email"):
@@ -44,6 +52,11 @@ class WebhookResource(BaseResource):
         )
 
     def get(self, account_id: str | None = None) -> dict[str, Any] | None:
+        """``GET /accounts/{account_id}/webhooks/subscriptions``.
+
+        The API returns 200 with empty fields when nothing is configured; this
+        method also returns ``None`` if the endpoint ever responds with 404.
+        """
         acc_id = self._account_id(account_id)
         return self._call_optional(
             "Failed to fetch webhook subscription",
@@ -51,6 +64,7 @@ class WebhookResource(BaseResource):
         )
 
     def delete(self, account_id: str | None = None) -> None:
+        """``DELETE /accounts/{account_id}/webhooks/subscriptions``."""
         acc_id = self._account_id(account_id)
         self._logger.info("Deleting webhook subscription")
         return self._call_void(
@@ -59,6 +73,7 @@ class WebhookResource(BaseResource):
         )
 
     def inactivate(self, account_id: str | None = None) -> dict[str, Any]:
+        """``PUT /accounts/{account_id}/webhooks/inactivate`` — soft-disable."""
         acc_id = self._account_id(account_id)
         self._logger.info("Inactivating webhook subscription")
         return self._call(
@@ -67,6 +82,7 @@ class WebhookResource(BaseResource):
         )
 
     def list_event_types(self) -> list[dict[str, Any]]:
+        """``GET /webhooks/event-types`` — global catalog of event types."""
         return self._call(
             "Failed to list webhook event types",
             lambda: self._http.get("webhooks/event-types"),
@@ -77,6 +93,11 @@ class WebhookResource(BaseResource):
         params: dict[str, Any] | None = None,
         account_id: str | None = None,
     ) -> dict[str, Any]:
+        """``GET /accounts/{account_id}/webhooks`` — webhook delivery history.
+
+        ``params`` accepts ``event``, ``delivered`` (bool), and standard
+        pagination keys.
+        """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
         return self._call_list(
@@ -89,6 +110,7 @@ class WebhookResource(BaseResource):
         dispatch_id: str,
         account_id: str | None = None,
     ) -> dict[str, Any]:
+        """``POST /accounts/{account_id}/webhooks/{dispatch_id}/retry``."""
         acc_id = self._account_id(account_id)
         did = self._require_id(dispatch_id, "Dispatch ID")
         return self._call(

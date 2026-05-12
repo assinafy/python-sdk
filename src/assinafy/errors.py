@@ -1,9 +1,17 @@
+"""Exception hierarchy for the Assinafy SDK.
+
+All SDK-raised errors subclass :class:`AssinafyError`. ``except AssinafyError``
+catches every documented failure mode.
+"""
+
 from __future__ import annotations
 
 from typing import Any
 
 
 class AssinafyError(Exception):
+    """Base class for every error raised by the SDK."""
+
     def __init__(
         self,
         message: str,
@@ -14,6 +22,13 @@ class AssinafyError(Exception):
 
 
 class ApiError(AssinafyError):
+    """Raised when the API returns a non-2xx response.
+
+    Attributes:
+        status_code: HTTP status code (or the documented envelope ``status``).
+        response_data: Parsed JSON body, when available.
+    """
+
     def __init__(
         self,
         message: str,
@@ -26,6 +41,7 @@ class ApiError(AssinafyError):
 
     @classmethod
     def from_response(cls, status_code: int, response_data: Any) -> ApiError:
+        """Build an ``ApiError`` from a documented error envelope or raw status."""
         data = response_data if isinstance(response_data, dict) else {}
         raw_message = data.get("message")
         raw_error = data.get("error")
@@ -39,6 +55,8 @@ class ApiError(AssinafyError):
 
 
 class ValidationError(AssinafyError):
+    """Raised for client-side validation failures before a request is sent."""
+
     def __init__(
         self,
         message: str = "Validation failed",
@@ -49,5 +67,7 @@ class ValidationError(AssinafyError):
 
 
 class NetworkError(AssinafyError):
+    """Raised when the request never reached the API (DNS, timeout, refused)."""
+
     def __init__(self, message: str) -> None:
         super().__init__(message)

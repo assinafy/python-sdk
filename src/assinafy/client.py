@@ -18,11 +18,31 @@ from .support.webhook_verifier import WebhookVerifier
 from .types import Logger
 from .utils import create_noop_logger
 
+_SDK_VERSION = "1.2.0"
 _DEFAULT_BASE_URL = "https://api.assinafy.com.br/v1"
-_USER_AGENT = "assinafy-python-sdk"
+_USER_AGENT = f"assinafy-python-sdk/{_SDK_VERSION}"
 
 
 class AssinafyClient:
+    """Top-level entry point for the Assinafy API.
+
+    All resources hang off this client (``client.documents``, ``client.signers``,
+    etc.). The client is synchronous, backed by ``httpx.Client``, and is safe to
+    use as a context manager.
+
+    Args:
+        api_key: API key sent as the ``X-Api-Key`` header. Preferred.
+        token: Access token sent as ``Authorization: Bearer ...``. Used when
+            ``api_key`` is not provided.
+        account_id: Workspace/account ID used as the default for account-scoped
+            methods (e.g. ``documents.list``). May be overridden per call.
+        base_url: API base URL. Defaults to ``https://api.assinafy.com.br/v1``.
+        webhook_secret: Shared secret used by :class:`WebhookVerifier`.
+        timeout: Per-request timeout in seconds.
+        logger: Optional ``Logger``-shaped object (``debug``/``info``/``warning``
+            /``error`` methods). Defaults to a no-op logger.
+    """
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -70,6 +90,30 @@ class AssinafyClient:
         copy_receivers: list[str] | None = None,
         account_id: str | None = None,
     ) -> dict[str, Any]:
+        """Upload a PDF, create signers, and start a virtual signature workflow.
+
+        Convenience helper that chains three documented endpoints:
+
+        1. ``POST /accounts/{account_id}/documents`` to upload the PDF
+        2. ``POST /accounts/{account_id}/signers`` for each signer dict
+        3. ``POST /documents/{document_id}/assignments`` with ``method=virtual``
+
+        Args:
+            source: Either ``{"file_path": "..."}`` or
+                ``{"buffer": b"...", "file_name": "..."}``.
+            signers: List of signer payloads (``full_name`` + ``email`` or
+                ``whatsapp_phone_number``).
+            message: Optional message included in signer notifications.
+            wait_for_ready: If ``True`` (default), poll ``documents.get`` until
+                the document leaves ``uploaded`` / ``metadata_processing``.
+            expires_at: Optional ISO 8601 expiration timestamp.
+            copy_receivers: Optional list of email addresses to copy on the
+                signature invitation.
+            account_id: Override the client's default account ID for this call.
+
+        Returns:
+            ``{"document": ..., "assignment": ..., "signer_ids": [...]}``.
+        """
         if not signers:
             raise ValidationError("At least one signer is required")
 
@@ -102,9 +146,11 @@ class AssinafyClient:
         return {"document": document, "assignment": assignment, "signer_ids": signer_ids}
 
     def get_http_client(self) -> httpx.Client:
+        """Return the underlying ``httpx.Client``. Useful for advanced use only."""
         return self._http
 
     def close(self) -> None:
+        """Close the underlying HTTP connection pool."""
         self._http.close()
 
     def __enter__(self) -> AssinafyClient:

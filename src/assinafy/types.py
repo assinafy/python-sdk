@@ -1,3 +1,10 @@
+"""Public type aliases and the ``Logger`` protocol.
+
+These mirror the documented enums at https://api.assinafy.com.br/v1/docs and
+are kept here so consumers can import them directly: ``from assinafy import
+DocumentStatus``.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Literal, Protocol
@@ -45,6 +52,14 @@ SignerReference = str | dict[str, Any]
 
 
 class Logger(Protocol):
+    """Structural type for the optional ``logger`` argument on :class:`AssinafyClient`.
+
+    Any object exposing ``debug``/``info``/``warning``/``error`` methods that
+    accept ``(message, context)`` qualifies. The stdlib ``logging.Logger`` is
+    *not* a drop-in match because its methods don't take a dict context; wrap
+    it with a thin adapter if you want to forward through.
+    """
+
     def debug(self, message: str, context: dict[str, Any] | None = None) -> None: ...
     def info(self, message: str, context: dict[str, Any] | None = None) -> None: ...
     def warning(self, message: str, context: dict[str, Any] | None = None) -> None: ...

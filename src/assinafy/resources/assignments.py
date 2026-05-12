@@ -11,6 +11,18 @@ def build_assignment_payload(
     payload: dict[str, Any],
     allow_signers_without_id: bool = False,
 ) -> dict[str, Any]:
+    """Normalize assignment payloads into the documented request body.
+
+    Accepts ``signers`` as a list of either plain string IDs (legacy convenience)
+    or ``{id, verification_method, notification_methods}`` dicts. Also accepts
+    the legacy ``signer_ids`` key as a synonym for ``signers``. Drops ``None``
+    values from the optional fields (``message``, ``expires_at``,
+    ``copy_receivers``, ``entries``) so the request body matches the API docs
+    exactly.
+
+    ``allow_signers_without_id`` is for ``estimate-cost`` callers that supply
+    signer descriptors without IDs.
+    """
     method = payload.get("method", "virtual")
     raw_signers = payload.get("signers") or payload.get("signer_ids") or []
     signers = list(raw_signers) if isinstance(raw_signers, (list, tuple)) else []
@@ -60,11 +72,20 @@ def _normalise_signer_ref(ref: Any, allow_without_id: bool) -> dict[str, Any]:
 
 
 class AssignmentResource(BaseResource):
+    """Assignment endpoints — invitations, signing, notifications."""
+
     def create(
         self,
         document_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        """``POST /documents/{document_id}/assignments``.
+
+        ``payload`` may contain ``method`` (``virtual``/``collect``),
+        ``signers``, ``signer_ids`` (legacy alias), ``message``, ``expires_at``,
+        ``copy_receivers``, and (collect-only) ``entries``. See
+        :func:`build_assignment_payload` for full normalization rules.
+        """
         doc_id = self._require_id(document_id, "Document ID")
         body = build_assignment_payload(payload)
         self._logger.info(
@@ -81,6 +102,11 @@ class AssignmentResource(BaseResource):
         document_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        """``POST /documents/{document_id}/assignments/estimate-cost``.
+
+        Accepts the same payload shape as :meth:`create` and additionally
+        permits signer descriptors without ``id`` (just channel hints).
+        """
         doc_id = self._require_id(document_id, "Document ID")
         return self._call(
             "Failed to estimate assignment cost",
@@ -96,6 +122,10 @@ class AssignmentResource(BaseResource):
         assignment_id: str,
         expires_at: str,
     ) -> dict[str, Any]:
+        """``PUT /documents/{document_id}/assignments/{assignment_id}/reset-expiration``.
+
+        ``expires_at`` must be ISO 8601 (e.g. ``2030-08-03T21:00:00Z``).
+        """
         doc_id = self._require_id(document_id, "Document ID")
         asg_id = self._require_id(assignment_id, "Assignment ID")
         expiry = self._require_id(expires_at, "Expiration date")
@@ -112,6 +142,7 @@ class AssignmentResource(BaseResource):
         signer_access_code: str,
         has_accepted_terms: bool | None = None,
     ) -> dict[str, Any]:
+        """``GET /sign?signer-access-code=...`` — assignment view for signer."""
         access_code = self._require_id(signer_access_code, "Signer access code")
         return self._call(
             "Failed to fetch signer assignment",
@@ -134,6 +165,13 @@ class AssignmentResource(BaseResource):
         entries: list[dict[str, Any]],
         signer_access_code: str,
     ) -> dict[str, Any]:
+        """``POST /documents/{document_id}/assignments/{assignment_id}``.
+
+        For collect-method assignments. ``entries`` is the list of
+        ``{itemId, fieldId, pageId, value}`` objects per the API docs. For
+        virtual assignments, the signer must have called
+        :meth:`SignerResource.confirm_data` first.
+        """
         doc_id = self._require_id(document_id, "Document ID")
         asg_id = self._require_id(assignment_id, "Assignment ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
@@ -158,6 +196,7 @@ class AssignmentResource(BaseResource):
         decline_reason: str,
         signer_access_code: str,
     ) -> None:
+        """``PUT /documents/{document_id}/assignments/{assignment_id}/reject``."""
         doc_id = self._require_id(document_id, "Document ID")
         asg_id = self._require_id(assignment_id, "Assignment ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
@@ -179,6 +218,7 @@ class AssignmentResource(BaseResource):
         document_id: str,
         assignment_id: str,
     ) -> list[dict[str, Any]]:
+        """``GET /documents/{document_id}/assignments/{assignment_id}/whatsapp-notifications``."""
         doc_id = self._require_id(document_id, "Document ID")
         asg_id = self._require_id(assignment_id, "Assignment ID")
         result = self._call(
@@ -195,6 +235,10 @@ class AssignmentResource(BaseResource):
         assignment_id: str,
         signer_id: str,
     ) -> dict[str, Any]:
+        """Resend a signer's notification for an assignment.
+
+        ``PUT /documents/{document_id}/assignments/{assignment_id}/signers/{signer_id}/resend``.
+        """
         doc_id = self._require_id(document_id, "Document ID")
         asg_id = self._require_id(assignment_id, "Assignment ID")
         sid = self._require_id(signer_id, "Signer ID")
@@ -211,6 +255,10 @@ class AssignmentResource(BaseResource):
         assignment_id: str,
         signer_id: str,
     ) -> dict[str, Any]:
+        """Estimate the cost of resending a signer's notification.
+
+        ``POST /documents/{document_id}/assignments/{assignment_id}/signers/{signer_id}/estimate-resend-cost``.
+        """  # noqa: E501
         doc_id = self._require_id(document_id, "Document ID")
         asg_id = self._require_id(assignment_id, "Assignment ID")
         sid = self._require_id(signer_id, "Signer ID")

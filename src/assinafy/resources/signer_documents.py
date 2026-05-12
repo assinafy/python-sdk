@@ -8,11 +8,14 @@ from .base import BaseResource
 
 
 class SignerDocumentResource(BaseResource):
+    """Signer-facing document endpoints (all signer-access-code authenticated)."""
+
     def current(
         self,
         signer_id: str,
         signer_access_code: str,
     ) -> dict[str, Any]:
+        """``GET /signers/{signer_id}/document?signer-access-code=...``."""
         sid = self._require_id(signer_id, "Signer ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
         return self._call(
@@ -32,6 +35,11 @@ class SignerDocumentResource(BaseResource):
         signer_access_code: str | None = None,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """``GET /signers/{signer_id}/documents?signer-access-code=...``.
+
+        ``params`` accepts the standard ``page`` / ``per_page`` / ``status``
+        filters; the signer-access-code is appended as a query parameter.
+        """
         sid = self._require_id(signer_id, "Signer ID")
         query = dict(params or {})
         if signer_access_code is not None:
@@ -50,6 +58,7 @@ class SignerDocumentResource(BaseResource):
         document_ids: list[str],
         signer_access_code: str,
     ) -> None:
+        """``PUT /signers/documents/sign-multiple?signer-access-code=...``."""
         access_code = self._require_id(signer_access_code, "Signer access code")
         _assert_document_ids(document_ids)
         self._call_void(
@@ -70,6 +79,7 @@ class SignerDocumentResource(BaseResource):
         decline_reason: str,
         signer_access_code: str,
     ) -> None:
+        """``PUT /signers/documents/decline-multiple?signer-access-code=...``."""
         access_code = self._require_id(signer_access_code, "Signer access code")
         reason = self._require_id(decline_reason, "Decline reason")
         _assert_document_ids(document_ids)
@@ -92,6 +102,7 @@ class SignerDocumentResource(BaseResource):
         signer_access_code: str,
         artifact_name: str = "certificated",
     ) -> bytes:
+        """``GET /signers/{signer_id}/documents/{document_id}/download/{artifact}``."""
         sid = self._require_id(signer_id, "Signer ID")
         doc_id = self._require_id(document_id, "Document ID")
         access_code = self._require_id(signer_access_code, "Signer access code")

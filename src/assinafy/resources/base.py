@@ -11,6 +11,15 @@ from ..utils import create_noop_logger, handle_assinafy_response, to_sdk_error
 
 
 class BaseResource:
+    """Shared HTTP plumbing for resource classes.
+
+    All resources share the same ``httpx.Client`` from :class:`AssinafyClient`,
+    a default account ID, and a logger. Response handling goes through a small
+    set of helpers (``_call``, ``_call_optional``, ``_call_void``,
+    ``_call_binary``, ``_call_list``) so envelope handling, error normalization,
+    and pagination meta parsing live in one place.
+    """
+
     def __init__(
         self,
         http: httpx.Client,

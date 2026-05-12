@@ -2,7 +2,11 @@
 
 Python SDK for the [Assinafy API](https://api.assinafy.com.br/v1/docs).
 
-The SDK is synchronous, uses `httpx`, and covers the documented API groups for authentication, documents, signers, signer documents, assignments, field definitions, templates, and webhooks.
+The SDK is synchronous, uses `httpx`, and covers every documented API group:
+authentication, documents, signers, signer documents, assignments, field
+definitions, templates, and webhooks. Each public method's docstring names the
+exact HTTP verb and endpoint it calls, so you can cross-reference against the
+official docs in one step.
 
 ## Requirements
 
@@ -271,6 +275,15 @@ pytest
 mypy src
 ruff check src tests
 ```
+
+### Live smoke test
+
+```bash
+ASSINAFY_API_KEY=... ASSINAFY_ACCOUNT_ID=... python scripts/live_smoke.py
+```
+
+Hits the live API to confirm read endpoints, signer CRUD, document upload,
+``wait_until_ready`` polling, cost estimation, and cleanup all work end-to-end.
 
 ## License
 

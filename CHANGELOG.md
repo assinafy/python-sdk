@@ -2,6 +2,35 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.2.0] - 2026-05-11
+
+### Added
+
+- `__version__` constant exposed at the package root.
+- Comprehensive docstrings on every public method covering the HTTP verb,
+  endpoint path, accepted parameters, and notable server-side rules
+  (e.g. `documents.delete` deletable statuses, `signers.update` verification
+  integrity rules).
+- `scripts/live_smoke.py` — runnable live-API smoke test covering read paths,
+  signer CRUD, document upload, and cost estimation.
+
+### Changed
+
+- `User-Agent` header now includes the SDK version (`assinafy-python-sdk/1.2.0`).
+- `documents.create_from_template` and `documents.estimate_cost_from_template`
+  now validate that `signers` is non-empty before sending the request.
+- `WebhookVerifier` class docstring documents the assumed HMAC-SHA256 scheme
+  and how to subclass for accounts using a different scheme.
+
+### Verified
+
+- 100% endpoint coverage versus https://api.assinafy.com.br/v1/docs — all
+  documented routes for authentication, documents, signers, signer-documents,
+  templates, assignments, fields, and webhooks are implemented with matching
+  verbs, paths, body shapes, and hyphenated query-parameter aliases.
+- 95 unit tests pass; `ruff` and `mypy --strict` are clean.
+- Live API smoke test passes against `https://api.assinafy.com.br/v1`.
+
 ## [1.1.1] - 2026-05-09
 
 ### Changed
