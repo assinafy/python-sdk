@@ -19,6 +19,7 @@ class TestAssinafyClient:
         assert client.webhooks is not None
         assert client.authentication is not None
         assert client.fields is not None
+        assert client.tags is not None
         assert client.signer_documents is not None
         assert client.webhook_verifier is not None
         client.close()

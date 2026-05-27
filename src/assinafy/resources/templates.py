@@ -20,8 +20,8 @@ class TemplateResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /accounts/{account_id}/templates``.
 
-        ``params`` accepts the standard ``page`` / ``per_page`` / ``search``
-        / ``sort`` (``name``, ``updated_at``).
+        ``params`` accepts ``page``, ``per_page``, ``search``, ``status``,
+        ``tags``, and ``sort`` (``name``, ``updated_at``).
         """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)

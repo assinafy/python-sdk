@@ -2,6 +2,15 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.3.0] - 2026-05-27
+
+### Added
+
+- `client.tags` resource covering `GET/POST/PUT/DELETE /accounts/{account_id}/tags`.
+- Document tag helpers covering list, replace, append, and detach endpoints under
+  `/accounts/{account_id}/documents/{document_id}/tags`.
+- Unit and live-smoke coverage for tag CRUD and document tag attachment flows.
+
 ## [1.2.0] - 2026-05-11
 
 ### Added

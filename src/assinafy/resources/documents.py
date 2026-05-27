@@ -65,9 +65,10 @@ class DocumentResource(BaseResource):
         """``GET /accounts/{account_id}/documents`` — list workspace documents.
 
         ``params`` accepts ``page``, ``per_page`` (sent as ``per-page``),
-        ``search``, ``sort`` (e.g. ``-updated_at``), and ``status``. Returns
-        ``{"data": [...], "meta": {...}}`` where ``meta`` is built from the
-        documented ``x-pagination-*`` response headers.
+        ``search``, ``sort`` (e.g. ``-updated_at``), ``status``, ``method``,
+        and ``tags``. Returns ``{"data": [...], "meta": {...}}`` where
+        ``meta`` is built from the documented ``x-pagination-*`` response
+        headers.
         """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
@@ -290,6 +291,83 @@ class DocumentResource(BaseResource):
             ),
         )
 
+    def list_tags(
+        self,
+        document_id: str,
+        account_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """``GET /accounts/{account_id}/documents/{document_id}/tags``."""
+        acc_id = self._account_id(account_id)
+        doc_id = self._require_id(document_id, "Document ID")
+        result = self._call(
+            "Failed to list document tags",
+            lambda: self._http.get(f"accounts/{acc_id}/documents/{doc_id}/tags"),
+        )
+        return result if isinstance(result, list) else []
+
+    def replace_tags(
+        self,
+        document_id: str,
+        tags: list[str],
+        account_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """``PUT /accounts/{account_id}/documents/{document_id}/tags``.
+
+        Replaces all document tags. Passing an empty list is documented and
+        detaches all tags from the document.
+        """
+        acc_id = self._account_id(account_id)
+        doc_id = self._require_id(document_id, "Document ID")
+        body = {"tags": _validate_tag_names(tags, allow_empty=True)}
+        result = self._call(
+            "Failed to replace document tags",
+            lambda: self._http.put(
+                f"accounts/{acc_id}/documents/{doc_id}/tags",
+                json=body,
+            ),
+        )
+        return result if isinstance(result, list) else []
+
+    def append_tags(
+        self,
+        document_id: str,
+        tags: list[str],
+        account_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """``POST /accounts/{account_id}/documents/{document_id}/tags``."""
+        acc_id = self._account_id(account_id)
+        doc_id = self._require_id(document_id, "Document ID")
+        body = {"tags": _validate_tag_names(tags, allow_empty=False)}
+        result = self._call(
+            "Failed to append document tags",
+            lambda: self._http.post(
+                f"accounts/{acc_id}/documents/{doc_id}/tags",
+                json=body,
+            ),
+        )
+        return result if isinstance(result, list) else []
+
+    def detach_tag(
+        self,
+        document_id: str,
+        tag_id: str,
+        account_id: str | None = None,
+    ) -> dict[str, Any]:
+        """``DELETE /accounts/{account_id}/documents/{document_id}/tags/{tag_id}``.
+
+        Detaches one tag from a document. The tag resource itself is not deleted.
+        """
+        acc_id = self._account_id(account_id)
+        doc_id = self._require_id(document_id, "Document ID")
+        tid = self._require_id(tag_id, "Tag ID")
+        result = self._call(
+            "Failed to detach document tag",
+            lambda: self._http.delete(
+                f"accounts/{acc_id}/documents/{doc_id}/tags/{tid}"
+            ),
+        )
+        return result if isinstance(result, dict) else {}
+
 
 def _load_source(source: dict[str, Any]) -> tuple[bytes, str]:
     if "buffer" in source:
@@ -315,3 +393,13 @@ def _validate_upload(buffer: bytes, file_name: str) -> None:
             "File size exceeds maximum allowed (25MB)",
             {"file_size": len(buffer), "max_size": MAX_UPLOAD_BYTES},
         )
+
+
+def _validate_tag_names(tags: list[str], allow_empty: bool) -> list[str]:
+    if not isinstance(tags, list):
+        raise ValidationError("tags must be a list")
+    if not tags and not allow_empty:
+        raise ValidationError("At least one tag name is required")
+    if any(not isinstance(tag, str) or not tag.strip() for tag in tags):
+        raise ValidationError("Tag names must be non-empty strings", {"tags": tags})
+    return tags

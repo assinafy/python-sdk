@@ -4,7 +4,7 @@ Python SDK for the [Assinafy API](https://api.assinafy.com.br/v1/docs).
 
 The SDK is synchronous, uses `httpx`, and covers every documented API group:
 authentication, documents, signers, signer documents, assignments, field
-definitions, templates, and webhooks. Each public method's docstring names the
+definitions, templates, tags, and webhooks. Each public method's docstring names the
 exact HTTP verb and endpoint it calls, so you can cross-reference against the
 official docs in one step.
 
@@ -69,7 +69,7 @@ session = public_client.authentication.login("user@example.com", "password")
 | `base_url` | str | `https://api.assinafy.com.br/v1` | API base URL. |
 | `webhook_secret` | str | None | Secret used by `WebhookVerifier`. |
 | `timeout` | float | `30.0` | Request timeout in seconds. |
-| `logger` | object | no-op | Object with `debug/info/warn/error` methods. |
+| `logger` | object | no-op | Object with `debug/info/warning/error` methods. |
 
 ## Resources
 
@@ -93,7 +93,7 @@ doc = client.documents.upload({"file_path": "./contract.pdf"})
 doc = client.documents.upload({"buffer": pdf_bytes, "file_name": "contract.pdf"})
 
 client.documents.statuses()
-client.documents.list({"page": 1, "per_page": 20, "sort": "-updated_at"})
+client.documents.list({"page": 1, "per_page": 20, "tags": "tag-id", "sort": "-updated_at"})
 client.documents.get(doc["id"])
 client.documents.activities(doc["id"])
 client.documents.wait_until_ready(doc["id"])
@@ -103,6 +103,10 @@ client.documents.download_page(doc["id"], page_id)
 client.documents.verify(signature_hash)
 client.documents.public_info(doc["id"])
 client.documents.send_token(doc["id"], "signer@example.com", "email")
+client.documents.list_tags(doc["id"])
+client.documents.replace_tags(doc["id"], ["Contracts", "2026-Q1"])
+client.documents.append_tags(doc["id"], ["Urgent"])
+client.documents.detach_tag(doc["id"], tag_id)
 client.documents.delete(doc["id"])
 ```
 
@@ -111,7 +115,7 @@ Uploads follow the documented multipart shape and are locally limited to PDF fil
 ### Templates
 
 ```python
-templates = client.templates.list({"search": "NDA", "per_page": 20})
+templates = client.templates.list({"search": "NDA", "tags": "tag-id", "per_page": 20})
 template = client.templates.get(template_id)
 
 client.documents.create_from_template(
@@ -124,6 +128,17 @@ client.documents.estimate_cost_from_template(
     template_id,
     [{"role_id": "role-id", "id": signer_id}],
 )
+```
+
+### Tags
+
+```python
+tags = client.tags.list({"search": "contract", "per_page": 20})
+tag = client.tags.create({"name": "Contracts", "color": "ff8800"})
+client.tags.update(tag["id"], {"name": "Sales Contracts"})
+client.tags.update(tag["id"], {"color": None})  # clears color
+client.tags.delete(tag["id"])
+client.tags.delete(tag["id"], force=True)
 ```
 
 ### Signers
@@ -283,7 +298,8 @@ ASSINAFY_API_KEY=... ASSINAFY_ACCOUNT_ID=... python scripts/live_smoke.py
 ```
 
 Hits the live API to confirm read endpoints, signer CRUD, document upload,
-``wait_until_ready`` polling, cost estimation, and cleanup all work end-to-end.
+document tagging, tag CRUD, ``wait_until_ready`` polling, cost estimation, and
+cleanup all work end-to-end.
 
 ## License
 

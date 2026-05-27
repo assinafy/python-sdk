@@ -12,13 +12,14 @@ from .resources.documents import DocumentResource
 from .resources.fields import FieldResource
 from .resources.signer_documents import SignerDocumentResource
 from .resources.signers import SignerResource
+from .resources.tags import TagResource
 from .resources.templates import TemplateResource
 from .resources.webhooks import WebhookResource
 from .support.webhook_verifier import WebhookVerifier
 from .types import Logger
 from .utils import create_noop_logger
 
-_SDK_VERSION = "1.2.0"
+_SDK_VERSION = "1.3.0"
 _DEFAULT_BASE_URL = "https://api.assinafy.com.br/v1"
 _USER_AGENT = f"assinafy-python-sdk/{_SDK_VERSION}"
 
@@ -77,6 +78,7 @@ class AssinafyClient:
         self.assignments = AssignmentResource(self._http, account_id, self._logger)
         self.webhooks = WebhookResource(self._http, account_id, self._logger)
         self.templates = TemplateResource(self._http, account_id, self._logger)
+        self.tags = TagResource(self._http, account_id, self._logger)
         self.fields = FieldResource(self._http, account_id, self._logger)
         self.webhook_verifier = WebhookVerifier(webhook_secret)
 

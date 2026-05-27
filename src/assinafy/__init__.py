@@ -12,6 +12,7 @@ from .resources.documents import DocumentResource
 from .resources.fields import FieldResource
 from .resources.signer_documents import SignerDocumentResource
 from .resources.signers import SignerResource
+from .resources.tags import TagResource
 from .resources.templates import TemplateResource
 from .resources.webhooks import WebhookResource
 from .support.webhook_verifier import WebhookVerifier
@@ -24,7 +25,7 @@ from .types import (
     WebhookEventType,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 __all__ = [
     "ApiError",
@@ -42,6 +43,7 @@ __all__ = [
     "SignerDocumentResource",
     "SignerReference",
     "SignerResource",
+    "TagResource",
     "TemplateResource",
     "ValidationError",
     "WebhookEventType",

@@ -9,12 +9,13 @@ import os
 import sys
 import time
 import traceback
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from assinafy import ApiError, AssinafyClient, AssinafyError
 
 
-def step(label: str, fn: Callable[[], Any]) -> Any:
+def step(label: str, fn: Callable[[], Any], failures: list[str]) -> Any:
     print(f"\n=== {label} ===")
     try:
         result = fn()
@@ -23,9 +24,11 @@ def step(label: str, fn: Callable[[], Any]) -> Any:
         print(f"  FAIL [{type(err).__name__}] status={status} message={err}")
         if isinstance(err, ApiError):
             print(f"  response_data={err.response_data!r}")
+        failures.append(label)
         return None
     except Exception:  # noqa: BLE001
         traceback.print_exc()
+        failures.append(label)
         return None
     print(f"  OK -> {_preview(result)}")
     return result
@@ -64,22 +67,61 @@ def main() -> int:
         return 2
 
     client = AssinafyClient(api_key=api_key, account_id=account_id)
+    failures: list[str] = []
 
     print(f"Base URL: {client.get_http_client().base_url}")
 
     # 1. Read-only endpoints first
-    step("documents.statuses()", lambda: client.documents.statuses())
-    step("fields.list_types()", lambda: client.fields.list_types())
-    step("webhooks.list_event_types()", lambda: client.webhooks.list_event_types())
+    step("documents.statuses()", lambda: client.documents.statuses(), failures)
+    step("fields.list_types()", lambda: client.fields.list_types(), failures)
+    step(
+        "webhooks.list_event_types()",
+        lambda: client.webhooks.list_event_types(),
+        failures,
+    )
 
-    step("documents.list(per_page=5)", lambda: client.documents.list({"per_page": 5}))
-    step("signers.list(per_page=5)", lambda: client.signers.list({"per_page": 5}))
-    step("templates.list(per_page=5)", lambda: client.templates.list({"per_page": 5}))
-    step("fields.list()", lambda: client.fields.list())
-    step("webhooks.get()", lambda: client.webhooks.get())
-    step("webhooks.list_dispatches(per_page=5)", lambda: client.webhooks.list_dispatches({"per_page": 5}))
+    step(
+        "documents.list(per_page=5)",
+        lambda: client.documents.list({"per_page": 5}),
+        failures,
+    )
+    step(
+        "signers.list(per_page=5)",
+        lambda: client.signers.list({"per_page": 5}),
+        failures,
+    )
+    step(
+        "templates.list(per_page=5)",
+        lambda: client.templates.list({"per_page": 5}),
+        failures,
+    )
+    step("fields.list()", lambda: client.fields.list(), failures)
+    step(
+        "tags.list(search=sdk-smoke)",
+        lambda: client.tags.list({"search": "sdk-smoke"}),
+        failures,
+    )
+    step("webhooks.get()", lambda: client.webhooks.get(), failures)
+    step(
+        "webhooks.list_dispatches(per_page=5)",
+        lambda: client.webhooks.list_dispatches({"per_page": 5}),
+        failures,
+    )
 
-    step("authentication.get_api_key()", lambda: client.authentication.get_api_key())
+    access_token = os.environ.get("ASSINAFY_ACCESS_TOKEN")
+    if access_token:
+        token_client = AssinafyClient(token=access_token)
+        try:
+            step(
+                "authentication.get_api_key()",
+                lambda: token_client.authentication.get_api_key(),
+                failures,
+            )
+        finally:
+            token_client.close()
+    else:
+        print("\n=== authentication.get_api_key() ===")
+        print("  SKIP -> set ASSINAFY_ACCESS_TOKEN to live-test API key management")
 
     # 2. Write flow: signer create, then delete
     timestamp = int(time.time())
@@ -89,6 +131,7 @@ def main() -> int:
         lambda: client.signers.create(
             {"full_name": "SDK Smoke Test", "email": signer_email}
         ),
+        failures,
     )
     signer_id = signer["id"] if isinstance(signer, dict) else None
 
@@ -96,14 +139,31 @@ def main() -> int:
         step(
             "signers.get()",
             lambda: client.signers.get(signer_id),
+            failures,
         )
         step(
             "signers.update()",
             lambda: client.signers.update(signer_id, {"full_name": "SDK Smoke Test 2"}),
+            failures,
         )
         step(
             "signers.find_by_email()",
             lambda: client.signers.find_by_email(signer_email),
+            failures,
+        )
+
+    tag_name = f"sdk-smoke-{timestamp}"
+    tag = step(
+        "tags.create()",
+        lambda: client.tags.create({"name": tag_name, "color": "3366ff"}),
+        failures,
+    )
+    tag_id = tag["id"] if isinstance(tag, dict) else None
+    if tag_id:
+        step(
+            "tags.update()",
+            lambda: client.tags.update(tag_id, {"color": None}),
+            failures,
         )
 
     # 3. Document upload + estimate-cost + cleanup
@@ -113,12 +173,23 @@ def main() -> int:
         lambda: client.documents.upload(
             {"buffer": pdf_bytes, "file_name": "sdk-smoke.pdf"}
         ),
+        failures,
     )
     doc_id = doc["id"] if isinstance(doc, dict) else None
 
     if doc_id:
-        step("documents.get()", lambda: client.documents.get(doc_id))
-        step("documents.activities()", lambda: client.documents.activities(doc_id))
+        step("documents.get()", lambda: client.documents.get(doc_id), failures)
+        step(
+            "documents.activities()",
+            lambda: client.documents.activities(doc_id),
+            failures,
+        )
+        step(
+            "documents.append_tags()",
+            lambda: client.documents.append_tags(doc_id, [tag_name]),
+            failures,
+        )
+        step("documents.list_tags()", lambda: client.documents.list_tags(doc_id), failures)
 
         if signer_id:
             step(
@@ -127,18 +198,28 @@ def main() -> int:
                     doc_id,
                     {"method": "virtual", "signers": [{"id": signer_id}]},
                 ),
+                failures,
             )
 
         step(
             "documents.wait_until_ready()",
             lambda: client.documents.wait_until_ready(doc_id, timeout=60),
+            failures,
         )
-        step("documents.delete()", lambda: client.documents.delete(doc_id))
+        step("documents.delete()", lambda: client.documents.delete(doc_id), failures)
+
+    if tag_id:
+        step("tags.delete()", lambda: client.tags.delete(tag_id, force=True), failures)
 
     if signer_id:
-        step("signers.delete()", lambda: client.signers.delete(signer_id))
+        step("signers.delete()", lambda: client.signers.delete(signer_id), failures)
 
     client.close()
+    if failures:
+        print("\nFailed live smoke steps:")
+        for label in failures:
+            print(f"  - {label}")
+        return 1
     return 0
 
 
