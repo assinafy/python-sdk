@@ -317,12 +317,17 @@ class AssignmentResource(BaseResource):
     ) -> list[dict[str, Any]]:
         """``GET /documents/{document_id}/assignments/{assignment_id}/whatsapp-notifications``.
 
-        Lists WhatsApp notification delivery records for the assignment.
+        Lists the rendered WhatsApp notification messages sent for the
+        assignment (header/body/buttons text exactly as the signer sees them).
 
         Example response (``data`` envelope unwrapped)::
 
-            [{"signer_id": "1031ff86...", "status": "sent",
-              "sent_at": "2026-06-05T20:50:55Z"}]
+            [{"sent_at": 1710000000,
+              "header": "Documento para assinatura: Contrato",
+              "body": "Oi, Maria.\\n\\nJoão enviou um documento...",
+              "buttons": [{"text": "Abrir documento"}],
+              "phone_number": "+5511999990001",
+              "signer_id": "1031ff86..."}]
         """
         doc_id = self._require_id(document_id, "Document ID")
         asg_id = self._require_id(assignment_id, "Assignment ID")

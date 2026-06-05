@@ -249,7 +249,7 @@ class DocumentResource(BaseResource):
             [{"id": 8257, "event": "document_uploaded",
               "message": "Documento criado.", "payload": [],
               "origin": {"ip": "99.75.13.162",
-                         "user-agent": "assinafy-python-sdk/1.3.1"},
+                         "user-agent": "assinafy-python-sdk/1.3.2"},
               "created_at": "2026-06-05T20:50:44Z"}]
         """
         doc_id = self._require_id(document_id, "Document ID")

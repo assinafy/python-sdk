@@ -2,6 +2,19 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.3.2] - 2026-06-05
+
+### Fixed
+
+- Corrected the response payload examples in the docstrings for
+  `assignments.whatsapp_notifications`, `webhooks.list_dispatches`, and
+  `webhooks.retry_dispatch` to match the documented object shapes (these
+  endpoints returned empty arrays during live testing, so the 1.3.1 examples had
+  invented fields such as `response_status` and the wrong types for `id`/
+  `sent_at`/`created_at`). Also aligned the `fields.validate` example
+  request/response so the value matches the echoed field type. Docstrings only —
+  no code or behavior changes.
+
 ## [1.3.1] - 2026-06-05
 
 Full conformance audit against `https://api.assinafy.com.br/v1/docs`, validated

@@ -157,8 +157,14 @@ class WebhookResource(BaseResource):
         ``x-pagination-*`` headers)::
 
             {"data": [
-                {"id": 42, "event": "document_ready", "delivered": true,
-                 "response_status": 200, "created_at": "2026-06-05T20:50:55Z"}
+                {"id": "a1b2c3d4e5f6...", "event": "document_ready",
+                 "activity_id": 456, "endpoint": "https://example.com/webhook",
+                 "payload": {"event": "document_ready", "id": 456,
+                             "object": {"id": "abc123", "type": "document"},
+                             "subject": {"id": "def456", "type": "user"}},
+                 "delivered": true, "http_status": 200, "response_body": "OK",
+                 "error": null, "created_at": 1705312200,
+                 "updated_at": 1705312200}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
@@ -177,13 +183,17 @@ class WebhookResource(BaseResource):
         """``POST /accounts/{account_id}/webhooks/{dispatch_id}/retry``.
 
         Forces redelivery of a single webhook dispatch (useful after the
-        circuit breaker pauses delivery). ``dispatch_id`` is the ``id`` from
-        :meth:`list_dispatches`.
+        circuit breaker pauses delivery). ``dispatch_id`` is the hex-string
+        ``id`` from :meth:`list_dispatches`. Returns the newly created webhook
+        entry (same shape as a ``list_dispatches`` item).
 
         Example response (``data`` envelope unwrapped)::
 
-            {"id": 42, "event": "document_ready", "delivered": true,
-             "response_status": 200}
+            {"resource": "activity_dispatching_history",
+             "id": "a1b2c3d4e5f6...", "event": "document_ready",
+             "activity_id": 456, "endpoint": "https://example.com/webhook",
+             "delivered": true, "http_status": 200, "response_body": "OK",
+             "error": null, "created_at": 1705312200, "updated_at": 1705312200}
         """
         acc_id = self._account_id(account_id)
         did = self._require_id(dispatch_id, "Dispatch ID")

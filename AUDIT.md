@@ -1,7 +1,7 @@
 # Assinafy Python SDK Audit
 
 - Audit date: 2026-06-05
-- SDK version: 1.3.1
+- SDK version: 1.3.2
 - Reference: https://api.assinafy.com.br/v1/docs
 - Live validation: Assinafy sandbox (`https://sandbox.assinafy.com.br/v1`)
 

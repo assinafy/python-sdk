@@ -138,9 +138,10 @@ class FieldResource(BaseResource):
 
         Example request body (JSON)::
 
-            {"value": "400.676.228-36"}
+            {"value": "hello"}
 
-        Example response (``data`` envelope unwrapped)::
+        Example response (``data`` envelope unwrapped; ``type`` echoes the field's
+        type, e.g. ``cpf`` for a CPF field)::
 
             {"type": "text", "success": true, "error_message": ""}
         """
@@ -171,7 +172,7 @@ class FieldResource(BaseResource):
 
         Example request body (JSON array)::
 
-            [{"field_id": "1031ff86...", "value": "400.676.228-36"}]
+            [{"field_id": "1031ff86...", "value": "hi"}]
 
         Example response (``data`` envelope unwrapped)::
 
