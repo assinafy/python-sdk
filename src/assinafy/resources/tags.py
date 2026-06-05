@@ -21,8 +21,17 @@ class TagResource(BaseResource):
         """``GET /accounts/{account_id}/tags`` — list workspace tags.
 
         ``params`` accepts ``search`` plus the standard ``page`` / ``per_page``
-        pagination keys. Returns ``{"data": [...], "meta": {...}}`` when the
-        API returns pagination headers.
+        pagination keys. Returns ``{"data": [...], "meta": {...}}`` when the API
+        returns pagination headers.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"data": [
+                {"id": "1031f654...", "name": "Contracts", "color": null,
+                 "created_at": "2026-06-05T16:33:35Z",
+                 "updated_at": "2026-06-05T16:33:35Z"}
+             ],
+             "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
         acc_id = self._account_id(account_id)
         return self._call_list(
@@ -42,6 +51,16 @@ class TagResource(BaseResource):
 
         ``payload`` requires ``name`` and may include ``color`` as a 6-character
         hex value, with or without a leading ``#``.
+
+        Example request body (JSON)::
+
+            {"name": "Contracts", "color": "ff8800"}
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "tag", "id": "1031ff86...", "name": "Contracts",
+             "color": "ff8800", "created_at": "2026-06-05T20:50:43Z",
+             "updated_at": "2026-06-05T20:50:43Z"}
         """
         acc_id = self._account_id(account_id)
         body = _build_tag_payload(payload, require_name=True)
@@ -58,8 +77,18 @@ class TagResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /accounts/{account_id}/tags/{tag_id}`` — update name/color.
 
-        Passing ``{"color": None}`` is preserved and clears the color server-side
-        as documented.
+        Passing ``{"color": None}`` is preserved and clears the color
+        server-side as documented.
+
+        Example request body (JSON)::
+
+            {"name": "Sales Contracts"}    # or {"color": null} to clear color
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "tag", "id": "1031ff86...", "name": "Sales Contracts",
+             "color": null, "created_at": "2026-06-05T20:50:43Z",
+             "updated_at": "2026-06-05T20:50:43Z"}
         """
         acc_id = self._account_id(account_id)
         tid = self._require_id(tag_id, "Tag ID")
@@ -75,10 +104,14 @@ class TagResource(BaseResource):
         force: bool = False,
         account_id: str | None = None,
     ) -> dict[str, Any]:
-        """``DELETE /accounts/{account_id}/tags/{tag_id}``.
+        """``DELETE /accounts/{account_id}/tags/{tag_id}`` — delete a tag.
 
         Set ``force=True`` to detach the tag from documents/templates before
         deletion, matching the documented ``force`` query parameter.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"deleted": true}
         """
         acc_id = self._account_id(account_id)
         tid = self._require_id(tag_id, "Tag ID")

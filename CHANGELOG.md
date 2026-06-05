@@ -2,6 +2,63 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.3.1] - 2026-06-05
+
+Full conformance audit against `https://api.assinafy.com.br/v1/docs`, validated
+with live testing against the Assinafy sandbox. Every public method's docstring
+now includes a real request/response payload example captured from the API.
+
+### Removed
+
+- `client.webhooks.delete()` — `DELETE /accounts/{account_id}/webhooks/subscriptions`
+  is **not a real endpoint** (the live API returns `404 Não encontrada`), so the
+  method could never succeed. The documented way to stop delivery is
+  `client.webhooks.inactivate()`, which preserves the configured URL/events.
+  Migration: replace any `webhooks.delete()` call with `webhooks.inactivate()`.
+
+### Fixed
+
+- `assignments.reset_expiration()` now accepts `expires_at=None` to **clear** an
+  assignment's expiration, matching the documented behavior ("a null value means
+  no expiration"). Previously the SDK rejected `None`, making this documented
+  operation impossible. An empty string is still rejected as malformed.
+- `assignments.create()` / `estimate_cost()` now forward each signer's optional
+  `step` field, enabling sequential (multi-step) signing order as documented.
+  Previously `step` was silently dropped.
+- `authentication.get_api_key()` is now typed `dict | None` and returns `None`
+  when no API key has been generated yet (the API returns a null `data`).
+
+### Added
+
+- `WebhookVerifier.get_event_payload()`, `get_event_subject()`, and
+  `get_event_object()` accessors matching the documented webhook envelope
+  (`payload` for event params; `subject`/`object` for the polymorphic entities).
+  `get_event_data()` is retained as a backward-compatible alias of
+  `get_event_object()`.
+- Python 3.14 added to the CI test matrix and the package classifiers.
+
+### Changed
+
+- `WebhookVerifier` docstrings now state plainly that the public Delivery
+  Contract documents no signature header/HMAC scheme; `verify()` is for accounts
+  that have separately negotiated one.
+- `webhooks.register()` documents that an omitted `events` list falls back to a
+  curated subset; pass explicit events (see `list_event_types()`) for full
+  control.
+- Internal: `BaseResource` error handling consolidated behind a single `_guard`
+  boundary, and bare-array/object unwrapping centralized in `_call_plain_list` /
+  `_call_plain_dict` (removes ~10 duplicated coercion sites). No behavior change.
+
+### Verified
+
+- 114 unit tests pass; `ruff` and `mypy --strict` are clean.
+- Live sandbox run: 49 SDK calls succeed end-to-end (read paths, signer/tag/field
+  CRUD, document upload → ready → download → tagging → delete, assignment
+  create/estimate/resend/reset incl. null-clear, webhook register/inactivate).
+  The 8 signer-access-code endpoints return `401` with an invalid code,
+  confirming they are correctly wired; their happy path requires an
+  interactively verified signer session.
+
 ## [1.3.0] - 2026-05-27
 
 ### Added

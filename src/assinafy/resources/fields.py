@@ -20,6 +20,17 @@ class FieldResource(BaseResource):
         ``payload`` requires ``type`` (one of the values returned by
         :meth:`list_types`) and ``name``. Optional: ``regex``, ``is_required``,
         ``is_read_only``, ``is_visible``.
+
+        Example request body (JSON)::
+
+            {"type": "text", "name": "CPF"}
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "field_definition", "id": "1031ff86...", "name": "CPF",
+             "type": "text", "regex": null, "is_pre_defined": false,
+             "is_active": true, "is_required": true, "is_standard": false,
+             "is_read_only": false, "is_visible": true}
         """
         if not payload.get("type"):
             raise ValidationError("type is required")
@@ -39,10 +50,21 @@ class FieldResource(BaseResource):
         params: dict[str, Any] | None = None,
         account_id: str | None = None,
     ) -> dict[str, Any]:
-        """``GET /accounts/{account_id}/fields``.
+        """``GET /accounts/{account_id}/fields`` — list field definitions.
 
         ``params`` accepts ``include_standard`` and ``include_inactive`` plus
         the usual ``page`` / ``per_page`` / ``search`` / ``sort``.
+
+        Example response (``data`` envelope unwrapped, ``meta`` from
+        ``x-pagination-*`` headers)::
+
+            {"data": [
+                {"id": "102d25a4...", "name": "Nome", "type": "personName",
+                 "regex": null, "is_pre_defined": true, "is_active": true,
+                 "is_required": false, "is_standard": false,
+                 "is_read_only": false, "is_visible": true}
+             ],
+             "meta": {"current_page": 1, "per_page": 20, "total": 11, "last_page": 1}}
         """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
@@ -52,7 +74,15 @@ class FieldResource(BaseResource):
         )
 
     def get(self, field_id: str, account_id: str | None = None) -> dict[str, Any]:
-        """``GET /accounts/{account_id}/fields/{field_id}``."""
+        """``GET /accounts/{account_id}/fields/{field_id}`` — fetch one field.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "field_definition", "id": "1031ff86...", "name": "CPF",
+             "type": "text", "regex": null, "is_pre_defined": false,
+             "is_active": true, "is_required": true, "is_standard": false,
+             "is_read_only": false, "is_visible": true}
+        """
         acc_id = self._account_id(account_id)
         fid = self._require_id(field_id, "Field ID")
         return self._call(
@@ -66,7 +96,14 @@ class FieldResource(BaseResource):
         payload: dict[str, Any],
         account_id: str | None = None,
     ) -> dict[str, Any]:
-        """``PUT /accounts/{account_id}/fields/{field_id}``."""
+        """``PUT /accounts/{account_id}/fields/{field_id}`` — update a field.
+
+        Example request body (JSON)::
+
+            {"name": "CPF updated"}
+
+        Returns the updated field-definition object (``data`` envelope unwrapped).
+        """
         acc_id = self._account_id(account_id)
         fid = self._require_id(field_id, "Field ID")
         body = clean_params(payload)
@@ -78,7 +115,7 @@ class FieldResource(BaseResource):
         )
 
     def delete(self, field_id: str, account_id: str | None = None) -> None:
-        """``DELETE /accounts/{account_id}/fields/{field_id}``."""
+        """``DELETE /accounts/{account_id}/fields/{field_id}`` — delete a field."""
         acc_id = self._account_id(account_id)
         fid = self._require_id(field_id, "Field ID")
         self._call_void(
@@ -95,8 +132,17 @@ class FieldResource(BaseResource):
     ) -> dict[str, Any]:
         """``POST /accounts/{account_id}/fields/{field_id}/validate``.
 
-        Pass ``signer_access_code`` when validating in the signer flow; omit
-        when validating from an authenticated backend.
+        Validates a single value against a field definition's rules. Pass
+        ``signer_access_code`` when validating in the signer flow; omit it when
+        validating from an authenticated backend.
+
+        Example request body (JSON)::
+
+            {"value": "400.676.228-36"}
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"type": "text", "success": true, "error_message": ""}
         """
         acc_id = self._account_id(account_id)
         fid = self._require_id(field_id, "Field ID")
@@ -120,12 +166,22 @@ class FieldResource(BaseResource):
     ) -> list[dict[str, Any]]:
         """``POST /accounts/{account_id}/fields/validate-multiple``.
 
-        ``values`` is a list of ``{field_id, value}`` objects per the docs.
+        ``values`` is a list of ``{field_id, value}`` objects (sent as the raw
+        JSON request body).
+
+        Example request body (JSON array)::
+
+            [{"field_id": "1031ff86...", "value": "400.676.228-36"}]
+
+        Example response (``data`` envelope unwrapped)::
+
+            [{"field_id": "1031ff86...", "type": "text", "success": true,
+              "error_message": ""}]
         """
         if not values:
             raise ValidationError("At least one field value is required")
         acc_id = self._account_id(account_id)
-        result = self._call(
+        return self._call_plain_list(
             "Failed to validate field values",
             lambda: self._http.post(
                 f"accounts/{acc_id}/fields/validate-multiple",
@@ -136,12 +192,18 @@ class FieldResource(BaseResource):
                 json=values,
             ),
         )
-        return result if isinstance(result, list) else []
 
     def list_types(self) -> list[dict[str, Any]]:
-        """``GET /field-types`` — global catalog of built-in field types."""
-        result = self._call(
+        """``GET /field-types`` — global catalog of built-in field types.
+
+        Example response (``data`` envelope unwrapped)::
+
+            [{"type": "personName", "name": "Nome"},
+             {"type": "cpf", "name": "CPF"},
+             {"type": "text", "name": "Texto"},
+             {"type": "date", "name": "Data"}]
+        """
+        return self._call_plain_list(
             "Failed to list field types",
             lambda: self._http.get("field-types"),
         )
-        return result if isinstance(result, list) else []

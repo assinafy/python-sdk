@@ -57,6 +57,15 @@ class TestAuthenticationResource:
         resource.delete_api_key()
         assert http.last_url == "users/api-keys"
 
+    def test_get_api_key_returns_none_when_not_generated(self) -> None:
+        class NullHttp(MockHttp):
+            def get(self, url: str, **kwargs: object) -> object:
+                self.last_url = url
+                return make_response(make_envelope(None))
+
+        resource = AuthenticationResource(NullHttp())
+        assert resource.get_api_key() is None
+
     def test_password_reset_omits_missing_token(self) -> None:
         http = MockHttp()
         resource = AuthenticationResource(http)

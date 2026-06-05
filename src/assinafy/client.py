@@ -19,7 +19,7 @@ from .support.webhook_verifier import WebhookVerifier
 from .types import Logger
 from .utils import create_noop_logger
 
-_SDK_VERSION = "1.3.0"
+_SDK_VERSION = "1.3.1"
 _DEFAULT_BASE_URL = "https://api.assinafy.com.br/v1"
 _USER_AGENT = f"assinafy-python-sdk/{_SDK_VERSION}"
 

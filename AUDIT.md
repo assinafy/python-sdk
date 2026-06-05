@@ -1,72 +1,89 @@
 # Assinafy Python SDK Audit
 
-Audit date: 2026-05-27
-Reference: https://api.assinafy.com.br/v1/docs
+- Audit date: 2026-06-05
+- SDK version: 1.3.1
+- Reference: https://api.assinafy.com.br/v1/docs
+- Live validation: Assinafy sandbox (`https://sandbox.assinafy.com.br/v1`)
 
 ## Result
 
-The SDK is aligned with the current documented API surface after adding the
-current Tags endpoints and document tag attachment helpers for release 1.3.0.
-Local tests, linting, typing, and an API-key-safe live smoke test pass.
+The SDK conforms to the documented API surface and is validated end-to-end
+against the live sandbox. Every documented endpoint that the SDK exposes was
+exercised against the sandbox; one non-existent endpoint was removed and two
+conformance bugs were fixed. Local tests (114), `ruff`, and `mypy --strict`
+pass. Every public method's docstring carries a real request/response payload.
 
-## API Coverage
+## Method
+
+1. Parsed the full HTML API reference into per-section specs.
+2. Instrumented the SDK's `httpx` client and called **every** SDK method against
+   the sandbox, capturing real request/response payloads.
+3. Ran a file-by-file conformance + quality audit (one reviewer per resource)
+   cross-referencing SDK ↔ docs ↔ live payloads, with adversarial verification
+   of every must-fix finding.
+4. Applied verified fixes, enriched docstrings with captured payloads, and
+   re-ran the full live verification against the final code.
+
+## Live verification summary
+
+| Outcome | Count | Detail |
+| --- | --- | --- |
+| Passed end-to-end | 49 | auth read, signer/tag/field CRUD, document upload→ready→download→thumbnail→page→tags→delete, assignment create/estimate/resend/reset (incl. `null` clear), webhook register/get/inactivate, public info |
+| Wired-correct (401 on invalid code) | 8 | all signer-access-code flows: `get_for_signer`, `signers.get_self`/`accept_terms`/`confirm_data`/`upload_signature`/`download_signature`, `signer_documents.current`/`list`. 401 (not 404) proves verb/path/params are correct; the happy path needs an interactively verified signer session |
+| Dead endpoint (removed) | 1 | `webhooks.delete` → `DELETE …/webhooks/subscriptions` returns 404 |
+| Not testable in this workspace | 1 | `templates.get` (no templates exist in the sandbox account) |
+
+## Findings and actions
+
+| Severity | Finding | Action |
+| --- | --- | --- |
+| Must-fix | `webhooks.delete` hits a non-existent endpoint (live 404) | Removed; `inactivate()` is the documented disable path |
+| Must-fix | `assignments.reset_expiration` rejected `None`, blocking the documented null-to-clear | Now accepts `None` (clears) and rejects `""`; verified live |
+| Should-fix | `assignments` dropped the documented `signers[].step` | Now forwarded for sequential signing |
+| Should-fix | `WebhookVerifier` lacked accessors for the real envelope (`payload`/`subject`/`object`) | Added `get_event_payload`/`get_event_subject`/`get_event_object`; `get_event_data` kept as alias of `get_event_object` |
+| Should-fix | `WebhookVerifier.verify` HMAC scheme is undocumented by the API | Kept (non-destructive) with docstrings stating the Delivery Contract documents no signature mechanism |
+| Nit | `get_api_key` could return `None` but wasn't typed for it | Typed `dict | None` |
+| Quality | Duplicated try/except across `_call*`; repeated list/dict coercion | Consolidated behind `_guard`, `_call_plain_list`, `_call_plain_dict` |
+
+## API coverage
 
 | API area | SDK coverage |
 | --- | --- |
-| Authentication | Login, social login, API key create/get/delete, password change/reset request/reset. Live password/API-key mutation is intentionally not run against production credentials. |
-| Signers | Workspace CRUD, exact-email convenience lookup, self lookup, accept terms, email verification, confirm data, signature upload/download. |
-| Documents | Upload, list, statuses, get, wait, artifact/page/thumbnail download, activities, delete, template document creation/cost estimate, public verify/info/token, document tags. |
-| Templates | List and get. Document creation from templates lives under `client.documents`, matching the documented endpoint group. |
-| Tags | Workspace tag list/create/update/delete, including forced delete and `color: None` clearing. |
-| Assignments | Cost estimate, virtual/collect create, reset expiration, signer view/sign/reject, WhatsApp notifications, resend, resend-cost estimate. |
-| Signer documents | Current document, list, sign/decline multiple, artifact download. |
-| Field definitions | CRUD, single/multiple validation, field type catalog. |
-| Webhooks | Subscription get/update/delete/inactivate, event type catalog, dispatch list/retry, HMAC verifier helper. |
+| Authentication | login, social login, API key create/get/delete, change/request/reset password |
+| Signers | workspace CRUD, exact-email lookup, self, accept-terms, verify-email, confirm-data, signature upload/download |
+| Documents | upload, list, statuses, get, wait, artifact/page/thumbnail download, activities, delete, template create + cost estimate, public verify/info/send-token, document tags |
+| Templates | list, get (single). See gap note below. |
+| Tags | list/create/update/delete (incl. `force` and `color: null`) |
+| Assignments | estimate-cost, virtual/collect create (with `step`), reset-expiration (incl. null), signer view/sign/reject, WhatsApp notifications, resend + resend-cost |
+| Signer documents | current, list, sign/decline multiple, artifact download |
+| Field definitions | CRUD, single/multiple validation, type catalog |
+| Webhooks | subscription get/update/inactivate, event-type catalog, dispatch list/retry, payload-parsing helpers |
 
-## File-by-File Review
+## Known gaps (documented, intentionally not implemented)
 
-| File | Audit notes |
-| --- | --- |
-| `src/assinafy/client.py` | Initializes every resource from one shared `httpx.Client`; now exposes `client.tags`. Auth header selection remains KISS and documented. |
-| `src/assinafy/resources/base.py` | Centralized response unwrapping, pagination parsing, and error normalization are DRY and reusable. |
-| `src/assinafy/resources/documents.py` | Matches document routes and now includes all documented document tag endpoints. Upload validation remains local and conservative. |
-| `src/assinafy/resources/tags.py` | New workspace tag resource follows documented paths and preserves `color: None` for server-side color clearing. |
-| `src/assinafy/resources/signers.py` | Uses documented workspace signer endpoints and signer-access-code flows with hyphenated request aliases. |
-| `src/assinafy/resources/assignments.py` | Normalizes legacy convenience inputs to the documented `signers` shape without removing compatibility. |
-| `src/assinafy/resources/signer_documents.py` | Signer-facing document routes match signer-access-code query requirements. |
-| `src/assinafy/resources/fields.py` | Field CRUD/validation/type catalog match the documented field definition group. |
-| `src/assinafy/resources/templates.py` | Keeps template discovery scoped; template document creation stays on `DocumentResource` where the documented route is defined. |
-| `src/assinafy/resources/webhooks.py` | Covers subscription, event types, dispatches, retry, and inactivation; default event list is explicit. |
-| `src/assinafy/resources/authentication.py` | Request shapes match docs. Production smoke skips destructive/account-sensitive auth mutations without a bearer token. |
-| `src/assinafy/support/webhook_verifier.py` | HMAC helper is isolated and documented as the common scheme, with subclassing guidance for account-specific schemes. |
-| `src/assinafy/types.py` | Public type aliases remain lightweight; no runtime coupling to generated schemas. |
-| `src/assinafy/utils.py` | Shared response/error/query helpers keep parameter aliasing DRY. |
-| `tests/` | Unit coverage now includes tag resource routes and document tag routes, plus additional document endpoint assertions. |
-| `scripts/live_smoke.py` | Now exits non-zero on required live failures, skips API-key-management checks unless `ASSINAFY_ACCESS_TOKEN` is set, and exercises tag/document-tag flows. |
-| `README.md` | Resource coverage and examples updated for tags/document tags; logger contract corrected to `warning`. |
-| `CHANGELOG.md` | Unreleased audit changes documented. |
+- **Template create / update / delete / page-download.** The Template area
+  intro mentions these, and the Template-Object reference lists `POST`/`PUT`
+  endpoints, but the docs provide **no request/response contract** (no body
+  parameters, no examples) for them. They are intentionally not implemented to
+  avoid shipping a guessed contract; add them once Assinafy documents the
+  bodies. `templates.list` and `templates.get` (both documented shapes) are
+  implemented.
 
-## Verification
-
-Commands run:
+## Verification commands
 
 ```bash
-.venv/bin/python -m pytest
+.venv/bin/python -m pytest          # 114 passed
 .venv/bin/ruff check src tests scripts
-.venv/bin/mypy src
-ASSINAFY_API_KEY=... ASSINAFY_ACCOUNT_ID=... PYTHONPATH=src .venv/bin/python scripts/live_smoke.py
+.venv/bin/mypy src                  # strict, clean
+ASSINAFY_API_KEY=... ASSINAFY_ACCOUNT_ID=... \
+  ASSINAFY_BASE_URL=https://sandbox.assinafy.com.br/v1 \
+  PYTHONPATH=src .venv/bin/python scripts/live_smoke.py
 ```
-
-Results:
-
-- `104 passed`
-- `ruff`: all checks passed
-- `mypy`: no issues in `src`
-- Live smoke: passed for API-key-safe production flows; `authentication.get_api_key()` was skipped because it requires a bearer access token.
 
 ## Notes
 
-- The provided API key was used only via process environment variables and was
-  not written to repository files.
-- Destructive authentication/password operations should not be live-tested
-  against production credentials without a dedicated disposable user and token.
+- The sandbox API key was passed only via process environment variables and was
+  never written to repository files.
+- Destructive auth/password operations are not live-tested against shared
+  credentials; assignment-creation in the shipped smoke test is omitted to avoid
+  sending real signer notifications (it is covered by the full audit harness).

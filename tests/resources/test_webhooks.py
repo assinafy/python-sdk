@@ -100,6 +100,11 @@ class TestWebhookResource:
         resource.inactivate()
         assert captured_url[0] == "accounts/acc/webhooks/inactivate"
 
+    def test_no_delete_method_dead_endpoint_removed(self) -> None:
+        # DELETE /accounts/{id}/webhooks/subscriptions returns 404 on the live
+        # API; the documented disable path is inactivate(). Lock the removal in.
+        assert not hasattr(WebhookResource, "delete")
+
     def test_register_requires_url(self) -> None:
         resource = WebhookResource(object(), "acc")  # type: ignore[arg-type]
         with pytest.raises(ValidationError):

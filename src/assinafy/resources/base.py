@@ -43,13 +43,28 @@ class BaseResource:
             raise ValidationError(f"{name} is required")
         return value
 
-    def _call(self, label: str, request_fn: Callable[[], httpx.Response]) -> Any:
+    def _guard(self, label: str, thunk: Callable[[], Any]) -> Any:
+        """Run ``thunk`` and normalize any failure into the SDK error hierarchy.
+
+        Centralizes the single try/except boundary shared by every ``_call*``
+        helper, keeping error translation DRY. The catch is intentionally broad:
+        any exception raised while sending the request or unwrapping the response
+        is coerced to an :class:`AssinafyError` subclass (see
+        :func:`~assinafy.utils.to_sdk_error`) so callers only ever need
+        ``except AssinafyError``.
+        """
         try:
+            return thunk()
+        except Exception as err:
+            raise to_sdk_error(err, label) from err
+
+    def _call(self, label: str, request_fn: Callable[[], httpx.Response]) -> Any:
+        def run() -> Any:
             response = request_fn()
             response.raise_for_status()
             return handle_assinafy_response(response.json())
-        except Exception as err:
-            raise to_sdk_error(err, label) from err
+
+        return self._guard(label, run)
 
     def _call_optional(
         self, label: str, request_fn: Callable[[], httpx.Response]
@@ -62,28 +77,28 @@ class BaseResource:
             raise
 
     def _call_void(self, label: str, request_fn: Callable[[], httpx.Response]) -> None:
-        try:
+        def run() -> None:
             response = request_fn()
             response.raise_for_status()
             try:
                 handle_assinafy_response(response.json())
             except ValueError:
                 pass
-        except Exception as err:
-            raise to_sdk_error(err, label) from err
+
+        self._guard(label, run)
 
     def _call_binary(self, label: str, request_fn: Callable[[], httpx.Response]) -> bytes:
-        try:
+        def run() -> bytes:
             response = request_fn()
             response.raise_for_status()
             return bytes(response.content)
-        except Exception as err:
-            raise to_sdk_error(err, label) from err
+
+        return self._guard(label, run)
 
     def _call_list(
         self, label: str, request_fn: Callable[[], httpx.Response]
     ) -> dict[str, Any]:
-        try:
+        def run() -> dict[str, Any]:
             response = request_fn()
             response.raise_for_status()
             unwrapped = handle_assinafy_response(response.json())
@@ -98,8 +113,28 @@ class BaseResource:
             if meta is not None:
                 result["meta"] = meta
             return result
-        except Exception as err:
-            raise to_sdk_error(err, label) from err
+
+        return self._guard(label, run)
+
+    def _call_plain_list(
+        self, label: str, request_fn: Callable[[], httpx.Response]
+    ) -> list[Any]:
+        """Unwrap an endpoint that returns a bare JSON array (no pagination).
+
+        Coerces a non-list payload to ``[]`` so callers always receive a list.
+        """
+        result = self._call(label, request_fn)
+        return result if isinstance(result, list) else []
+
+    def _call_plain_dict(
+        self, label: str, request_fn: Callable[[], httpx.Response]
+    ) -> dict[str, Any]:
+        """Unwrap an endpoint that returns a single JSON object.
+
+        Coerces a non-dict payload to ``{}`` so callers always receive a dict.
+        """
+        result = self._call(label, request_fn)
+        return result if isinstance(result, dict) else {}
 
 
 def _parse_pagination_meta(headers: Any) -> dict[str, int] | None:

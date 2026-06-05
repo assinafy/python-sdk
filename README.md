@@ -183,12 +183,18 @@ client.assignments.estimate_cost(document_id, {"signers": [{"verification_method
 
 assignment = client.assignments.create(document_id, {
     "method": "virtual",
-    "signers": [{"id": signer["id"]}],
+    "signers": [
+        # `step` controls sequential signing order (signers sharing a step sign
+        # in parallel; the next step is notified once the previous one finishes).
+        {"id": signer_a["id"], "verification_method": "Email", "step": 1},
+        {"id": signer_b["id"], "verification_method": "Email", "step": 2},
+    ],
     "message": "Please review and sign",
     "expires_at": "2026-12-31T00:00:00Z",
 })
 
 client.assignments.reset_expiration(document_id, assignment["id"], "2027-01-31T00:00:00Z")
+client.assignments.reset_expiration(document_id, assignment["id"], None)  # clears expiration
 client.assignments.resend_notification(document_id, assignment["id"], signer["id"])
 client.assignments.estimate_resend_cost(document_id, assignment["id"], signer["id"])
 client.assignments.whatsapp_notifications(document_id, assignment["id"])
@@ -238,25 +244,44 @@ client.webhooks.register({
 })
 
 client.webhooks.get()
-client.webhooks.inactivate()
-client.webhooks.delete()
+client.webhooks.inactivate()  # stops delivery; the API has no DELETE endpoint
 client.webhooks.list_event_types()
 client.webhooks.list_dispatches({"delivered": False, "page": 1, "per_page": 20})
 client.webhooks.retry_dispatch(dispatch_id)
 ```
 
-### Webhook Verification
+A workspace has a single webhook subscription. There is no documented `DELETE`
+endpoint — call `inactivate()` to stop delivery (it preserves the configured
+URL/events) and `register()` again to re-enable.
+
+### Webhooks: Parsing Payloads
+
+Every webhook body shares the documented envelope: `id`, `event`, `message`,
+`payload` (event-specific params), `origin`, `created_at`, `subject` (the entity
+that acted), `object` (the entity acted on), and `account_id`.
+
+```python
+raw_body = request.get_data()
+
+event = client.webhook_verifier.extract_event(raw_body)
+event_type = client.webhook_verifier.get_event_type(event)      # e.g. "document_ready"
+params = client.webhook_verifier.get_event_payload(event)       # event-specific params
+subject = client.webhook_verifier.get_event_subject(event)      # actor (+ "type")
+target = client.webhook_verifier.get_event_object(event)        # target (+ "type")
+# get_event_data(event) is a backward-compatible alias of get_event_object(event)
+```
+
+#### Signature verification
+
+The documented Delivery Contract specifies the HTTP method, `Content-Type`,
+retry, and circuit-breaker behavior, but **does not define any signature header
+or shared-secret scheme**. `verify()` is provided only for accounts that have
+separately arranged an HMAC-SHA256 scheme with Assinafy:
 
 ```python
 signature = request.headers.get("X-Assinafy-Signature", "")
-raw_body = request.get_data()
-
 if not client.webhook_verifier.verify(raw_body, signature):
     return "Invalid signature", 401
-
-event = client.webhook_verifier.extract_event(raw_body)
-event_type = client.webhook_verifier.get_event_type(event)
-event_data = client.webhook_verifier.get_event_data(event)
 ```
 
 ## Query Parameters

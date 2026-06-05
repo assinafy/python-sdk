@@ -22,6 +22,25 @@ class TestBuildAssignmentPayload:
         body = build_assignment_payload({"signers": [{"id": "a"}, {"signer_id": "b"}]})
         assert body["signers"] == [{"id": "a"}, {"id": "b"}]
 
+    def test_forwards_step_for_sequential_signing(self) -> None:
+        body = build_assignment_payload(
+            {
+                "signers": [
+                    {"id": "a", "step": 1},
+                    {"id": "b", "verification_method": "Email", "step": 2},
+                ]
+            }
+        )
+        assert body["signers"] == [
+            {"id": "a", "step": 1},
+            {"id": "b", "verification_method": "Email", "step": 2},
+        ]
+
+    def test_omits_step_when_not_provided(self) -> None:
+        body = build_assignment_payload({"signers": [{"id": "a"}]})
+        assert body["signers"] == [{"id": "a"}]
+        assert "step" not in body["signers"][0]
+
     def test_allows_estimation_payloads_without_signer_ids(self) -> None:
         body = build_assignment_payload(
             {"signers": [{"verification_method": "Whatsapp"}, {}]},
@@ -174,3 +193,32 @@ class TestAssignmentResource:
 
         resource = AssignmentResource(MockHttp(), "acc")
         assert resource.whatsapp_notifications("doc-1", "assignment-1") == [{"sent_at": 1}]
+
+    def test_reset_expiration_sends_iso_timestamp(self) -> None:
+        captured_body: list[object] = []
+
+        class MockHttp:
+            def put(self, url: str, **kwargs: object) -> object:
+                captured_body.append(kwargs.get("json"))
+                return make_response(make_envelope({"id": "a"}))
+
+        resource = AssignmentResource(MockHttp(), "acc")
+        resource.reset_expiration("doc-1", "a", "2030-12-31T00:00:00Z")
+        assert captured_body[0] == {"expires_at": "2030-12-31T00:00:00Z"}
+
+    def test_reset_expiration_allows_none_to_clear(self) -> None:
+        captured_body: list[object] = []
+
+        class MockHttp:
+            def put(self, url: str, **kwargs: object) -> object:
+                captured_body.append(kwargs.get("json"))
+                return make_response(make_envelope({"id": "a", "expires_at": None}))
+
+        resource = AssignmentResource(MockHttp(), "acc")
+        resource.reset_expiration("doc-1", "a", None)
+        assert captured_body[0] == {"expires_at": None}
+
+    def test_reset_expiration_rejects_empty_string(self) -> None:
+        resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError, match="expires_at"):
+            resource.reset_expiration("doc-1", "a", "")

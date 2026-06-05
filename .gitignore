@@ -19,3 +19,4 @@ htmlcov/
 .coverage
 coverage.xml
 *.DS_Store
+.claude/settings.local.json

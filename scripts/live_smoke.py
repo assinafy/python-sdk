@@ -2,6 +2,14 @@
 
 Run with:
     ASSINAFY_API_KEY=... ASSINAFY_ACCOUNT_ID=... .venv/bin/python scripts/live_smoke.py
+
+Point it at the sandbox with:
+    ASSINAFY_BASE_URL=https://sandbox.assinafy.com.br/v1 (defaults to production)
+
+Exercises read paths, signer/tag/field CRUD, document upload + lifecycle,
+cost estimation, document tagging, and the webhook register/get/inactivate
+flow. It intentionally does NOT create assignments (which send real signer
+notifications) or run destructive auth/password mutations.
 """
 from __future__ import annotations
 
@@ -66,7 +74,8 @@ def main() -> int:
         print("Missing ASSINAFY_API_KEY / ASSINAFY_ACCOUNT_ID env vars", file=sys.stderr)
         return 2
 
-    client = AssinafyClient(api_key=api_key, account_id=account_id)
+    base_url = os.environ.get("ASSINAFY_BASE_URL")
+    client = AssinafyClient(api_key=api_key, account_id=account_id, base_url=base_url)
     failures: list[str] = []
 
     print(f"Base URL: {client.get_http_client().base_url}")
@@ -107,6 +116,20 @@ def main() -> int:
         lambda: client.webhooks.list_dispatches({"per_page": 5}),
         failures,
     )
+
+    # Webhook subscription lifecycle (register then inactivate; no DELETE exists).
+    step(
+        "webhooks.register()",
+        lambda: client.webhooks.register(
+            {
+                "url": "https://example.com/sdk-smoke-webhook",
+                "email": "sdk-smoke@assinafy.dev",
+                "events": ["document_ready", "signer_signed_document"],
+            }
+        ),
+        failures,
+    )
+    step("webhooks.inactivate()", lambda: client.webhooks.inactivate(), failures)
 
     access_token = os.environ.get("ASSINAFY_ACCESS_TOKEN")
     if access_token:

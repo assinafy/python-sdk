@@ -17,7 +17,7 @@ _FAILED_STATUSES = frozenset(
 
 
 class DocumentResource(BaseResource):
-    """Document endpoints — upload, list, download, certify, verify."""
+    """Document endpoints — upload, list, download, certify, verify, tag."""
 
     def upload(
         self,
@@ -29,9 +29,21 @@ class DocumentResource(BaseResource):
         ``source`` is either ``{"file_path": "..."}`` or
         ``{"buffer": b"...", "file_name": "name.pdf"}``. The uploader sends
         ``multipart/form-data`` with the documented ``file`` part. Local
-        validation enforces ``.pdf`` extension and the 25 MB API limit.
+        validation enforces a ``.pdf`` extension and the 25 MB API limit (the
+        API additionally limits documents to 2000 pages).
 
         ``options`` may contain ``account_id`` to override the client default.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "document", "id": "1031ff86...",
+             "account_id": "102d25a4...", "template_id": null, "name": "sdk.pdf",
+             "status": "uploaded",
+             "artifacts": {"original": "https://.../download/original"},
+             "is_closed": false, "signing_url": "https://app.../sign/1031ff86...",
+             "decline_reason": null, "declined_by": null, "tags": [],
+             "created_at": "2026-06-05T20:50:43Z",
+             "updated_at": "2026-06-05T20:50:44Z", "pages": []}
         """
         options = options or {}
         buffer, file_name = _load_source(source)
@@ -66,9 +78,28 @@ class DocumentResource(BaseResource):
 
         ``params`` accepts ``page``, ``per_page`` (sent as ``per-page``),
         ``search``, ``sort`` (e.g. ``-updated_at``), ``status``, ``method``,
-        and ``tags``. Returns ``{"data": [...], "meta": {...}}`` where
-        ``meta`` is built from the documented ``x-pagination-*`` response
-        headers.
+        and ``tags`` (comma-separated tag IDs). Returns
+        ``{"data": [...], "meta": {...}}`` where ``meta`` is built from the
+        documented ``x-pagination-*`` response headers.
+
+        Example response (``data`` envelope unwrapped, one item trimmed)::
+
+            {"data": [
+                {"id": "1031ff84...", "account_id": "102d25a4...",
+                 "template_id": null, "name": "contract.pdf",
+                 "status": "metadata_ready",
+                 "artifacts": {"original": "https://.../download/original",
+                               "thumbnail": "https://.../thumbnail"},
+                 "is_closed": false, "signing_url": "https://app.../sign/...",
+                 "decline_reason": null, "declined_by": null,
+                 "tags": [{"id": "1031ff85...", "name": "Contracts",
+                           "color": null}],
+                 "assignment": {"id": "1031ff85...", "method": "virtual",
+                                "expires_at": null, "signers": [...]},
+                 "created_at": "2026-06-05T20:50:33Z",
+                 "updated_at": "2026-06-05T20:50:41Z"}
+             ],
+             "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
@@ -78,15 +109,40 @@ class DocumentResource(BaseResource):
         )
 
     def statuses(self) -> list[dict[str, Any]]:
-        """``GET /documents/statuses`` — list documented status codes."""
-        result = self._call(
+        """``GET /documents/statuses`` — list documented status codes.
+
+        Example response (``data`` envelope unwrapped)::
+
+            [{"code": "uploaded", "deletable": false},
+             {"code": "metadata_ready", "deletable": true},
+             {"code": "pending_signature", "deletable": true},
+             {"code": "certificated", "deletable": false}]
+        """
+        return self._call_plain_list(
             "Failed to list document statuses",
             lambda: self._http.get("documents/statuses"),
         )
-        return result if isinstance(result, list) else []
 
     def get(self, document_id: str) -> dict[str, Any]:
-        """``GET /documents/{document_id}`` — fetch a single document."""
+        """``GET /documents/{document_id}`` — fetch a single document.
+
+        The single-document response embeds ``assignment`` (or ``null``) and
+        ``pages`` once metadata processing completes.
+
+        Example response (``data`` envelope unwrapped, trimmed)::
+
+            {"resource": "document", "id": "1031ff86...",
+             "account_id": "102d25a4...", "name": "sdk.pdf",
+             "status": "metadata_ready",
+             "artifacts": {"original": "https://.../download/original",
+                           "thumbnail": "https://.../thumbnail"},
+             "is_closed": false, "tags": [], "assignment": null,
+             "pages": [{"id": "1031ff87...", "number": 1, "height": 1651,
+                        "width": 1275,
+                        "download_url": "https://.../pages/1031ff87.../download"}],
+             "created_at": "2026-06-05T20:50:43Z",
+             "updated_at": "2026-06-05T20:50:49Z"}
+        """
         doc_id = self._require_id(document_id, "Document ID")
         return self._call(
             "Failed to fetch document details",
@@ -99,13 +155,13 @@ class DocumentResource(BaseResource):
         timeout: float = 30.0,
         poll_interval: float = 2.0,
     ) -> dict[str, Any]:
-        """Poll ``documents.get`` until the document leaves a processing state.
+        """Poll :meth:`get` until the document leaves a processing state.
 
-        Resolves when the status is one of ``metadata_ready``,
-        ``pending_signature``, or ``certificated``. Raises ``ValidationError``
-        if the status reaches a terminal failure (``failed``,
-        ``rejected_by_signer``, ``rejected_by_user``, ``expired``) or if the
-        timeout elapses.
+        Resolves (returning the document) when the status is one of
+        ``metadata_ready``, ``pending_signature``, or ``certificated``. Raises
+        :class:`~assinafy.errors.ValidationError` if the status reaches a
+        terminal failure (``failed``, ``rejected_by_signer``,
+        ``rejected_by_user``, ``expired``) or if the timeout elapses.
         """
         doc_id = self._require_id(document_id, "Document ID")
         deadline = time.monotonic() + timeout
@@ -151,10 +207,11 @@ class DocumentResource(BaseResource):
         document_id: str,
         artifact_name: str = "certificated",
     ) -> bytes:
-        """``GET /documents/{document_id}/download/{artifact_name}``.
+        """``GET /documents/{document_id}/download/{artifact_name}`` — raw bytes.
 
         Valid artifacts: ``original``, ``certificated``, ``certificate-page``,
-        ``bundle``. Returns the raw bytes.
+        ``bundle``. (``certificated``/``bundle`` exist only once the document is
+        certificated.) Returns the raw PDF bytes.
         """
         doc_id = self._require_id(document_id, "Document ID")
         artifact = self._require_id(artifact_name, "Artifact name")
@@ -164,7 +221,7 @@ class DocumentResource(BaseResource):
         )
 
     def thumbnail(self, document_id: str) -> bytes:
-        """``GET /documents/{document_id}/thumbnail`` — first-page thumbnail bytes."""
+        """``GET /documents/{document_id}/thumbnail`` — first-page thumbnail (JPEG bytes)."""
         doc_id = self._require_id(document_id, "Document ID")
         return self._call_binary(
             "Failed to download document thumbnail",
@@ -172,7 +229,11 @@ class DocumentResource(BaseResource):
         )
 
     def download_page(self, document_id: str, page_id: str) -> bytes:
-        """``GET /documents/{document_id}/pages/{page_id}/download``."""
+        """``GET /documents/{document_id}/pages/{page_id}/download`` — page image (JPEG bytes).
+
+        ``page_id`` comes from the ``pages[].id`` of :meth:`get` once metadata
+        processing has produced page renders.
+        """
         doc_id = self._require_id(document_id, "Document ID")
         pid = self._require_id(page_id, "Page ID")
         return self._call_binary(
@@ -181,21 +242,29 @@ class DocumentResource(BaseResource):
         )
 
     def activities(self, document_id: str) -> list[dict[str, Any]]:
-        """``GET /documents/{document_id}/activities`` — event audit log."""
+        """``GET /documents/{document_id}/activities`` — event audit log.
+
+        Example response (``data`` envelope unwrapped)::
+
+            [{"id": 8257, "event": "document_uploaded",
+              "message": "Documento criado.", "payload": [],
+              "origin": {"ip": "99.75.13.162",
+                         "user-agent": "assinafy-python-sdk/1.3.1"},
+              "created_at": "2026-06-05T20:50:44Z"}]
+        """
         doc_id = self._require_id(document_id, "Document ID")
-        result = self._call(
+        return self._call_plain_list(
             "Failed to fetch document activities",
             lambda: self._http.get(f"documents/{doc_id}/activities"),
         )
-        return result if isinstance(result, list) else []
 
     def delete(self, document_id: str) -> None:
-        """``DELETE /documents/{document_id}``.
+        """``DELETE /documents/{document_id}`` — delete a document.
 
         The API only permits deletion when the document is in a deletable
         status (``metadata_ready``, ``expired``, ``pending_signature``,
         ``rejected_by_signer``, ``rejected_by_user``, ``failed``). A 400 is
-        returned otherwise and surfaced as :class:`ApiError`.
+        returned otherwise and surfaced as :class:`~assinafy.errors.ApiError`.
         """
         doc_id = self._require_id(document_id, "Document ID")
         return self._call_void(
@@ -212,10 +281,18 @@ class DocumentResource(BaseResource):
     ) -> dict[str, Any]:
         """``POST /accounts/{account_id}/templates/{template_id}/documents``.
 
-        ``signers`` is the documented list of role assignments
-        (each entry needs ``role_id`` plus ``id``/``verification_method``/...).
-        ``options`` may include ``name``, ``message``, ``expires_at``,
-        ``editor_fields``, ``copy_receivers``.
+        ``signers`` is the documented list of role assignments (each entry needs
+        ``role_id`` plus ``id``/``verification_method``/...). ``options`` may
+        include ``name``, ``message``, ``expires_at``, ``editor_fields``,
+        ``copy_receivers``.
+
+        Example request body (JSON)::
+
+            {"signers": [{"role_id": "role-1", "id": "1031ff86...",
+                          "verification_method": "Email"}],
+             "name": "NDA - John Doe", "message": "Please sign."}
+
+        Returns the created document object (``data`` envelope unwrapped).
         """
         tmpl_id = self._require_id(template_id, "Template ID")
         acc_id = self._account_id(account_id)
@@ -240,7 +317,15 @@ class DocumentResource(BaseResource):
         signers: list[dict[str, Any]],
         account_id: str | None = None,
     ) -> dict[str, Any]:
-        """``POST /accounts/{account_id}/templates/{template_id}/documents/estimate-cost``."""
+        """``POST /accounts/{account_id}/templates/{template_id}/documents/estimate-cost``.
+
+        Example request body (JSON)::
+
+            {"signers": [{"role_id": "role-1", "id": "1031ff86..."}]}
+
+        Returns a cost-estimate object (``data`` envelope unwrapped) with the
+        same shape as :meth:`assinafy.resources.assignments.AssignmentResource.estimate_cost`.
+        """
         tmpl_id = self._require_id(template_id, "Template ID")
         acc_id = self._account_id(account_id)
         if not signers:
@@ -254,7 +339,11 @@ class DocumentResource(BaseResource):
         )
 
     def verify(self, signature_hash: str) -> dict[str, Any]:
-        """``GET /documents/{signature_hash}/verify`` — public verification."""
+        """``GET /documents/{signature_hash}/verify`` — public signature verification.
+
+        Returns the public verification record for a certificated document
+        (``data`` envelope unwrapped).
+        """
         h = self._require_id(signature_hash, "Signature hash")
         return self._call(
             "Failed to verify document",
@@ -262,7 +351,13 @@ class DocumentResource(BaseResource):
         )
 
     def public_info(self, document_id: str) -> dict[str, Any]:
-        """``GET /public/documents/{document_id}`` — public metadata, no auth."""
+        """``GET /public/documents/{document_id}`` — public metadata, no auth required.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "document", "id": "1031ff86...", "name": "sdk.pdf",
+             "page_count": "1", "created_by": "Acme Inc."}
+        """
         doc_id = self._require_id(document_id, "Document ID")
         return self._call(
             "Failed to fetch public document information",
@@ -279,6 +374,10 @@ class DocumentResource(BaseResource):
 
         Sends a 6-digit verification token to ``recipient`` over ``channel``
         (``email`` or ``whatsapp``).
+
+        Example request body (JSON)::
+
+            {"recipient": "signer@example.com", "channel": "email"}
         """
         doc_id = self._require_id(document_id, "Document ID")
         self._require_id(recipient, "Recipient")
@@ -296,14 +395,20 @@ class DocumentResource(BaseResource):
         document_id: str,
         account_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """``GET /accounts/{account_id}/documents/{document_id}/tags``."""
+        """``GET /accounts/{account_id}/documents/{document_id}/tags`` — list document tags.
+
+        Example response (``data`` envelope unwrapped)::
+
+            [{"id": "1031ff86...", "name": "Contracts", "color": null,
+              "created_at": "2026-06-05T20:50:43Z",
+              "updated_at": "2026-06-05T20:50:43Z"}]
+        """
         acc_id = self._account_id(account_id)
         doc_id = self._require_id(document_id, "Document ID")
-        result = self._call(
+        return self._call_plain_list(
             "Failed to list document tags",
             lambda: self._http.get(f"accounts/{acc_id}/documents/{doc_id}/tags"),
         )
-        return result if isinstance(result, list) else []
 
     def replace_tags(
         self,
@@ -311,22 +416,27 @@ class DocumentResource(BaseResource):
         tags: list[str],
         account_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """``PUT /accounts/{account_id}/documents/{document_id}/tags``.
+        """``PUT /accounts/{account_id}/documents/{document_id}/tags`` — replace all tags.
 
-        Replaces all document tags. Passing an empty list is documented and
-        detaches all tags from the document.
+        Replaces all document tags with ``tags`` (a list of tag names). Passing
+        an empty list is documented and detaches all tags from the document.
+
+        Example request body (JSON)::
+
+            {"tags": ["Contracts", "2026-Q1"]}
+
+        Returns the resulting tag list (``data`` envelope unwrapped).
         """
         acc_id = self._account_id(account_id)
         doc_id = self._require_id(document_id, "Document ID")
         body = {"tags": _validate_tag_names(tags, allow_empty=True)}
-        result = self._call(
+        return self._call_plain_list(
             "Failed to replace document tags",
             lambda: self._http.put(
                 f"accounts/{acc_id}/documents/{doc_id}/tags",
                 json=body,
             ),
         )
-        return result if isinstance(result, list) else []
 
     def append_tags(
         self,
@@ -334,18 +444,27 @@ class DocumentResource(BaseResource):
         tags: list[str],
         account_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """``POST /accounts/{account_id}/documents/{document_id}/tags``."""
+        """``POST /accounts/{account_id}/documents/{document_id}/tags`` — add tags.
+
+        Adds ``tags`` (a non-empty list of tag names) to the document without
+        removing existing ones.
+
+        Example request body (JSON)::
+
+            {"tags": ["Urgent"]}
+
+        Returns the resulting tag list (``data`` envelope unwrapped).
+        """
         acc_id = self._account_id(account_id)
         doc_id = self._require_id(document_id, "Document ID")
         body = {"tags": _validate_tag_names(tags, allow_empty=False)}
-        result = self._call(
+        return self._call_plain_list(
             "Failed to append document tags",
             lambda: self._http.post(
                 f"accounts/{acc_id}/documents/{doc_id}/tags",
                 json=body,
             ),
         )
-        return result if isinstance(result, list) else []
 
     def detach_tag(
         self,
@@ -356,17 +475,20 @@ class DocumentResource(BaseResource):
         """``DELETE /accounts/{account_id}/documents/{document_id}/tags/{tag_id}``.
 
         Detaches one tag from a document. The tag resource itself is not deleted.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"detached": true}
         """
         acc_id = self._account_id(account_id)
         doc_id = self._require_id(document_id, "Document ID")
         tid = self._require_id(tag_id, "Tag ID")
-        result = self._call(
+        return self._call_plain_dict(
             "Failed to detach document tag",
             lambda: self._http.delete(
                 f"accounts/{acc_id}/documents/{doc_id}/tags/{tid}"
             ),
         )
-        return result if isinstance(result, dict) else {}
 
 
 def _load_source(source: dict[str, Any]) -> tuple[bytes, str]:

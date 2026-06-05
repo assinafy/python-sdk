@@ -12,16 +12,33 @@ _SIGNATURE_TYPES = frozenset({"signature", "initial"})
 
 
 class SignerResource(BaseResource):
-    """Signer endpoints — workspace CRUD plus signer-access-code flows."""
+    """Signer endpoints — workspace CRUD plus signer-access-code flows.
+
+    The account-scoped methods (``create``/``get``/``list``/``update``/
+    ``delete``) authenticate with the workspace API key. The signer-session
+    methods (``get_self``/``accept_terms``/``verify_email``/``confirm_data``/
+    ``upload_signature``/``download_signature``) authenticate with a
+    per-signer access code obtained through the verification flow.
+    """
 
     def create(
         self, payload: dict[str, Any], account_id: str | None = None
     ) -> dict[str, Any]:
-        """``POST /accounts/{account_id}/signers``.
+        """``POST /accounts/{account_id}/signers`` — create a workspace signer.
 
-        ``payload`` requires ``full_name``. At least one of ``email`` or
-        ``whatsapp_phone_number`` should be present depending on the
-        verification/notification channels you plan to use.
+        ``payload`` requires ``full_name``. Include ``email`` and/or
+        ``whatsapp_phone_number`` (E.164, e.g. ``+5548999990000``) depending on
+        the verification/notification channels you plan to use.
+
+        Example request body (JSON)::
+
+            {"full_name": "John Doe", "email": "john@example.com"}
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "signer", "id": "1031ff86...", "full_name": "John Doe",
+             "email": "john@example.com", "whatsapp_phone_number": null,
+             "has_accepted_terms": false}
         """
         body = _build_signer_payload(payload, require_full_name=True)
         acc_id = self._account_id(account_id)
@@ -32,7 +49,14 @@ class SignerResource(BaseResource):
         )
 
     def get(self, signer_id: str, account_id: str | None = None) -> dict[str, Any]:
-        """``GET /accounts/{account_id}/signers/{signer_id}``."""
+        """``GET /accounts/{account_id}/signers/{signer_id}`` — fetch one signer.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "signer", "id": "1031ff86...", "full_name": "John Doe",
+             "email": "john@example.com", "whatsapp_phone_number": null,
+             "has_accepted_terms": false}
+        """
         acc_id = self._account_id(account_id)
         sid = self._require_id(signer_id, "Signer ID")
         return self._call(
@@ -45,10 +69,19 @@ class SignerResource(BaseResource):
         params: dict[str, Any] | None = None,
         account_id: str | None = None,
     ) -> dict[str, Any]:
-        """``GET /accounts/{account_id}/signers``.
+        """``GET /accounts/{account_id}/signers`` — list workspace signers.
 
-        ``params`` accepts ``page``, ``per_page``, ``search``, ``sort``.
-        Returns ``{"data": [...], "meta": {...}}``.
+        ``params`` accepts ``page``, ``per_page`` (sent as ``per-page``),
+        ``search``, ``sort``. Returns ``{"data": [...], "meta": {...}}``.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"data": [
+                {"id": "19e6b92e...", "full_name": "John Doe",
+                 "email": "john@example.com", "whatsapp_phone_number": null,
+                 "has_accepted_terms": false}
+             ],
+             "meta": {"current_page": 1, "per_page": 20, "total": 3, "last_page": 1}}
         """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
@@ -63,11 +96,17 @@ class SignerResource(BaseResource):
         payload: dict[str, Any],
         account_id: str | None = None,
     ) -> dict[str, Any]:
-        """``PUT /accounts/{account_id}/signers/{signer_id}``.
+        """``PUT /accounts/{account_id}/signers/{signer_id}`` — update a signer.
 
         Verification integrity rules apply server-side: ``email`` cannot be
-        changed once email-verified for an in-flight document, and the same
-        for ``whatsapp_phone_number``.
+        changed once email-verified for an in-flight document, and the same for
+        ``whatsapp_phone_number``.
+
+        Example request body (JSON)::
+
+            {"full_name": "Johnny Doe"}
+
+        Returns the updated signer object (``data`` envelope unwrapped).
         """
         acc_id = self._account_id(account_id)
         sid = self._require_id(signer_id, "Signer ID")
@@ -83,7 +122,7 @@ class SignerResource(BaseResource):
         )
 
     def delete(self, signer_id: str, account_id: str | None = None) -> None:
-        """``DELETE /accounts/{account_id}/signers/{signer_id}``."""
+        """``DELETE /accounts/{account_id}/signers/{signer_id}`` — delete a signer."""
         acc_id = self._account_id(account_id)
         sid = self._require_id(signer_id, "Signer ID")
         return self._call_void(
@@ -94,11 +133,17 @@ class SignerResource(BaseResource):
     def find_by_email(
         self, email: str, account_id: str | None = None
     ) -> dict[str, Any] | None:
-        """Convenience wrapper around ``list`` that filters by exact email.
+        """Convenience wrapper around :meth:`list` that filters by exact email.
 
         Performs ``GET /accounts/{account_id}/signers?search={email}&per-page=100``
         and returns the first signer whose ``email`` matches case-insensitively,
         or ``None``.
+
+        Example return value::
+
+            {"id": "1031ff86...", "full_name": "John Doe",
+             "email": "john@example.com", "whatsapp_phone_number": null,
+             "has_accepted_terms": false}
         """
         _assert_email(email)
         try:
@@ -114,7 +159,17 @@ class SignerResource(BaseResource):
         return None
 
     def get_self(self, signer_access_code: str) -> dict[str, Any]:
-        """``GET /signers/self?signer-access-code={access_code}``."""
+        """``GET /signers/self?signer-access-code={access_code}`` — signer self-view.
+
+        Adds ``has_signature`` / ``has_initial`` flags to the base signer fields.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "signer", "id": "1031ff86...", "full_name": "John Doe",
+             "email": "john@example.com", "whatsapp_phone_number": null,
+             "has_accepted_terms": true, "has_signature": true,
+             "has_initial": false}
+        """
         access_code = self._require_id(signer_access_code, "Signer access code")
         return self._call(
             "Failed to fetch signer self",
@@ -128,7 +183,14 @@ class SignerResource(BaseResource):
         )
 
     def accept_terms(self, signer_access_code: str) -> dict[str, Any]:
-        """``PUT /signers/accept-terms`` with documented hyphenated body."""
+        """``PUT /signers/accept-terms`` — record terms acceptance for a signer.
+
+        The access code is sent in the documented hyphenated body key.
+
+        Example request body (JSON)::
+
+            {"signer-access-code": "9uAWyOXx9hgz..."}
+        """
         access_code = self._require_id(signer_access_code, "Signer access code")
         return self._call(
             "Failed to accept signer terms",
@@ -143,7 +205,14 @@ class SignerResource(BaseResource):
         signer_access_code: str,
         verification_code: str,
     ) -> dict[str, Any]:
-        """``POST /verify`` — confirm the 6-digit token from ``send_token``."""
+        """``POST /verify`` — confirm the 6-digit token from ``send_token``.
+
+        Both keys are sent in the documented hyphenated form.
+
+        Example request body (JSON)::
+
+            {"signer-access-code": "9uAWyOXx9hgz...", "verification-code": "123456"}
+        """
         access_code = self._require_id(signer_access_code, "Signer access code")
         code = self._require_id(verification_code, "Verification code")
         return self._call(
@@ -167,7 +236,12 @@ class SignerResource(BaseResource):
 
         ``payload`` may include ``email``, ``whatsapp_phone_number`` and
         ``has_accepted_terms``. Required fields depend on the signer's
-        verification / notification channel(s) — see the API docs.
+        verification / notification channel(s) — see the API docs. The access
+        code is sent as the ``signer-access-code`` query parameter.
+
+        Example request body (JSON)::
+
+            {"email": "john@example.com", "has_accepted_terms": true}
         """
         doc_id = self._require_id(document_id, "Document ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
@@ -201,7 +275,8 @@ class SignerResource(BaseResource):
     ) -> None:
         """``POST /signature?signer-access-code=...&type={signature|initial}``.
 
-        ``content_type`` must match the actual image bytes (``image/png`` or
+        Uploads the signer's signature (or initials) image. ``content`` is the
+        raw image bytes, sent with a matching ``content_type`` (``image/png`` or
         ``image/jpeg`` per the docs).
         """
         access_code = self._require_id(signer_access_code, "Signer access code")
@@ -229,7 +304,11 @@ class SignerResource(BaseResource):
         signer_access_code: str,
         signature_type: str = "signature",
     ) -> bytes:
-        """``GET /signature/{type}?signer-access-code=...``."""
+        """``GET /signature/{type}?signer-access-code=...`` — download signature bytes.
+
+        ``signature_type`` is ``signature`` or ``initial``. Returns the raw
+        image bytes.
+        """
         access_code = self._require_id(signer_access_code, "Signer access code")
         _assert_signature_type(signature_type)
         return self._call_binary(
