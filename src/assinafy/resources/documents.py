@@ -149,6 +149,81 @@ class DocumentResource(BaseResource):
             lambda: self._http.get(f"documents/{doc_id}"),
         )
 
+    def rename(self, document_id: str, name: str) -> dict[str, Any]:
+        """``PATCH /documents/{document_id}`` — rename a document.
+
+        Only allowed before the signature process starts (the document is in
+        ``uploaded`` or ``metadata_ready`` status with no signers yet); once an
+        assignment exists or the document is certificated the API locks the name
+        and returns a 400. Server-side the name is normalized (diacritics
+        removed) and capped at 255 characters.
+
+        Example request body (JSON)::
+
+            {"name": "Service agreement.pdf"}
+
+        Example response (``data`` envelope unwrapped, trimmed)::
+
+            {"resource": "document", "id": "103b08a1...",
+             "account_id": "102d25a4...", "template_id": null,
+             "name": "Renamed via SDK.pdf", "status": "metadata_ready",
+             "artifacts": {"original": "https://.../download/original",
+                           "thumbnail": "https://.../thumbnail"},
+             "is_closed": false, "tags": [],
+             "created_at": "2026-06-05T20:50:43Z",
+             "updated_at": "2026-06-05T20:50:49Z"}
+        """
+        doc_id = self._require_id(document_id, "Document ID")
+        new_name = self._require_id(name, "Document name")
+        if len(new_name) > 255:
+            raise ValidationError(
+                "Document name must be 255 characters or fewer",
+                {"length": len(new_name)},
+            )
+        return self._call(
+            "Failed to rename document",
+            lambda: self._http.patch(f"documents/{doc_id}", json={"name": new_name}),
+        )
+
+    def search(
+        self,
+        params: dict[str, Any] | None = None,
+        account_id: str | None = None,
+    ) -> dict[str, Any]:
+        """``GET /accounts/{account_id}/documents/search`` — lightweight search.
+
+        A compact counterpart to :meth:`list`: it returns documents **without**
+        the expanded ``assignment`` / ``pages`` fields, which makes it cheaper
+        for autocomplete/typeahead. ``params`` accepts ``search`` (partial match
+        on document name / signer name / signer email), ``status``, and the
+        usual ``page`` / ``per_page`` (sent as ``per-page``) pagination keys.
+        Returns ``{"data": [...], "meta": {...}}`` when the API returns the
+        ``x-pagination-*`` headers.
+
+        Example response (``data`` envelope unwrapped, one item trimmed)::
+
+            {"data": [
+                {"id": "103b08a1...", "account_id": "102d25a4...",
+                 "template_id": null, "name": "Renamed via SDK.pdf",
+                 "status": "metadata_ready",
+                 "artifacts": {"original": "https://.../download/original",
+                               "thumbnail": "https://.../thumbnail"},
+                 "is_closed": false,
+                 "signing_url": "https://app.../sign/103b08a1...",
+                 "decline_reason": null, "declined_by": null, "tags": [],
+                 "created_at": "2026-06-05T20:50:43Z",
+                 "updated_at": "2026-06-05T20:50:49Z"}
+             ]}
+        """
+        acc_id = self._account_id(account_id)
+        cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
+        return self._call_list(
+            "Failed to search documents",
+            lambda: self._http.get(
+                f"accounts/{acc_id}/documents/search", params=cleaned
+            ),
+        )
+
     def wait_until_ready(
         self,
         document_id: str,
@@ -249,7 +324,7 @@ class DocumentResource(BaseResource):
             [{"id": 8257, "event": "document_uploaded",
               "message": "Documento criado.", "payload": [],
               "origin": {"ip": "99.75.13.162",
-                         "user-agent": "assinafy-python-sdk/1.3.2"},
+                         "user-agent": "assinafy-python-sdk/1.4.0"},
               "created_at": "2026-06-05T20:50:44Z"}]
         """
         doc_id = self._require_id(document_id, "Document ID")

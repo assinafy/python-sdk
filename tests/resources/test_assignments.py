@@ -111,6 +111,36 @@ class TestAssignmentResource:
         }
         assert result["id"] == "assignment-1"
 
+    def test_list_scopes_by_account_id_query_param(self) -> None:
+        captured_url: list[str] = []
+        captured_params: list[object] = []
+
+        class MockHttp:
+            def get(self, url: str, **kwargs: object) -> object:
+                captured_url.append(url)
+                captured_params.append(kwargs.get("params"))
+                return make_response(make_envelope([{"id": "assignment-1"}]))
+
+        resource = AssignmentResource(MockHttp(), "acc")
+        result = resource.list({"per_page": 5})
+
+        assert captured_url[0] == "assignments"
+        assert captured_params[0] == {"per-page": 5, "accountId": "acc"}
+        assert result["data"] == [{"id": "assignment-1"}]
+
+    def test_list_allows_account_id_override(self) -> None:
+        captured_params: list[object] = []
+
+        class MockHttp:
+            def get(self, url: str, **kwargs: object) -> object:
+                captured_params.append(kwargs.get("params"))
+                return make_response(make_envelope([]))
+
+        resource = AssignmentResource(MockHttp(), "acc")
+        resource.list(account_id="other-acc")
+
+        assert captured_params[0] == {"accountId": "other-acc"}
+
     def test_resend_notification_requires_all_three_ids(self) -> None:
         class MockHttp:
             def put(self, url: str, **kwargs: object) -> object:

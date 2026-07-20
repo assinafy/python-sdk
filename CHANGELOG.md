@@ -2,6 +2,40 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.4.0] - 2026-07-20
+
+Coverage audit against the authoritative OpenAPI spec
+(`https://api.assinafy.com.br/v1/docs/openapi.json`, 68 paths), re-validated
+end-to-end against the Assinafy sandbox. Adds the documented signing-workflow
+endpoints that the SDK did not yet expose. No breaking changes.
+
+### Added
+
+- `client.documents.rename(document_id, name)` — `PATCH /documents/{id}`. Renames
+  a document while it is still in `uploaded` / `metadata_ready` status (the API
+  locks the name once signing starts). Name is capped at 255 characters.
+- `client.documents.search(params, account_id)` — `GET /accounts/{id}/documents/search`.
+  Lightweight, compact document search (no expanded `assignment` / `pages`),
+  ideal for autocomplete. Accepts `search`, `status`, and pagination params.
+- `client.assignments.list(params, account_id)` — `GET /assignments`. Lists the
+  account's assignments (account context is supplied automatically as the
+  `accountId` query parameter). Returns the standard `{"data": [...], "meta": {...}}`.
+
+### Verified (no change)
+
+- `client.documents.send_token()` sends the documented `{"recipient", "channel"}`
+  body — confirmed correct against the live sandbox (the OpenAPI spec's
+  `{"email"}` shape returns `400 "channel is required"`; live behavior is
+  authoritative).
+- `client.templates.get()` targets a real endpoint
+  (`GET /accounts/{id}/templates/{id}` returns 200 live) even though it is absent
+  from the OpenAPI `paths`.
+
+### Changed
+
+- CI/release workflows: bumped `actions/checkout` and `actions/setup-python`
+  from v6 to v7 (latest majors).
+
 ## [1.3.2] - 2026-06-05
 
 ### Fixed

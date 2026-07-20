@@ -104,6 +104,16 @@ def main() -> int:
         lambda: client.templates.list({"per_page": 5}),
         failures,
     )
+    step(
+        "documents.search(search=sdk)",
+        lambda: client.documents.search({"search": "sdk", "per_page": 5}),
+        failures,
+    )
+    step(
+        "assignments.list(per_page=5)",
+        lambda: client.assignments.list({"per_page": 5}),
+        failures,
+    )
     step("fields.list()", lambda: client.fields.list(), failures)
     step(
         "tags.list(search=sdk-smoke)",
@@ -227,6 +237,11 @@ def main() -> int:
         step(
             "documents.wait_until_ready()",
             lambda: client.documents.wait_until_ready(doc_id, timeout=60),
+            failures,
+        )
+        step(
+            "documents.rename()",
+            lambda: client.documents.rename(doc_id, "sdk-smoke-renamed.pdf"),
             failures,
         )
         step("documents.delete()", lambda: client.documents.delete(doc_id), failures)

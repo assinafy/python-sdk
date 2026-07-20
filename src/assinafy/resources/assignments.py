@@ -75,6 +75,44 @@ def _normalise_signer_ref(ref: Any, allow_without_id: bool) -> dict[str, Any]:
 class AssignmentResource(BaseResource):
     """Assignment endpoints — invitations, signing, notifications."""
 
+    def list(
+        self,
+        params: dict[str, Any] | None = None,
+        account_id: str | None = None,
+    ) -> dict[str, Any]:
+        """``GET /assignments`` — list the account's assignments.
+
+        This endpoint scopes results to an account passed as the ``accountId``
+        query parameter (the client's default account is used when
+        ``account_id`` is omitted). ``params`` accepts the standard ``page`` and
+        ``per_page`` (sent as ``per-page``) pagination keys. Returns
+        ``{"data": [...], "meta": {...}}`` when the API returns ``x-pagination-*``
+        headers.
+
+        Example response (``data`` envelope unwrapped, one item trimmed)::
+
+            {"data": [
+                {"id": "103033c9...", "sender_email": "owner@example.com",
+                 "method": "virtual", "expires_at": null,
+                 "message": "Please sign this contract",
+                 "signers": [
+                    {"id": "19e6b92e...", "full_name": "John Doe",
+                     "email": "john@example.com", "verification_method": "Email",
+                     "notification_methods": ["Email"], "step": 1,
+                     "notified": true, "completed": false,
+                     "has_accepted_terms": false, "notification_history": []}
+                 ]}
+             ],
+             "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
+        """
+        acc_id = self._account_id(account_id)
+        query: dict[str, Any] = {**(params or {}), "accountId": acc_id}
+        cleaned = clean_params(query, QUERY_PARAM_ALIASES)
+        return self._call_list(
+            "Failed to list assignments",
+            lambda: self._http.get("assignments", params=cleaned),
+        )
+
     def create(
         self,
         document_id: str,

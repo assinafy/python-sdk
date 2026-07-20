@@ -94,7 +94,9 @@ doc = client.documents.upload({"buffer": pdf_bytes, "file_name": "contract.pdf"}
 
 client.documents.statuses()
 client.documents.list({"page": 1, "per_page": 20, "tags": "tag-id", "sort": "-updated_at"})
+client.documents.search({"search": "nda", "status": "metadata_ready"})  # lightweight, compact
 client.documents.get(doc["id"])
+client.documents.rename(doc["id"], "Service agreement.pdf")  # before signing starts
 client.documents.activities(doc["id"])
 client.documents.wait_until_ready(doc["id"])
 client.documents.download(doc["id"], "certificated")
@@ -179,6 +181,7 @@ client.signers.download_signature(signer_access_code, "signature")
 ### Assignments
 
 ```python
+client.assignments.list({"page": 1, "per_page": 20})  # assignments for the account
 client.assignments.estimate_cost(document_id, {"signers": [{"verification_method": "Email"}]})
 
 assignment = client.assignments.create(document_id, {

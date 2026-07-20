@@ -1,49 +1,50 @@
 # Assinafy Python SDK Audit
 
-- Audit date: 2026-06-05
-- SDK version: 1.3.2
+- Audit date: 2026-07-20
+- SDK version: 1.4.0
 - Reference: https://api.assinafy.com.br/v1/docs
+  (authoritative spec: https://api.assinafy.com.br/v1/docs/openapi.json — 68 paths)
 - Live validation: Assinafy sandbox (`https://sandbox.assinafy.com.br/v1`)
 
 ## Result
 
-The SDK conforms to the documented API surface and is validated end-to-end
-against the live sandbox. Every documented endpoint that the SDK exposes was
-exercised against the sandbox; one non-existent endpoint was removed and two
-conformance bugs were fixed. Local tests (114), `ruff`, and `mypy --strict`
-pass. Every public method's docstring carries a real request/response payload.
+The SDK conforms to the live API and is validated end-to-end against the
+sandbox. This audit fetched the machine-readable OpenAPI spec (not just the HTML
+reference), diffed it path-by-path against the SDK, and live-tested the gaps.
+Three documented signing-workflow endpoints were missing and have been added;
+two prior "unverifiable" items were confirmed correct against the live API. The
+full local suite (120 tests), `ruff`, and `mypy --strict` pass, and a 31-step
+live smoke test against the sandbox passes with zero failures.
 
 ## Method
 
-1. Parsed the full HTML API reference into per-section specs.
-2. Instrumented the SDK's `httpx` client and called **every** SDK method against
-   the sandbox, capturing real request/response payloads.
-3. Ran a file-by-file conformance + quality audit (one reviewer per resource)
-   cross-referencing SDK ↔ docs ↔ live payloads, with adversarial verification
-   of every must-fix finding.
-4. Applied verified fixes, enriched docstrings with captured payloads, and
-   re-ran the full live verification against the final code.
+1. Downloaded the OpenAPI 3.0 spec and enumerated all 68 documented paths.
+2. Extracted every HTTP call the SDK makes and diffed it against the spec.
+3. Probed each divergence directly against the live sandbox (real requests) to
+   determine ground truth — the spec is imperfect, so **live behavior is
+   authoritative**.
+4. Implemented the missing signing-workflow endpoints with docstrings carrying
+   real captured payloads, added unit tests, and re-ran the full verification
+   (local suite + live smoke).
 
 ## Live verification summary
 
-| Outcome | Count | Detail |
-| --- | --- | --- |
-| Passed end-to-end | 49 | auth read, signer/tag/field CRUD, document upload→ready→download→thumbnail→page→tags→delete, assignment create/estimate/resend/reset (incl. `null` clear), webhook register/get/inactivate, public info |
-| Wired-correct (401 on invalid code) | 8 | all signer-access-code flows: `get_for_signer`, `signers.get_self`/`accept_terms`/`confirm_data`/`upload_signature`/`download_signature`, `signer_documents.current`/`list`. 401 (not 404) proves verb/path/params are correct; the happy path needs an interactively verified signer session |
-| Dead endpoint (removed) | 1 | `webhooks.delete` → `DELETE …/webhooks/subscriptions` returns 404 |
-| Not testable in this workspace | 1 | `templates.get` (no templates exist in the sandbox account) |
+| Outcome | Detail |
+| --- | --- |
+| Live smoke passed | 31 steps: reads, signer/tag/field CRUD, document upload→ready→**rename**→delete, **documents.search**, **assignments.list**, cost estimate, document tagging, webhook register/get/inactivate |
+| New endpoints live-tested through the SDK | `documents.rename` (upload→wait→rename→delete), `documents.search` (compact results, pagination meta), `assignments.list` (13 assignments, 7 pages of pagination) |
+| Signer bootstrap verified | `send-token` accepts the SDK's `{recipient, channel}` body (200); spec's `{email}` returns 400. Signer-access-code endpoints return 401 on an invalid code (verb/path/params correct; auth is checked before the body) |
 
 ## Findings and actions
 
 | Severity | Finding | Action |
 | --- | --- | --- |
-| Must-fix | `webhooks.delete` hits a non-existent endpoint (live 404) | Removed; `inactivate()` is the documented disable path |
-| Must-fix | `assignments.reset_expiration` rejected `None`, blocking the documented null-to-clear | Now accepts `None` (clears) and rejects `""`; verified live |
-| Should-fix | `assignments` dropped the documented `signers[].step` | Now forwarded for sequential signing |
-| Should-fix | `WebhookVerifier` lacked accessors for the real envelope (`payload`/`subject`/`object`) | Added `get_event_payload`/`get_event_subject`/`get_event_object`; `get_event_data` kept as alias of `get_event_object` |
-| Should-fix | `WebhookVerifier.verify` HMAC scheme is undocumented by the API | Kept (non-destructive) with docstrings stating the Delivery Contract documents no signature mechanism |
-| Nit | `get_api_key` could return `None` but wasn't typed for it | Typed `dict | None` |
-| Quality | Duplicated try/except across `_call*`; repeated list/dict coercion | Consolidated behind `_guard`, `_call_plain_list`, `_call_plain_dict` |
+| Coverage | `PATCH /documents/{id}` (rename) was documented + live but not exposed | Added `documents.rename()` |
+| Coverage | `GET /accounts/{id}/documents/search` (lightweight search) not exposed | Added `documents.search()` |
+| Coverage | `GET /assignments` (list assignments) not exposed | Added `assignments.list()` (account context via the `accountId` query param, discovered by live probing) |
+| Verified | Spec claims `send-token` body is `{email}` | Live-confirmed the SDK's `{recipient, channel}` is correct; spec is wrong. No change |
+| Verified | `templates.get` targets a path absent from the OpenAPI `paths` | Live-confirmed `GET /accounts/{id}/templates/{id}` returns 200. No change |
+| Best practice | CI/release pinned `actions/checkout@v6`, `actions/setup-python@v6` | Bumped both to v7 (latest majors) |
 
 ## API coverage
 
@@ -51,39 +52,62 @@ pass. Every public method's docstring carries a real request/response payload.
 | --- | --- |
 | Authentication | login, social login, API key create/get/delete, change/request/reset password |
 | Signers | workspace CRUD, exact-email lookup, self, accept-terms, verify-email, confirm-data, signature upload/download |
-| Documents | upload, list, statuses, get, wait, artifact/page/thumbnail download, activities, delete, template create + cost estimate, public verify/info/send-token, document tags |
-| Templates | list, get (single). See gap note below. |
+| Documents | upload, list, **search**, statuses, get, **rename**, wait, artifact/page/thumbnail download, activities, delete, template create + cost estimate, public verify/info/send-token, document tags |
+| Templates | list, get (single) |
 | Tags | list/create/update/delete (incl. `force` and `color: null`) |
-| Assignments | estimate-cost, virtual/collect create (with `step`), reset-expiration (incl. null), signer view/sign/reject, WhatsApp notifications, resend + resend-cost |
+| Assignments | **list**, estimate-cost, virtual/collect create (with `step`), reset-expiration (incl. null), signer view/sign/reject, WhatsApp notifications, resend + resend-cost |
 | Signer documents | current, list, sign/decline multiple, artifact download |
 | Field definitions | CRUD, single/multiple validation, type catalog |
 | Webhooks | subscription get/update/inactivate, event-type catalog, dispatch list/retry, payload-parsing helpers |
 
 ## Known gaps (documented, intentionally not implemented)
 
-- **Template create / update / delete / page-download.** The Template area
-  intro mentions these, and the Template-Object reference lists `POST`/`PUT`
-  endpoints, but the docs provide **no request/response contract** (no body
-  parameters, no examples) for them. They are intentionally not implemented to
-  avoid shipping a guessed contract; add them once Assinafy documents the
-  bodies. `templates.list` and `templates.get` (both documented shapes) are
-  implemented.
+Per the agreed scope, the SDK targets the **document/signing workflow**. The
+following documented endpoints are deliberately excluded and can be added if the
+scope expands:
+
+- **Workspace administration** — `GET/POST /accounts`, `GET/PUT/DELETE
+  /accounts/{id}` (incl. workspace deletion), `GET/POST/DELETE
+  /accounts/{id}/logo`, `GET /accounts/{id}/theme`. Admin/branding concerns
+  outside the signing flow.
+- **Current user** — `GET /users/self`. Returns the authenticated user profile;
+  not needed for signing.
+- **Stats** — `GET /accounts/{id}/stats`, `GET /users/self/stats`. Documented but
+  return `404` on the sandbox (not deployed); omitted until they are live.
+- **Browser OAuth flows** — `GET /auth/authenticate`, `GET /login-callback`,
+  `POST /auth/link-social-login`. Redirect-based flows for interactive browsers,
+  not a server-side SDK.
+- **Template create / update / delete / page-download.** The spec references
+  these but provides no request/response body contract; not implemented to avoid
+  shipping a guessed shape.
+
+## Signer happy-path (email-gated)
+
+The signer-side signing flow (`get_for_signer` → `verify_email` → `confirm_data`
+→ `upload_signature` → `sign`) authenticates with a per-signer access code that
+Assinafy delivers only by email/WhatsApp to the signer. These endpoints are
+proven wired-correct (401 on an invalid code — the API validates auth before the
+body). Fully exercising the happy path requires reading the signer's inbox to
+extract the access code; see the audit conversation for the live invitation sent
+to the test address.
 
 ## Verification commands
 
 ```bash
-.venv/bin/python -m pytest          # 114 passed
+.venv/bin/python -m pytest          # 120 passed
 .venv/bin/ruff check src tests scripts
 .venv/bin/mypy src                  # strict, clean
 ASSINAFY_API_KEY=... ASSINAFY_ACCOUNT_ID=... \
   ASSINAFY_BASE_URL=https://sandbox.assinafy.com.br/v1 \
-  PYTHONPATH=src .venv/bin/python scripts/live_smoke.py
+  PYTHONPATH=src .venv/bin/python scripts/live_smoke.py   # 31 steps, 0 failures
 ```
 
 ## Notes
 
-- The sandbox API key was passed only via process environment variables and was
-  never written to repository files.
-- Destructive auth/password operations are not live-tested against shared
-  credentials; assignment-creation in the shipped smoke test is omitted to avoid
-  sending real signer notifications (it is covered by the full audit harness).
+- The sandbox API key was passed only via process environment variables / direct
+  request headers and was never written to repository files.
+- The live smoke test registers and inactivates a webhook subscription; because
+  the sandbox has a single shared subscription, the audit restored the original
+  `webhook.site` subscription afterward.
+- Assignment creation in the shipped smoke test remains omitted to avoid sending
+  real signer notifications; the full audit exercised it separately.

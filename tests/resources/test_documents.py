@@ -32,6 +32,11 @@ class MockHttp:
         self.last_kwargs = dict(kwargs)
         return make_response(make_envelope({"detached": True}))
 
+    def patch(self, url: str, **kwargs: object) -> object:
+        self.last_url = url
+        self.last_kwargs = dict(kwargs)
+        return make_response(make_envelope({"id": "doc-1", "name": "New name.pdf"}))
+
 
 class TestDocumentResource:
     def test_upload_posts_only_multipart_file_to_documented_endpoint(self) -> None:
@@ -51,6 +56,37 @@ class TestDocumentResource:
         resource.list({"page": 1, "per_page": 20})
 
         assert http.last_kwargs["params"] == {"page": 1, "per-page": 20}
+
+    def test_rename_patches_document_with_name_body(self) -> None:
+        http = MockHttp()
+        resource = DocumentResource(http, "acc")
+
+        result = resource.rename("doc-1", "New name.pdf")
+
+        assert http.last_url == "documents/doc-1"
+        assert http.last_kwargs["json"] == {"name": "New name.pdf"}
+        assert result["name"] == "New name.pdf"
+
+    def test_rename_requires_non_empty_name(self) -> None:
+        resource = DocumentResource(MockHttp(), "acc")
+
+        with pytest.raises(ValidationError, match="Document name is required"):
+            resource.rename("doc-1", "")
+
+    def test_rename_rejects_name_over_255_chars(self) -> None:
+        resource = DocumentResource(MockHttp(), "acc")
+
+        with pytest.raises(ValidationError, match="255 characters"):
+            resource.rename("doc-1", "x" * 256)
+
+    def test_search_hits_lightweight_endpoint_with_aliased_params(self) -> None:
+        http = MockHttp()
+        resource = DocumentResource(http, "acc")
+
+        resource.search({"search": "nda", "per_page": 5})
+
+        assert http.last_url == "accounts/acc/documents/search"
+        assert http.last_kwargs["params"] == {"search": "nda", "per-page": 5}
 
     def test_statuses_hits_global_endpoint(self) -> None:
         http = MockHttp()
