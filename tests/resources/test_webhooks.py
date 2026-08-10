@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from assinafy.errors import ValidationError
 from assinafy.resources.webhooks import WebhookResource
-from tests.conftest import make_envelope, make_response
+from tests.conftest import MockResponse, make_envelope, make_response
 
 
 class TestWebhookResource:
-    def test_register_defaults_include_document_prepared(self) -> None:
+    def test_register_defaults_include_document_prepared_when_no_subscription_exists(
+        self,
+    ) -> None:
         captured_body: list[object] = []
 
         class MockHttp:
+            def get(self, url: str, **kwargs: object) -> object:
+                return make_response(make_envelope(None))
+
             def put(self, url: str, **kwargs: object) -> object:
                 captured_body.append(kwargs.get("json"))
                 return make_response(make_envelope({"is_active": True}))
@@ -36,6 +42,97 @@ class TestWebhookResource:
             ],
             "is_active": True,
         }
+
+    def test_register_preserves_existing_events_and_active_state_on_partial_update(
+        self,
+    ) -> None:
+        captured_body: list[object] = []
+
+        class MockHttp:
+            def get(self, url: str, **kwargs: object) -> object:
+                return make_response(
+                    make_envelope(
+                        {
+                            "url": "https://old.example.com/webhook",
+                            "email": "ops@example.com",
+                            "events": ["document_ready"],
+                            "is_active": False,
+                        }
+                    )
+                )
+
+            def put(self, url: str, **kwargs: object) -> object:
+                captured_body.append(kwargs.get("json"))
+                return make_response(make_envelope({"is_active": False}))
+
+        resource = WebhookResource(MockHttp(), "acc")
+        resource.register({"url": "https://new.example.com/webhook", "email": "ops@example.com"})
+
+        assert captured_body[0] == {
+            "url": "https://new.example.com/webhook",
+            "email": "ops@example.com",
+            "events": ["document_ready"],
+            "is_active": False,
+        }
+
+    def test_register_explicit_empty_events_clears_instead_of_defaulting(
+        self,
+    ) -> None:
+        captured_body: list[object] = []
+
+        class MockHttp:
+            def get(self, url: str, **kwargs: object) -> object:
+                return make_response(make_envelope(None))
+
+            def put(self, url: str, **kwargs: object) -> object:
+                captured_body.append(kwargs.get("json"))
+                return make_response(make_envelope({"is_active": True}))
+
+        resource = WebhookResource(MockHttp(), "acc")
+        resource.register(
+            {"url": "https://example.com/webhook", "email": "ops@example.com", "events": []}
+        )
+
+        assert captured_body[0]["events"] == []
+
+    def test_get_returns_unwrapped_subscription(self) -> None:
+        class MockHttp:
+            def get(self, url: str, **kwargs: object) -> object:
+                return make_response(make_envelope({"url": "https://example.com/hook"}))
+
+        resource = WebhookResource(MockHttp(), "acc")
+        result = resource.get()
+        assert result == {"url": "https://example.com/hook"}
+
+    def test_get_returns_none_on_404(self) -> None:
+        class NotFoundResponse(MockResponse):
+            def raise_for_status(self) -> None:
+                raise httpx.HTTPStatusError(
+                    "404",
+                    request=httpx.Request("GET", "https://x/webhooks/subscriptions"),
+                    response=httpx.Response(404, json={"status": 404, "message": "Not found"}),
+                )
+
+        class MockHttp:
+            def get(self, url: str, **kwargs: object) -> object:
+                return NotFoundResponse(json_data={"status": 404, "message": "Not found"})
+
+        resource = WebhookResource(MockHttp(), "acc")
+        assert resource.get() is None
+
+    def test_retry_dispatch_hits_documented_endpoint(self) -> None:
+        captured_url: list[str] = []
+
+        class MockHttp:
+            def post(self, url: str, **kwargs: object) -> object:
+                captured_url.append(url)
+                return make_response(make_envelope({"id": "dispatch-1"}))
+
+        resource = WebhookResource(MockHttp(), "acc")
+        result = resource.retry_dispatch("dispatch-1")
+
+        assert captured_url[0] == "accounts/acc/webhooks/dispatch-1/retry"
+        assert result["id"] == "dispatch-1"
 
     def test_list_event_types_calls_global_endpoint(self) -> None:
         captured_url: list[str] = []

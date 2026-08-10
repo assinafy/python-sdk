@@ -18,8 +18,10 @@ class FieldResource(BaseResource):
         """``POST /accounts/{account_id}/fields`` — create a custom field.
 
         ``payload`` requires ``type`` (one of the values returned by
-        :meth:`list_types`) and ``name``. Optional: ``regex``, ``is_required``,
-        ``is_read_only``, ``is_visible``.
+        :meth:`list_types`) and ``name``. Optional: ``regex``, ``is_required``.
+        ``is_read_only``/``is_visible`` are server-controlled response fields,
+        not accepted create input (confirmed live: passing them is silently
+        ignored).
 
         Example request body (JSON)::
 
@@ -59,9 +61,9 @@ class FieldResource(BaseResource):
         ``x-pagination-*`` headers)::
 
             {"data": [
-                {"id": "102d25a4...", "name": "Nome", "type": "personName",
-                 "regex": null, "is_pre_defined": true, "is_active": true,
-                 "is_required": false, "is_standard": false,
+                {"resource": "field_definition", "id": "102d25a4...", "name": "Nome",
+                 "type": "personName", "regex": null, "is_pre_defined": true,
+                 "is_active": true, "is_required": false, "is_standard": false,
                  "is_read_only": false, "is_visible": true}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 11, "last_page": 1}}
@@ -98,15 +100,19 @@ class FieldResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /accounts/{account_id}/fields/{field_id}`` — update a field.
 
+        Passing ``{"regex": None}`` is preserved and clears the field's regex,
+        matching :meth:`~assinafy.resources.tags.TagResource.update`'s handling
+        of ``color: None``.
+
         Example request body (JSON)::
 
-            {"name": "CPF updated"}
+            {"name": "CPF updated"}    # or {"regex": null} to clear the regex
 
         Returns the updated field-definition object (``data`` envelope unwrapped).
         """
         acc_id = self._account_id(account_id)
         fid = self._require_id(field_id, "Field ID")
-        body = clean_params(payload)
+        body = {k: v for k, v in payload.items() if k == "regex" or v is not None}
         if not body:
             raise ValidationError("At least one field attribute is required")
         return self._call(

@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: test (Python ${{ matrix.python-version }})
@@ -34,11 +37,14 @@ jobs:
       - name: Lint (ruff)
         run: ruff check src tests
 
+      - name: Format check (ruff)
+        run: ruff format --check src tests
+
       - name: Type check (mypy)
         run: mypy src
 
       - name: Test (pytest)
-        run: pytest -q
+        run: pytest -q --cov=assinafy --cov-report=term-missing
 
   build:
     name: build distribution

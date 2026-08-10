@@ -6,11 +6,14 @@ Run with:
 Point it at the sandbox with:
     ASSINAFY_BASE_URL=https://sandbox.assinafy.com.br/v1 (defaults to production)
 
-Exercises read paths, signer/tag/field CRUD, document upload + lifecycle,
-cost estimation, document tagging, and the webhook register/get/inactivate
-flow. It intentionally does NOT create assignments (which send real signer
-notifications) or run destructive auth/password mutations.
+Exercises read paths, signer/tag/field CRUD (including clearing a field's
+regex), template lookup and cost estimation, document upload + lifecycle,
+assignment cost estimation, document tagging, and the webhook
+register/get/inactivate flow. It intentionally does NOT create assignments
+(which send real signer notifications) or run destructive auth/password
+mutations.
 """
+
 from __future__ import annotations
 
 import os
@@ -99,11 +102,19 @@ def main() -> int:
         lambda: client.signers.list({"per_page": 5}),
         failures,
     )
-    step(
+    templates = step(
         "templates.list(per_page=5)",
         lambda: client.templates.list({"per_page": 5}),
         failures,
     )
+    template_id = None
+    if isinstance(templates, dict) and templates.get("data"):
+        template_id = templates["data"][0]["id"]
+        step(
+            "templates.get(real id)",
+            lambda: client.templates.get(template_id),
+            failures,
+        )
     step(
         "documents.search(search=sdk)",
         lambda: client.documents.search({"search": "sdk", "per_page": 5}),
@@ -120,7 +131,7 @@ def main() -> int:
         lambda: client.tags.list({"search": "sdk-smoke"}),
         failures,
     )
-    step("webhooks.get()", lambda: client.webhooks.get(), failures)
+    original_webhook_subscription = step("webhooks.get()", lambda: client.webhooks.get(), failures)
     step(
         "webhooks.list_dispatches(per_page=5)",
         lambda: client.webhooks.list_dispatches({"per_page": 5}),
@@ -128,6 +139,8 @@ def main() -> int:
     )
 
     # Webhook subscription lifecycle (register then inactivate; no DELETE exists).
+    # A workspace has exactly one subscription, so this temporarily overwrites
+    # whatever was configured before -- restore it (or the SDK default) at the end.
     step(
         "webhooks.register()",
         lambda: client.webhooks.register(
@@ -140,6 +153,12 @@ def main() -> int:
         failures,
     )
     step("webhooks.inactivate()", lambda: client.webhooks.inactivate(), failures)
+    if isinstance(original_webhook_subscription, dict) and original_webhook_subscription.get("url"):
+        step(
+            "webhooks.register() restores the pre-existing subscription",
+            lambda: client.webhooks.register(original_webhook_subscription),
+            failures,
+        )
 
     access_token = os.environ.get("ASSINAFY_ACCESS_TOKEN")
     if access_token:
@@ -161,9 +180,7 @@ def main() -> int:
     signer_email = f"sdk-smoke+{timestamp}@assinafy.dev"
     signer = step(
         "signers.create() new signer",
-        lambda: client.signers.create(
-            {"full_name": "SDK Smoke Test", "email": signer_email}
-        ),
+        lambda: client.signers.create({"full_name": "SDK Smoke Test", "email": signer_email}),
         failures,
     )
     signer_id = signer["id"] if isinstance(signer, dict) else None
@@ -199,13 +216,33 @@ def main() -> int:
             failures,
         )
 
+    field = step(
+        "fields.create()",
+        lambda: client.fields.create({"type": "text", "name": f"sdk-smoke-field-{timestamp}"}),
+        failures,
+    )
+    field_id = field["id"] if isinstance(field, dict) else None
+    if field_id:
+        step(
+            "fields.update() sets a regex",
+            lambda: client.fields.update(field_id, {"regex": "^[0-9]+$"}),
+            failures,
+        )
+        cleared = step(
+            "fields.update() clears the regex with None",
+            lambda: client.fields.update(field_id, {"regex": None}),
+            failures,
+        )
+        if isinstance(cleared, dict) and cleared.get("regex") is not None:
+            print("  WARNING: regex was not actually cleared -- got", cleared.get("regex"))
+            failures.append("fields.update() regex-clear did not take effect")
+        step("fields.delete()", lambda: client.fields.delete(field_id), failures)
+
     # 3. Document upload + estimate-cost + cleanup
     pdf_bytes = _make_minimal_pdf()
     doc = step(
         "documents.upload()",
-        lambda: client.documents.upload(
-            {"buffer": pdf_bytes, "file_name": "sdk-smoke.pdf"}
-        ),
+        lambda: client.documents.upload({"buffer": pdf_bytes, "file_name": "sdk-smoke.pdf"}),
         failures,
     )
     doc_id = doc["id"] if isinstance(doc, dict) else None
@@ -230,6 +267,17 @@ def main() -> int:
                 lambda: client.assignments.estimate_cost(
                     doc_id,
                     {"method": "virtual", "signers": [{"id": signer_id}]},
+                ),
+                failures,
+            )
+
+    if template_id:
+        role_id = templates["data"][0].get("roles", [{}])[0].get("id")
+        if role_id:
+            step(
+                "documents.estimate_cost_from_template()",
+                lambda: client.documents.estimate_cost_from_template(
+                    template_id, [{"role_id": role_id}]
                 ),
                 failures,
             )

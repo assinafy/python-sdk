@@ -119,7 +119,7 @@ class TagResource(BaseResource):
             "Failed to delete tag",
             lambda: self._http.delete(
                 f"accounts/{acc_id}/tags/{tid}",
-                params=clean_params({"force": True if force else None}),
+                params=clean_params({"force": force or None}),
             ),
         )
 

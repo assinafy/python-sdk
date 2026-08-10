@@ -41,27 +41,48 @@ class SignerDocumentResource(BaseResource):
     def list(
         self,
         signer_id: str,
-        signer_access_code: str | None = None,
+        signer_access_code: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """``GET /signers/{signer_id}/documents?signer-access-code=...``.
 
         ``params`` accepts ``page``, ``per_page``, ``status``, ``method``
         (``virtual``/``collect``), ``search``, and ``sort`` (``name``,
-        ``updated_at``). The signer-access-code is appended as a query parameter.
+        ``updated_at``). This endpoint requires the signer access code (the
+        documented security scheme for every signer-facing endpoint); an
+        omitted/invalid code always returns 401.
         Returns ``{"data": [...], "meta": {...}}``.
         """
         sid = self._require_id(signer_id, "Signer ID")
-        query = dict(params or {})
-        if signer_access_code is not None:
-            query["signer_access_code"] = self._require_id(
-                signer_access_code,
-                "Signer access code",
-            )
+        access_code = self._require_id(signer_access_code, "Signer access code")
+        query = {**(params or {}), "signer_access_code": access_code}
         cleaned = clean_params(query, QUERY_PARAM_ALIASES)
         return self._call_list(
             "Failed to list signer documents",
             lambda: self._http.get(f"signers/{sid}/documents", params=cleaned),
+        )
+
+    def search(
+        self,
+        signer_id: str,
+        signer_access_code: str,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        """``GET /signers/{signer_id}/documents/search?signer-access-code=...``.
+
+        Lightweight, compact counterpart to :meth:`list` (no pagination
+        parameters are documented for this endpoint). ``search`` is an optional
+        partial-match term. Returns ``{"data": [...]}``.
+        """
+        sid = self._require_id(signer_id, "Signer ID")
+        access_code = self._require_id(signer_access_code, "Signer access code")
+        cleaned = clean_params(
+            {"search": search, "signer_access_code": access_code},
+            QUERY_PARAM_ALIASES,
+        )
+        return self._call_list(
+            "Failed to search signer documents",
+            lambda: self._http.get(f"signers/{sid}/documents/search", params=cleaned),
         )
 
     def sign_multiple(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..errors import ValidationError
+from ..types import SignerReference
 from ..utils import QUERY_PARAM_ALIASES, clean_params
 from .base import BaseResource
 
@@ -25,7 +26,9 @@ def build_assignment_payload(
     """
     method = payload.get("method", "virtual")
     raw_signers = payload.get("signers") or payload.get("signer_ids") or []
-    signers = list(raw_signers) if isinstance(raw_signers, (list, tuple)) else []
+    signers: list[SignerReference] = (
+        list(raw_signers) if isinstance(raw_signers, (list, tuple)) else []
+    )
     entries = payload.get("entries")
 
     if not signers and not (method == "collect" and entries):
@@ -44,13 +47,11 @@ def build_assignment_payload(
         }
     )
     if signers:
-        body["signers"] = [
-            _normalise_signer_ref(ref, allow_signers_without_id) for ref in signers
-        ]
+        body["signers"] = [_normalise_signer_ref(ref, allow_signers_without_id) for ref in signers]
     return body
 
 
-def _normalise_signer_ref(ref: Any, allow_without_id: bool) -> dict[str, Any]:
+def _normalise_signer_ref(ref: SignerReference, allow_without_id: bool) -> dict[str, Any]:
     if isinstance(ref, str):
         if not ref:
             raise ValidationError("Signer ID cannot be empty")
@@ -163,9 +164,13 @@ class AssignmentResource(BaseResource):
         """
         doc_id = self._require_id(document_id, "Document ID")
         body = build_assignment_payload(payload)
+        if not body.get("signers"):
+            raise ValidationError(
+                "At least one signer is required", {"signers": payload.get("signers")}
+            )
         self._logger.info(
             "Creating assignment",
-            {"document_id": doc_id, "signers": len(payload.get("signers") or [])},
+            {"document_id": doc_id, "signers": len(body.get("signers") or [])},
         )
         return self._call(
             "Failed to create assignment",
@@ -396,9 +401,7 @@ class AssignmentResource(BaseResource):
         sid = self._require_id(signer_id, "Signer ID")
         return self._call(
             "Failed to resend signer notification",
-            lambda: self._http.put(
-                f"documents/{doc_id}/assignments/{asg_id}/signers/{sid}/resend"
-            ),
+            lambda: self._http.put(f"documents/{doc_id}/assignments/{asg_id}/signers/{sid}/resend"),
         )
 
     def estimate_resend_cost(

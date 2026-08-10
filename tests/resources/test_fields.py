@@ -56,6 +56,20 @@ class TestFieldResource:
         resource.delete("field-1")
         assert http.last_url == "accounts/acc/fields/field-1"
 
+    def test_update_preserves_explicit_none_to_clear_regex(self) -> None:
+        http = MockHttp()
+        resource = FieldResource(http, "acc")
+
+        resource.update("field-1", {"name": "CPF", "regex": None})
+
+        assert http.last_kwargs["json"] == {"name": "CPF", "regex": None}
+
+    def test_update_requires_at_least_one_field(self) -> None:
+        resource = FieldResource(MockHttp(), "acc")
+
+        with pytest.raises(ValidationError):
+            resource.update("field-1", {})
+
     def test_validate_uses_hyphenated_signer_access_code_param(self) -> None:
         http = MockHttp()
         resource = FieldResource(http, "acc")
@@ -65,6 +79,27 @@ class TestFieldResource:
         assert http.last_url == "accounts/acc/fields/field-1/validate"
         assert http.last_kwargs["params"] == {"signer-access-code": "code"}
         assert http.last_kwargs["json"] == {"value": "123"}
+
+    def test_validate_multiple_posts_documented_endpoint(self) -> None:
+        class ListHttp(MockHttp):
+            def post(self, url: str, **kwargs: object) -> object:
+                self.last_url = url
+                self.last_kwargs = dict(kwargs)
+                return make_response(make_envelope([{"field_id": "field-1", "success": True}]))
+
+        http = ListHttp()
+        resource = FieldResource(http, "acc")
+
+        result = resource.validate_multiple([{"field_id": "field-1", "value": "hi"}])
+
+        assert http.last_url == "accounts/acc/fields/validate-multiple"
+        assert http.last_kwargs["json"] == [{"field_id": "field-1", "value": "hi"}]
+        assert result == [{"field_id": "field-1", "success": True}]
+
+    def test_validate_multiple_requires_at_least_one_value(self) -> None:
+        resource = FieldResource(MockHttp(), "acc")
+        with pytest.raises(ValidationError, match="field value"):
+            resource.validate_multiple([])
 
     def test_list_types_hits_global_endpoint(self) -> None:
         http = MockHttp()

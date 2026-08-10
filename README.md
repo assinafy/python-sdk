@@ -43,6 +43,11 @@ result = client.upload_and_request_signatures(
 print(result["document"]["id"])
 ```
 
+`upload_and_request_signatures` chains three calls (upload, create each signer,
+create the assignment) and is not transactional — a failure partway through
+does not roll back what already succeeded. It also accepts `wait_timeout` /
+`wait_poll_interval` to override the default document-readiness poll.
+
 ## Authentication
 
 Prefer `api_key`; it is sent as the documented `X-Api-Key` header. `token` sends `Authorization: Bearer <token>` for legacy/user-token flows.
@@ -173,8 +178,10 @@ client.signers.confirm_data(
     document_id,
     signer_access_code,
     {"email": "john@example.com", "has_accepted_terms": True},
+    # also accepts "full_name" and "government_id"
 )
 client.signers.upload_signature(signer_access_code, png_bytes, "signature")
+client.signers.upload_signature(signer_access_code, png_bytes, reuse=True)  # sets is_signature_reusable
 client.signers.download_signature(signer_access_code, "signature")
 ```
 
@@ -216,6 +223,7 @@ client.assignments.decline(document_id, assignment_id, "I do not agree.", signer
 ```python
 client.signer_documents.current(signer_id, signer_access_code)
 client.signer_documents.list(signer_id, signer_access_code, {"status": "pending_signature"})
+client.signer_documents.search(signer_id, signer_access_code, "contract")  # lightweight, compact
 client.signer_documents.sign_multiple(["doc-1", "doc-2"], signer_access_code)
 client.signer_documents.decline_multiple(["doc-1"], "Unfavorable terms.", signer_access_code)
 client.signer_documents.download(signer_id, document_id, signer_access_code, "original")
@@ -314,9 +322,10 @@ except AssinafyError as err:
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest --cov=assinafy --cov-report=term-missing
 mypy src
 ruff check src tests
+ruff format --check src tests
 ```
 
 ### Live smoke test
@@ -325,9 +334,12 @@ ruff check src tests
 ASSINAFY_API_KEY=... ASSINAFY_ACCOUNT_ID=... python scripts/live_smoke.py
 ```
 
-Hits the live API to confirm read endpoints, signer CRUD, document upload,
-document tagging, tag CRUD, ``wait_until_ready`` polling, cost estimation, and
-cleanup all work end-to-end.
+Hits the live API to confirm read endpoints, signer/tag/field CRUD (including
+clearing a field's regex), template lookup and cost estimation, document
+upload, document tagging, ``wait_until_ready`` polling, cost estimation, and
+cleanup all work end-to-end. It saves and restores the workspace's webhook
+subscription around its own register/inactivate test, since a workspace only
+has one.
 
 ## License
 

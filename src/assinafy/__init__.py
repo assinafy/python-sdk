@@ -4,6 +4,8 @@ Synchronous client for the Assinafy digital-signature API
 (https://api.assinafy.com.br/v1/docs).
 """
 
+from __future__ import annotations
+
 from .client import AssinafyClient
 from .errors import ApiError, AssinafyError, NetworkError, ValidationError
 from .resources.assignments import AssignmentResource
@@ -25,7 +27,7 @@ from .types import (
     WebhookEventType,
 )
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 __all__ = [
     "ApiError",

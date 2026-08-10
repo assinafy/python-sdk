@@ -111,6 +111,18 @@ class TestAssignmentResource:
         }
         assert result["id"] == "assignment-1"
 
+    def test_create_requires_signers_even_for_collect_method(self) -> None:
+        class MockHttp:
+            def post(self, url: str, **kwargs: object) -> object:
+                return make_response(make_envelope({"id": "assignment-1"}))
+
+        resource = AssignmentResource(MockHttp(), "acc")
+        with pytest.raises(ValidationError, match="signer"):
+            resource.create(
+                "doc-1",
+                {"method": "collect", "entries": [{"page_id": "page-1", "fields": []}]},
+            )
+
     def test_list_scopes_by_account_id_query_param(self) -> None:
         captured_url: list[str] = []
         captured_params: list[object] = []
@@ -252,3 +264,17 @@ class TestAssignmentResource:
         resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
         with pytest.raises(ValidationError, match="expires_at"):
             resource.reset_expiration("doc-1", "a", "")
+
+    def test_estimate_resend_cost_posts_to_documented_endpoint(self) -> None:
+        captured_url: list[str] = []
+
+        class MockHttp:
+            def post(self, url: str, **kwargs: object) -> object:
+                captured_url.append(url)
+                return make_response(make_envelope({"total": 0}))
+
+        resource = AssignmentResource(MockHttp(), "acc")
+        result = resource.estimate_resend_cost("doc-1", "a", "s")
+
+        assert captured_url[0] == ("documents/doc-1/assignments/a/signers/s/estimate-resend-cost")
+        assert result == {"total": 0}

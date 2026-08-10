@@ -16,8 +16,9 @@ class BaseResource:
     All resources share the same ``httpx.Client`` from :class:`AssinafyClient`,
     a default account ID, and a logger. Response handling goes through a small
     set of helpers (``_call``, ``_call_optional``, ``_call_void``,
-    ``_call_binary``, ``_call_list``) so envelope handling, error normalization,
-    and pagination meta parsing live in one place.
+    ``_call_binary``, ``_call_list``, ``_call_plain_list``, ``_call_plain_dict``)
+    so envelope handling, error normalization, and pagination meta parsing live
+    in one place.
     """
 
     def __init__(
@@ -66,9 +67,7 @@ class BaseResource:
 
         return self._guard(label, run)
 
-    def _call_optional(
-        self, label: str, request_fn: Callable[[], httpx.Response]
-    ) -> Any:
+    def _call_optional(self, label: str, request_fn: Callable[[], httpx.Response]) -> Any:
         try:
             return self._call(label, request_fn)
         except ApiError as err:
@@ -95,9 +94,7 @@ class BaseResource:
 
         return self._guard(label, run)
 
-    def _call_list(
-        self, label: str, request_fn: Callable[[], httpx.Response]
-    ) -> dict[str, Any]:
+    def _call_list(self, label: str, request_fn: Callable[[], httpx.Response]) -> dict[str, Any]:
         def run() -> dict[str, Any]:
             response = request_fn()
             response.raise_for_status()
@@ -116,9 +113,7 @@ class BaseResource:
 
         return self._guard(label, run)
 
-    def _call_plain_list(
-        self, label: str, request_fn: Callable[[], httpx.Response]
-    ) -> list[Any]:
+    def _call_plain_list(self, label: str, request_fn: Callable[[], httpx.Response]) -> list[Any]:
         """Unwrap an endpoint that returns a bare JSON array (no pagination).
 
         Coerces a non-list payload to ``[]`` so callers always receive a list.
@@ -153,8 +148,6 @@ def _parse_pagination_meta(headers: Any) -> dict[str, int] | None:
 
 
 def _read_header(headers: Any, key: str) -> str | None:
-    if not hasattr(headers, "get"):
-        return None
     value = headers.get(key)
     if value is None:
         return None

@@ -2,6 +2,121 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.5.0] - 2026-08-10
+
+Full file-by-file conformance review against the live OpenAPI spec
+(`https://api.assinafy.com.br/v1/docs/openapi.json`, 66 paths as of this
+release) and the Assinafy sandbox, covering every resource, the core HTTP
+plumbing, the test suite, and CI/CD. Adds one confirmed-missing endpoint,
+fixes several real bugs (three of them confirmed against live sandbox
+responses), and closes test-coverage gaps across the board. No functionality
+was removed without first confirming — live, where possible — that the
+existing behavior was actually broken. See `CONFORMANCE.md` for the full
+findings breakdown.
+
+### Added
+
+- `client.signer_documents.search(signer_id, signer_access_code, search=None)`
+  — `GET /signers/{signer_id}/documents/search`. Lightweight, compact
+  counterpart to `signer_documents.list()`, matching how `documents.search()`
+  was added in 1.4.0.
+- `client.signers.upload_signature(..., reuse=None)` — documented `reuse`
+  query parameter on `POST /signature`, controlling the signer's
+  `is_signature_reusable` flag.
+- `client.signers.confirm_data()` now also accepts `full_name` and
+  `government_id`, matching the documented request schema (kept the existing
+  `whatsapp_phone_number` / `has_accepted_terms` fields rather than removing
+  them, since this endpoint's full request/response has never been
+  live-tested with a real signer session).
+- `client.upload_and_request_signatures(..., wait_timeout=30.0, wait_poll_interval=2.0)`
+  — forwarded to `documents.wait_until_ready` (previously hardcoded).
+
+### Fixed
+
+- `client.documents.create_from_template()` — an `options` dict containing its
+  own `signers` key could silently override the already-validated `signers`
+  argument with an empty list. `signers` now always wins.
+- `client.documents.wait_until_ready()` no longer swallows a persistent `404`
+  (document not found) into a generic timeout error; it now re-raises the
+  `ApiError` immediately, since waiting can never resolve it.
+- `client.assignments.create()` now requires `signers` unconditionally
+  (matching its own documented schema — the sibling `estimate_cost()` keeps
+  its more lenient rule where `collect` may omit signers). Previously a
+  `method: "collect"` request with no `signers` was sent to the API with no
+  client-side error.
+- `client.assignments.create()`'s log line now counts signers from the
+  normalized request body instead of the raw payload, so it no longer reports
+  0 signers when the caller uses the legacy `signer_ids` alias.
+- `client.fields.update()` silently dropped an explicit `{"regex": None}`,
+  making it impossible to clear a field's regex — **confirmed live**: the
+  regex remained set after the call. Now mirrors `tags.update()`'s handling of
+  `color: None`.
+- `client.webhooks.register()` treated an explicit `events=[]` the same as
+  "omitted" and replaced it with the curated default — an empty list is now
+  preserved as-is.
+- `client.webhooks.register()` no longer silently reactivates an inactivated
+  subscription or collapses a custom event list on a partial update (e.g. only
+  rotating `url`): an omitted `events`/`is_active` now defaults from the
+  *current* subscription instead of a hardcoded default, so a partial call
+  can't clobber existing configuration. First-time registration (no existing
+  subscription) is unaffected.
+- `client.signer_documents.list()` now requires `signer_access_code` (previously
+  optional-but-effectively-useless, since the API always 401s without it) —
+  aligned with every sibling signer-facing method.
+- `scripts/live_smoke.py` now saves the workspace's webhook subscription
+  before its register/inactivate test and restores it exactly at the end,
+  instead of relying on a human to notice and fix it out-of-band afterward.
+
+### Changed
+
+- **Breaking:** `client.documents.upload(source, options=None)` is now
+  `upload(source, account_id=None)`, matching every sibling resource method's
+  `account_id` convention. Migration: replace
+  `documents.upload(source, {"account_id": "..."})` with
+  `documents.upload(source, "...")`.
+- `fields.create()`'s docstring no longer lists `is_read_only`/`is_visible` as
+  accepted input — **confirmed live** that the API silently ignores them; they
+  are server-controlled response fields only.
+- `signers.confirm_data()` now raises `ValidationError` on an empty body
+  instead of silently sending `{}`, matching `signers.update()`.
+- Corrected several docstring examples to match the live/resolved-spec
+  contract: `create_from_template` (dropped undocumented `copy_receivers`,
+  added `tags`), `estimate_cost_from_template` (dropped an undocumented `id`
+  field from the example), `signers.get_self` (added the documented
+  `is_signature_reusable` flag), `documents.statuses()` (full 11-status list),
+  `fields.list()` (added the missing `resource` field).
+- CI: added `permissions: contents: read` to both workflows, a concurrency
+  group to `release.yml`, `ruff format --check`, and `pytest --cov` reporting.
+  Verified `actions/checkout@v7`, `actions/setup-python@v7`,
+  `actions/upload-artifact@v7`, `actions/download-artifact@v8`, and
+  `pypa/gh-action-pypi-publish@release/v1` are all still current; verified the
+  Python 3.10–3.14 CI matrix covers every currently-supported CPython release
+  (3.15 is prerelease-only as of this writing).
+- `assinafy.types.SignerReference` is now actually used in
+  `assignments.py`'s signer-normalization signatures instead of sitting
+  unused in `__all__`.
+- Simplified `BaseResource._read_header`'s dead `hasattr` guard (every real
+  and test-mocked `headers` object has `.get`).
+
+### Verified (no change)
+
+- `templates.get()` targeting `GET /accounts/{id}/templates/{id}` (absent from
+  the OpenAPI `paths`) still returns 200 live.
+- `documents.public_info()`'s reduced response shape matches its docstring.
+- `fields.list()`/`templates.list()`'s documented `search`/`page`/`per-page`/
+  `sort` params are backed by the spec's global "Searching, paginating and
+  sorting" contract (not per-operation `parameters`, which only enumerate a
+  subset) — no docstring change needed for the resources that only claimed
+  these four.
+- 169 unit tests pass (up from 120); `ruff check`, `ruff format --check`, and
+  `mypy --strict` are all clean.
+- Live sandbox run: read paths, signer/tag/field CRUD (incl. the regex-clear
+  fix), template lookup + cost estimate, document upload → ready → rename →
+  delete, a real assignment invitation sent to two real test inboxes
+  (estimate-cost, reset-expiration incl. null-clear, resend-notification,
+  estimate-resend-cost, whatsapp-notifications), and the webhook
+  register/inactivate/restore cycle all pass end-to-end.
+
 ## [1.4.0] - 2026-07-20
 
 Coverage audit against the authoritative OpenAPI spec

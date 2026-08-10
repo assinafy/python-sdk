@@ -33,10 +33,14 @@ class WebhookResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /accounts/{account_id}/webhooks/subscriptions`` — upsert subscription.
 
-        ``payload`` requires ``url`` and ``email``. ``events`` defaults to a
-        curated subset (:data:`_DEFAULT_EVENTS`) when omitted — pass an explicit
-        list (see :meth:`list_event_types`) for full control. ``is_active``
-        defaults to ``True``.
+        ``payload`` requires ``url`` and ``email``. Since a workspace has a
+        single subscription, an omitted ``events`` or ``is_active`` is filled in
+        from the *current* subscription (so a partial call — e.g. only rotating
+        ``url`` — can't silently reactivate an inactivated subscription or
+        collapse a custom event list). If no subscription exists yet, ``events``
+        defaults to a curated subset (:data:`_DEFAULT_EVENTS`) and ``is_active``
+        defaults to ``True``. Pass an explicit ``events=[]`` to genuinely clear
+        all events (it is not treated as "omitted").
 
         Example request body (JSON)::
 
@@ -63,20 +67,27 @@ class WebhookResource(BaseResource):
             raise ValidationError("Webhook email is required")
 
         acc_id = self._account_id(account_id)
+        current = self.get(acc_id)
+
         events = payload.get("events")
+        if events is None:
+            events = (current or {}).get("events") if current else _DEFAULT_EVENTS
+
+        is_active = payload.get("is_active")
+        if is_active is None:
+            is_active = (current or {}).get("is_active", True) if current else True
+
         body = {
             "url": payload["url"],
             "email": payload["email"],
-            "events": events if events else _DEFAULT_EVENTS,
-            "is_active": payload.get("is_active", True),
+            "events": events,
+            "is_active": is_active,
         }
 
         self._logger.info("Registering webhook", {"url": payload["url"]})
         return self._call(
             "Failed to register webhook",
-            lambda: self._http.put(
-                f"accounts/{acc_id}/webhooks/subscriptions", json=body
-            ),
+            lambda: self._http.put(f"accounts/{acc_id}/webhooks/subscriptions", json=body),
         )
 
     def get(self, account_id: str | None = None) -> dict[str, Any] | None:

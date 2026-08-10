@@ -4,16 +4,14 @@ import os
 import time
 from typing import Any
 
-from ..errors import ValidationError
+from ..errors import ApiError, ValidationError
 from ..utils import QUERY_PARAM_ALIASES, clean_params
 from .base import BaseResource
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 _READY_STATUSES = frozenset({"metadata_ready", "pending_signature", "certificated"})
-_FAILED_STATUSES = frozenset(
-    {"failed", "rejected_by_signer", "rejected_by_user", "expired"}
-)
+_FAILED_STATUSES = frozenset({"failed", "rejected_by_signer", "rejected_by_user", "expired"})
 
 
 class DocumentResource(BaseResource):
@@ -22,7 +20,7 @@ class DocumentResource(BaseResource):
     def upload(
         self,
         source: dict[str, Any],
-        options: dict[str, Any] | None = None,
+        account_id: str | None = None,
     ) -> dict[str, Any]:
         """``POST /accounts/{account_id}/documents`` — upload a PDF.
 
@@ -32,7 +30,7 @@ class DocumentResource(BaseResource):
         validation enforces a ``.pdf`` extension and the 25 MB API limit (the
         API additionally limits documents to 2000 pages).
 
-        ``options`` may contain ``account_id`` to override the client default.
+        ``account_id`` overrides the client's default account for this call.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -45,19 +43,16 @@ class DocumentResource(BaseResource):
              "created_at": "2026-06-05T20:50:43Z",
              "updated_at": "2026-06-05T20:50:44Z", "pages": []}
         """
-        options = options or {}
         buffer, file_name = _load_source(source)
         _validate_upload(buffer, file_name)
 
-        account_id = self._account_id(options.get("account_id"))
-        self._logger.info(
-            "Uploading document", {"file_name": file_name, "size": len(buffer)}
-        )
+        acc_id = self._account_id(account_id)
+        self._logger.info("Uploading document", {"file_name": file_name, "size": len(buffer)})
 
         document: dict[str, Any] = self._call(
             "Document upload failed",
             lambda: self._http.post(
-                f"accounts/{account_id}/documents",
+                f"accounts/{acc_id}/documents",
                 files={"file": (file_name, buffer, "application/pdf")},
             ),
         )
@@ -111,12 +106,19 @@ class DocumentResource(BaseResource):
     def statuses(self) -> list[dict[str, Any]]:
         """``GET /documents/statuses`` — list documented status codes.
 
-        Example response (``data`` envelope unwrapped)::
+        Example response (``data`` envelope unwrapped, full set)::
 
-            [{"code": "uploaded", "deletable": false},
+            [{"code": "uploading", "deletable": false},
+             {"code": "uploaded", "deletable": false},
+             {"code": "metadata_processing", "deletable": false},
              {"code": "metadata_ready", "deletable": true},
+             {"code": "expired", "deletable": true},
+             {"code": "certificating", "deletable": false},
+             {"code": "certificated", "deletable": false},
+             {"code": "rejected_by_signer", "deletable": true},
              {"code": "pending_signature", "deletable": true},
-             {"code": "certificated", "deletable": false}]
+             {"code": "rejected_by_user", "deletable": true},
+             {"code": "failed", "deletable": true}]
         """
         return self._call_plain_list(
             "Failed to list document statuses",
@@ -219,9 +221,7 @@ class DocumentResource(BaseResource):
         cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
         return self._call_list(
             "Failed to search documents",
-            lambda: self._http.get(
-                f"accounts/{acc_id}/documents/search", params=cleaned
-            ),
+            lambda: self._http.get(f"accounts/{acc_id}/documents/search", params=cleaned),
         )
 
     def wait_until_ready(
@@ -237,6 +237,8 @@ class DocumentResource(BaseResource):
         :class:`~assinafy.errors.ValidationError` if the status reaches a
         terminal failure (``failed``, ``rejected_by_signer``,
         ``rejected_by_user``, ``expired``) or if the timeout elapses.
+        Re-raises immediately (no retry) if the document can't be found at all
+        (``404``), since that will never resolve by waiting.
         """
         doc_id = self._require_id(document_id, "Document ID")
         deadline = time.monotonic() + timeout
@@ -252,17 +254,19 @@ class DocumentResource(BaseResource):
                 document = self.get(doc_id)
             except ValidationError:
                 raise
+            except ApiError as err:
+                if err.status_code == 404:
+                    raise
+                self._logger.warning("Error checking document status", {"error": str(err)})
+                time.sleep(poll_interval)
+                continue
             except Exception as err:
-                self._logger.warning(
-                    "Error checking document status", {"error": str(err)}
-                )
+                self._logger.warning("Error checking document status", {"error": str(err)})
                 time.sleep(poll_interval)
                 continue
 
             status = document.get("status", "unknown")
-            self._logger.debug(
-                "Document status check", {"attempts": attempts, "status": status}
-            )
+            self._logger.debug("Document status check", {"attempts": attempts, "status": status})
             if status in _READY_STATUSES:
                 return document
             if status in _FAILED_STATUSES:
@@ -359,7 +363,7 @@ class DocumentResource(BaseResource):
         ``signers`` is the documented list of role assignments (each entry needs
         ``role_id`` plus ``id``/``verification_method``/...). ``options`` may
         include ``name``, ``message``, ``expires_at``, ``editor_fields``,
-        ``copy_receivers``.
+        ``tags``.
 
         Example request body (JSON)::
 
@@ -373,7 +377,9 @@ class DocumentResource(BaseResource):
         acc_id = self._account_id(account_id)
         if not signers:
             raise ValidationError("At least one signer is required")
-        body: dict[str, Any] = {"signers": signers, **(options or {})}
+        # `signers` is applied last so an `options` dict can never silently
+        # override the just-validated list (e.g. a stray "signers" key in options).
+        body: dict[str, Any] = {**(options or {}), "signers": signers}
         self._logger.info(
             "Creating document from template",
             {"template_id": tmpl_id, "account_id": acc_id},
@@ -394,9 +400,13 @@ class DocumentResource(BaseResource):
     ) -> dict[str, Any]:
         """``POST /accounts/{account_id}/templates/{template_id}/documents/estimate-cost``.
 
+        Unlike :meth:`create_from_template`, contact information is not required
+        here — only ``role_id`` and optionally ``verification_method`` /
+        ``notification_methods`` per signer.
+
         Example request body (JSON)::
 
-            {"signers": [{"role_id": "role-1", "id": "1031ff86..."}]}
+            {"signers": [{"role_id": "role-1"}]}
 
         Returns a cost-estimate object (``data`` envelope unwrapped) with the
         same shape as :meth:`assinafy.resources.assignments.AssignmentResource.estimate_cost`.
@@ -560,9 +570,7 @@ class DocumentResource(BaseResource):
         tid = self._require_id(tag_id, "Tag ID")
         return self._call_plain_dict(
             "Failed to detach document tag",
-            lambda: self._http.delete(
-                f"accounts/{acc_id}/documents/{doc_id}/tags/{tid}"
-            ),
+            lambda: self._http.delete(f"accounts/{acc_id}/documents/{doc_id}/tags/{tid}"),
         )
 
 

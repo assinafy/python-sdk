@@ -19,7 +19,7 @@ from .support.webhook_verifier import WebhookVerifier
 from .types import Logger
 from .utils import create_noop_logger
 
-_SDK_VERSION = "1.4.0"
+_SDK_VERSION = "1.5.0"
 _DEFAULT_BASE_URL = "https://api.assinafy.com.br/v1"
 _USER_AGENT = f"assinafy-python-sdk/{_SDK_VERSION}"
 
@@ -88,6 +88,8 @@ class AssinafyClient:
         signers: list[dict[str, Any]],
         message: str | None = None,
         wait_for_ready: bool = True,
+        wait_timeout: float = 30.0,
+        wait_poll_interval: float = 2.0,
         expires_at: str | None = None,
         copy_receivers: list[str] | None = None,
         account_id: str | None = None,
@@ -100,6 +102,12 @@ class AssinafyClient:
         2. ``POST /accounts/{account_id}/signers`` for each signer dict
         3. ``POST /documents/{document_id}/assignments`` with ``method=virtual``
 
+        The three calls are not transactional: if signer creation or assignment
+        creation fails partway through, the uploaded document and any signers
+        already created are left in place (no automatic rollback). Inspect the
+        raised error's context or call the individual resource methods directly
+        if you need finer-grained control or cleanup.
+
         Args:
             source: Either ``{"file_path": "..."}`` or
                 ``{"buffer": b"...", "file_name": "..."}``.
@@ -108,6 +116,10 @@ class AssinafyClient:
             message: Optional message included in signer notifications.
             wait_for_ready: If ``True`` (default), poll ``documents.get`` until
                 the document leaves ``uploaded`` / ``metadata_processing``.
+            wait_timeout: Forwarded to ``documents.wait_until_ready`` when
+                ``wait_for_ready`` is ``True``.
+            wait_poll_interval: Forwarded to ``documents.wait_until_ready`` when
+                ``wait_for_ready`` is ``True``.
             expires_at: Optional ISO 8601 expiration timestamp.
             copy_receivers: Optional list of email addresses to copy on the
                 signature invitation.
@@ -119,19 +131,15 @@ class AssinafyClient:
         if not signers:
             raise ValidationError("At least one signer is required")
 
-        self._logger.info(
-            "Starting upload + signature workflow", {"signer_count": len(signers)}
-        )
+        self._logger.info("Starting upload + signature workflow", {"signer_count": len(signers)})
 
-        document = self.documents.upload(
-            source, {"account_id": account_id} if account_id else None
-        )
+        document = self.documents.upload(source, account_id)
         if wait_for_ready:
-            self.documents.wait_until_ready(document["id"])
+            self.documents.wait_until_ready(
+                document["id"], timeout=wait_timeout, poll_interval=wait_poll_interval
+            )
 
-        signer_ids = [
-            self.signers.create(signer, account_id)["id"] for signer in signers
-        ]
+        signer_ids = [self.signers.create(signer, account_id)["id"] for signer in signers]
 
         assignment_payload: dict[str, Any] = {"method": "virtual", "signers": signer_ids}
         if message is not None:
@@ -142,9 +150,7 @@ class AssinafyClient:
             assignment_payload["copy_receivers"] = copy_receivers
 
         assignment = self.assignments.create(document["id"], assignment_payload)
-        self._logger.info(
-            "Upload + signature workflow completed", {"document_id": document["id"]}
-        )
+        self._logger.info("Upload + signature workflow completed", {"document_id": document["id"]})
         return {"document": document, "assignment": assignment, "signer_ids": signer_ids}
 
     def get_http_client(self) -> httpx.Client:

@@ -69,6 +69,19 @@ class TestSignerResource:
         with pytest.raises(ValidationError, match="Signer ID"):
             resource.delete("")
 
+    def test_get_fetches_single_signer_by_id(self) -> None:
+        http = MockHttp()
+        resource = SignerResource(http, "acc")
+
+        resource.get("signer-1")
+
+        assert http.last_url == "accounts/acc/signers/signer-1"
+
+    def test_get_requires_signer_id(self) -> None:
+        resource = SignerResource(MockHttp(), "acc")
+        with pytest.raises(ValidationError, match="Signer ID"):
+            resource.get("")
+
     def test_create_posts_only_documented_fields(self) -> None:
         http = MockHttp()
         resource = SignerResource(http, "acc")
@@ -101,9 +114,7 @@ class TestSignerResource:
         http = MockHttp()
         resource = SignerResource(http, "acc")
 
-        resource.create(
-            {"full_name": "John", "whatsapp_phone_number": "+5548999990000"}
-        )
+        resource.create({"full_name": "John", "whatsapp_phone_number": "+5548999990000"})
 
         assert http.last_kwargs["json"] == {
             "full_name": "John",
@@ -114,9 +125,7 @@ class TestSignerResource:
         http = MockHttp()
         resource = SignerResource(http, "default-account")
 
-        resource.create(
-            {"full_name": "John", "email": "john@example.com"}, "custom-account"
-        )
+        resource.create({"full_name": "John", "email": "john@example.com"}, "custom-account")
 
         assert http.last_url == "accounts/custom-account/signers"
 
@@ -167,9 +176,7 @@ class TestSignerResource:
         class TrackingHttp(MockHttp):
             def get(self, url: str, **kwargs: object) -> object:
                 return make_response(
-                    make_envelope(
-                        [{"id": "1", "full_name": "John", "email": "JOHN@EXAMPLE.COM"}]
-                    )
+                    make_envelope([{"id": "1", "full_name": "John", "email": "JOHN@EXAMPLE.COM"}])
                 )
 
         resource = SignerResource(TrackingHttp(), "acc")
@@ -237,6 +244,42 @@ class TestSignerResource:
         }
         assert http.last_kwargs["content"] == b"binary-png"
         assert http.last_kwargs["headers"] == {"Content-Type": "image/png"}
+
+    def test_upload_signature_forwards_reuse_flag(self) -> None:
+        http = MockHttp()
+        resource = SignerResource(http, "acc")
+
+        resource.upload_signature("code", b"binary-png", reuse=True)
+
+        assert http.last_kwargs["params"] == {
+            "signer-access-code": "code",
+            "type": "signature",
+            "reuse": True,
+        }
+
+    def test_upload_signature_omits_reuse_when_not_given(self) -> None:
+        http = MockHttp()
+        resource = SignerResource(http, "acc")
+
+        resource.upload_signature("code", b"binary-png")
+
+        assert "reuse" not in http.last_kwargs["params"]
+
+    def test_confirm_data_accepts_full_name_and_government_id(self) -> None:
+        http = MockHttp()
+        resource = SignerResource(http, "acc")
+
+        resource.confirm_data("doc-1", "code", {"full_name": "John Doe", "government_id": "12345"})
+
+        assert http.last_kwargs["json"] == {
+            "full_name": "John Doe",
+            "government_id": "12345",
+        }
+
+    def test_confirm_data_requires_at_least_one_field(self) -> None:
+        resource = SignerResource(MockHttp(), "acc")
+        with pytest.raises(ValidationError, match="signer-data field"):
+            resource.confirm_data("doc-1", "code", {})
 
     def test_upload_signature_rejects_invalid_type(self) -> None:
         resource = SignerResource(MockHttp(), "acc")

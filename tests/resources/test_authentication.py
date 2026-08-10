@@ -66,6 +66,41 @@ class TestAuthenticationResource:
         resource = AuthenticationResource(NullHttp())
         assert resource.get_api_key() is None
 
+    def test_social_login_posts_to_documented_endpoint(self) -> None:
+        http = MockHttp()
+        resource = AuthenticationResource(http)
+
+        resource.social_login("google", "provider-token", True)
+
+        assert http.last_url == "authentication/social-login"
+        assert http.last_kwargs["json"] == {
+            "provider": "google",
+            "token": "provider-token",
+            "has_accepted_terms": True,
+        }
+
+    def test_change_password_posts_to_documented_endpoint(self) -> None:
+        http = MockHttp()
+        resource = AuthenticationResource(http)
+
+        resource.change_password("user@example.com", "old-secret", "new-secret")
+
+        assert http.last_url == "authentication/change-password"
+        assert http.last_kwargs["json"] == {
+            "email": "user@example.com",
+            "password": "old-secret",
+            "new_password": "new-secret",
+        }
+
+    def test_request_password_reset_posts_email_only(self) -> None:
+        http = MockHttp()
+        resource = AuthenticationResource(http)
+
+        resource.request_password_reset("user@example.com")
+
+        assert http.last_url == "authentication/request-password-reset"
+        assert http.last_kwargs["json"] == {"email": "user@example.com"}
+
     def test_password_reset_omits_missing_token(self) -> None:
         http = MockHttp()
         resource = AuthenticationResource(http)
