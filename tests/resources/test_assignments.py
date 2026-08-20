@@ -36,6 +36,21 @@ class TestBuildAssignmentPayload:
             {"id": "b", "verification_method": "Email", "step": 2},
         ]
 
+    @pytest.mark.parametrize(
+        "signers",
+        [
+            [{"id": "a", "step": 1}, {"id": "b"}],
+            [{"id": "a", "step": 1}, {"id": "b", "step": 3}],
+            [
+                {"id": "a", "step": 1, "verification_method": "DigitalCertificate"},
+                {"id": "b", "step": 1},
+            ],
+        ],
+    )
+    def test_rejects_invalid_signing_order(self, signers: list[dict[str, object]]) -> None:
+        with pytest.raises(ValidationError, match="step"):
+            build_assignment_payload({"signers": signers})  # type: ignore[arg-type]
+
     def test_omits_step_when_not_provided(self) -> None:
         body = build_assignment_payload({"signers": [{"id": "a"}]})
         assert body["signers"] == [{"id": "a"}]
@@ -77,17 +92,16 @@ class TestBuildAssignmentPayload:
         with pytest.raises(ValidationError):
             build_assignment_payload({"signers": [{}]})
 
-    def test_collect_assignment_allows_entries_without_signers(self) -> None:
-        body = build_assignment_payload(
-            {
-                "method": "collect",
-                "entries": [{"page_id": "page-1", "fields": []}],
-            }
-        )
-        assert body == {
-            "method": "collect",
-            "entries": [{"page_id": "page-1", "fields": []}],
-        }
+    def test_collect_assignment_requires_signers_and_entries(self) -> None:
+        with pytest.raises(ValidationError, match="signer"):
+            build_assignment_payload(
+                {
+                    "method": "collect",
+                    "entries": [{"page_id": "page-1", "fields": []}],
+                }
+            )
+        with pytest.raises(ValidationError, match="entry"):
+            build_assignment_payload({"method": "collect", "signers": ["signer-1"]})
 
 
 class TestAssignmentResource:
@@ -123,7 +137,7 @@ class TestAssignmentResource:
                 {"method": "collect", "entries": [{"page_id": "page-1", "fields": []}]},
             )
 
-    def test_list_scopes_by_account_id_query_param(self) -> None:
+    def test_list_uses_only_published_pagination_by_default(self) -> None:
         captured_url: list[str] = []
         captured_params: list[object] = []
 
@@ -137,7 +151,7 @@ class TestAssignmentResource:
         result = resource.list({"per_page": 5})
 
         assert captured_url[0] == "assignments"
-        assert captured_params[0] == {"per-page": 5, "accountId": "acc"}
+        assert captured_params[0] == {"per-page": 5}
         assert result["data"] == [{"id": "assignment-1"}]
 
     def test_list_allows_account_id_override(self) -> None:
@@ -153,6 +167,17 @@ class TestAssignmentResource:
 
         assert captured_params[0] == {"accountId": "other-acc"}
 
+    def test_list_works_without_an_sdk_account_id(self) -> None:
+        captured_params: list[object] = []
+
+        class MockHttp:
+            def get(self, url: str, **kwargs: object) -> object:
+                captured_params.append(kwargs.get("params"))
+                return make_response(make_envelope([]))
+
+        AssignmentResource(MockHttp()).list({"per_page": 5})
+        assert captured_params[0] == {"per-page": 5}
+
     def test_resend_notification_requires_all_three_ids(self) -> None:
         class MockHttp:
             def put(self, url: str, **kwargs: object) -> object:
@@ -165,6 +190,17 @@ class TestAssignmentResource:
             resource.resend_notification("d", "", "s")
         with pytest.raises(ValidationError):
             resource.resend_notification("d", "a", "")
+
+    def test_resend_notification_uses_documented_endpoint(self) -> None:
+        captured_url: list[str] = []
+
+        class MockHttp:
+            def put(self, url: str, **kwargs: object) -> object:
+                captured_url.append(url)
+                return make_response(make_envelope({}))
+
+        AssignmentResource(MockHttp(), "acc").resend_notification("doc", "assignment", "signer")
+        assert captured_url[0] == "documents/doc/assignments/assignment/signers/signer/resend"
 
     def test_estimate_cost_accepts_signer_descriptors_without_ids(self) -> None:
         captured_body: list[object] = []
@@ -181,6 +217,60 @@ class TestAssignmentResource:
             "method": "virtual",
             "signers": [{"verification_method": "Whatsapp"}],
         }
+
+    def test_estimate_cost_accepts_legacy_ids_but_omits_them_from_wire_body(self) -> None:
+        captured_body: list[object] = []
+
+        class MockHttp:
+            def post(self, url: str, **kwargs: object) -> object:
+                captured_body.append(kwargs.get("json"))
+                return make_response(make_envelope({}))
+
+        AssignmentResource(MockHttp(), "acc").estimate_cost(
+            "doc", {"signers": [{"id": "signer-1"}]}
+        )
+        assert captured_body[0] == {"method": "virtual", "signers": [{}]}
+
+    def test_estimate_cost_accepts_contract_valid_empty_payload(self) -> None:
+        captured_body: list[object] = []
+
+        class MockHttp:
+            def post(self, url: str, **kwargs: object) -> object:
+                captured_body.append(kwargs.get("json"))
+                return make_response(make_envelope({}))
+
+        AssignmentResource(MockHttp(), "acc").estimate_cost("doc", {})
+        assert captured_body[0] == {"method": "virtual"}
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"message": "not supported for estimates"},
+            {"expires_at": "2030-01-01T00:00:00Z"},
+            {"copy_receivers": ["signer-1"]},
+            {"signers": [{"step": 1}]},
+        ],
+    )
+    def test_estimate_cost_rejects_create_only_fields(self, payload: dict[str, object]) -> None:
+        resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError, match="estimate"):
+            resource.estimate_cost("doc", payload)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"method": "paper", "signers": ["s"]},
+            {"signers": "s"},
+            {"signers": [{"id": "s", "verification_method": "SMS"}]},
+            {"signers": [{"id": "s", "notification_methods": ["SMS"]}]},
+            {"method": "collect", "entries": "entry"},
+        ],
+    )
+    def test_assignment_payload_rejects_invalid_contract_values(
+        self, payload: dict[str, object]
+    ) -> None:
+        with pytest.raises(ValidationError):
+            build_assignment_payload(payload)  # type: ignore[arg-type]
 
     def test_get_for_signer_maps_signer_access_code_query_param(self) -> None:
         captured_url: list[str] = []
@@ -214,19 +304,30 @@ class TestAssignmentResource:
                 return make_response(make_envelope([]))
 
         resource = AssignmentResource(MockHttp(), "acc")
-        resource.sign("doc-1", "assignment-1", [{"itemId": "item-1"}], "code")
+        entry = {
+            "itemId": "item-1",
+            "fieldId": "field-1",
+            "pageId": "page-1",
+            "value": "John Doe",
+        }
+        resource.sign("doc-1", "assignment-1", [entry], "code")
         resource.decline("doc-1", "assignment-1", "No", "code")
 
         assert captured_calls[0] == (
             "documents/doc-1/assignments/assignment-1",
             {"signer-access-code": "code"},
-            [{"itemId": "item-1"}],
+            [entry],
         )
         assert captured_calls[1] == (
             "documents/doc-1/assignments/assignment-1/reject",
             {"signer-access-code": "code"},
             {"decline_reason": "No"},
         )
+
+    def test_sign_rejects_incomplete_entries(self) -> None:
+        resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError, match="entry"):
+            resource.sign("doc", "assignment", [{"itemId": "item"}], "code")
 
     def test_whatsapp_notifications_returns_list(self) -> None:
         class MockHttp:

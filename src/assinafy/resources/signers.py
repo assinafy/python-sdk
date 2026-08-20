@@ -9,6 +9,11 @@ from .base import BaseResource
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _SIGNATURE_TYPES = frozenset({"signature", "initial"})
+_SIGNATURE_CONTENT_TYPES = frozenset({"image/png", "image/jpeg"})
+_SIGNER_FIELDS = frozenset({"full_name", "email", "whatsapp_phone_number"})
+_CONFIRM_DATA_FIELDS = frozenset(
+    {"full_name", "email", "government_id", "whatsapp_phone_number", "has_accepted_terms"}
+)
 
 
 class SignerResource(BaseResource):
@@ -19,6 +24,12 @@ class SignerResource(BaseResource):
     methods (``get_self``/``accept_terms``/``verify_email``/``confirm_data``/
     ``upload_signature``/``download_signature``) authenticate with a
     per-signer access code obtained through the verification flow.
+
+    Signer-returning methods expose this complete unwrapped shape::
+
+        {"resource": "signer", "id": "signer-id", "full_name": "Example Signer",
+         "email": "signer@example.com", "whatsapp_phone_number": null,
+         "has_accepted_terms": false}
     """
 
     def create(self, payload: dict[str, Any], account_id: str | None = None) -> dict[str, Any]:
@@ -40,11 +51,14 @@ class SignerResource(BaseResource):
         """
         body = _build_signer_payload(payload, require_full_name=True)
         acc_id = self._account_id(account_id)
-        self._logger.info("Creating signer", {"email": body.get("email")})
-        return self._call(
+        self._logger.info("Creating signer", {"has_email": bool(body.get("email"))})
+        signer = self._call_dict(
             "Failed to create signer",
             lambda: self._http.post(f"accounts/{acc_id}/signers", json=body),
         )
+        if not isinstance(signer.get("id"), str) or not signer["id"]:
+            raise ValidationError("Signer creation succeeded without an ID", {"response": signer})
+        return signer
 
     def get(self, signer_id: str, account_id: str | None = None) -> dict[str, Any]:
         """``GET /accounts/{account_id}/signers/{signer_id}`` — fetch one signer.
@@ -56,8 +70,8 @@ class SignerResource(BaseResource):
              "has_accepted_terms": false}
         """
         acc_id = self._account_id(account_id)
-        sid = self._require_id(signer_id, "Signer ID")
-        return self._call(
+        sid = self._path_id(signer_id, "Signer ID")
+        return self._call_dict(
             "Failed to fetch signer",
             lambda: self._http.get(f"accounts/{acc_id}/signers/{sid}"),
         )
@@ -69,8 +83,9 @@ class SignerResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /accounts/{account_id}/signers`` — list workspace signers.
 
-        ``params`` accepts ``page``, ``per_page`` (sent as ``per-page``),
-        ``search``, ``sort``. Returns ``{"data": [...], "meta": {...}}``.
+        ``params`` accepts ``page``, ``per_page`` (sent as ``per-page``), and
+        ``search``. Other keys are forwarded for compatibility with older
+        deployments. Returns ``{"data": [...], "meta": {...}}``.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -107,11 +122,16 @@ class SignerResource(BaseResource):
         Returns the updated signer object (``data`` envelope unwrapped).
         """
         acc_id = self._account_id(account_id)
-        sid = self._require_id(signer_id, "Signer ID")
+        sid = self._path_id(signer_id, "Signer ID")
         body = _build_signer_payload(payload, require_full_name=False)
+        if payload.get("government_id") is not None:
+            government_id = payload["government_id"]
+            if not isinstance(government_id, str) or not government_id.strip():
+                raise ValidationError("government_id must be a non-empty string")
+            body["government_id"] = government_id
         if not body:
             raise ValidationError("At least one signer field is required")
-        return self._call(
+        return self._call_dict(
             "Failed to update signer",
             lambda: self._http.put(
                 f"accounts/{acc_id}/signers/{sid}",
@@ -120,9 +140,13 @@ class SignerResource(BaseResource):
         )
 
     def delete(self, signer_id: str, account_id: str | None = None) -> None:
-        """``DELETE /accounts/{account_id}/signers/{signer_id}`` — delete a signer."""
+        """``DELETE /accounts/{account_id}/signers/{signer_id}`` — delete a signer.
+
+        Request body: none. Success returns ``None``; the response has no
+        ``data`` payload.
+        """
         acc_id = self._account_id(account_id)
-        sid = self._require_id(signer_id, "Signer ID")
+        sid = self._path_id(signer_id, "Signer ID")
         return self._call_void(
             "Failed to delete signer",
             lambda: self._http.delete(f"accounts/{acc_id}/signers/{sid}"),
@@ -150,7 +174,7 @@ class SignerResource(BaseResource):
             raise
         target = email.lower()
         for signer in result.get("data", []):
-            if (signer.get("email") or "").lower() == target:
+            if isinstance(signer, dict) and (signer.get("email") or "").lower() == target:
                 return signer
         return None
 
@@ -167,7 +191,7 @@ class SignerResource(BaseResource):
              "has_initial": false, "is_signature_reusable": false}
         """
         access_code = self._require_id(signer_access_code, "Signer access code")
-        return self._call(
+        return self._call_dict(
             "Failed to fetch signer self",
             lambda: self._http.get(
                 "signers/self",
@@ -181,18 +205,19 @@ class SignerResource(BaseResource):
     def accept_terms(self, signer_access_code: str) -> dict[str, Any]:
         """``PUT /signers/accept-terms`` — record terms acceptance for a signer.
 
-        The access code is sent in the documented hyphenated body key.
-
-        Example request body (JSON)::
-
-            {"signer-access-code": "9uAWyOXx9hgz..."}
+        The access code is sent in the documented ``signer-access-code`` query
+        parameter. The request has no body. Success returns the no-data envelope
+        ``{"status": 200, "message": ""}``.
         """
         access_code = self._require_id(signer_access_code, "Signer access code")
-        return self._call(
+        return self._call_dict(
             "Failed to accept signer terms",
             lambda: self._http.put(
                 "signers/accept-terms",
-                json={"signer-access-code": access_code},
+                params=clean_params(
+                    {"signer_access_code": access_code},
+                    QUERY_PARAM_ALIASES,
+                ),
             ),
         )
 
@@ -201,24 +226,41 @@ class SignerResource(BaseResource):
         signer_access_code: str,
         verification_code: str,
     ) -> dict[str, Any]:
-        """``POST /verify`` — confirm the 6-digit token from ``send_token``.
+        """Backward-compatible alias for :meth:`verify_code`.
 
-        Both keys are sent in the documented hyphenated form.
+        The API code may arrive through email or WhatsApp; new callers should
+        prefer the channel-neutral method name.
+        """
+        return self.verify_code(signer_access_code, verification_code)
+
+    def verify_code(
+        self,
+        signer_access_code: str,
+        verification_code: str,
+    ) -> dict[str, Any]:
+        """``POST /verify`` — confirm a signer verification code.
+
+        The signer access code is sent in the documented query parameter; the
+        verification code is the only JSON field. Success is a no-data envelope
+        containing ``status`` and ``message``.
 
         Example request body (JSON)::
 
-            {"signer-access-code": "9uAWyOXx9hgz...", "verification-code": "123456"}
+            {"verification-code": "123456"}
+
+        Success returns the no-data envelope ``{"status": 200, "message": ""}``.
         """
         access_code = self._require_id(signer_access_code, "Signer access code")
         code = self._require_id(verification_code, "Verification code")
-        return self._call(
-            "Failed to verify signer email",
+        return self._call_dict(
+            "Failed to verify signer code",
             lambda: self._http.post(
                 "verify",
-                json={
-                    "signer-access-code": access_code,
-                    "verification-code": code,
-                },
+                params=clean_params(
+                    {"signer_access_code": access_code},
+                    QUERY_PARAM_ALIASES,
+                ),
+                json={"verification-code": code},
             ),
         )
 
@@ -230,20 +272,35 @@ class SignerResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /documents/{document_id}/signers/confirm-data``.
 
-        ``payload`` may include ``full_name``, ``email``, ``government_id``,
-        ``whatsapp_phone_number``, and ``has_accepted_terms``. Required fields
-        depend on the signer's verification / notification channel(s) — see the
-        API docs. The access code is sent as the ``signer-access-code`` query
-        parameter.
+        The current contract accepts ``full_name``, ``email``, and
+        ``government_id``. ``whatsapp_phone_number`` and ``has_accepted_terms``
+        remain accepted for compatibility with earlier deployed signer flows.
+        Required fields depend on the signer's verification channel. The access
+        code is sent as the ``signer-access-code`` query parameter.
 
         Example request body (JSON)::
 
-            {"email": "john@example.com", "has_accepted_terms": true}
+            {"full_name": "Example Signer", "email": "signer@example.com",
+             "government_id": "00000000000"}
+
+        Returns the complete signer payload documented on :class:`SignerResource`.
         """
-        doc_id = self._require_id(document_id, "Document ID")
+        doc_id = self._path_id(document_id, "Document ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
-        if payload.get("email"):
-            _assert_email(str(payload["email"]))
+        if not isinstance(payload, dict):
+            raise ValidationError("Signer data must be a mapping")
+        unknown = payload.keys() - _CONFIRM_DATA_FIELDS
+        if unknown:
+            raise ValidationError(f"Unknown signer-data fields: {', '.join(sorted(unknown))}")
+        for field in ("full_name", "government_id", "whatsapp_phone_number"):
+            value = payload.get(field)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValidationError(f"{field} must be a non-empty string")
+        if payload.get("email") is not None:
+            _assert_email(payload["email"])
+        accepted_terms = payload.get("has_accepted_terms")
+        if accepted_terms is not None and not isinstance(accepted_terms, bool):
+            raise ValidationError("has_accepted_terms must be boolean")
         body = clean_params(
             {
                 "full_name": payload.get("full_name"),
@@ -255,7 +312,7 @@ class SignerResource(BaseResource):
         )
         if not body:
             raise ValidationError("At least one signer-data field is required")
-        return self._call(
+        return self._call_dict(
             "Failed to confirm signer data",
             lambda: self._http.put(
                 f"documents/{doc_id}/signers/confirm-data",
@@ -278,15 +335,21 @@ class SignerResource(BaseResource):
         """``POST /signature?signer-access-code=...&type={signature|initial}&reuse=...``.
 
         Uploads the signer's signature (or initials) image. ``content`` is the
-        raw image bytes, sent with a matching ``content_type`` (``image/png`` or
-        ``image/jpeg`` per the docs). ``reuse`` sets the signer's
+        raw image bytes. The current contract publishes ``image/png``;
+        ``image/jpeg`` remains supported for compatibility with earlier API
+        documentation. ``reuse`` sets the signer's
         ``is_signature_reusable`` flag when given; omit it to leave the flag
-        unchanged.
+        unchanged. Success is ``None``; the API envelope contains only
+        ``status`` and ``message``.
         """
         access_code = self._require_id(signer_access_code, "Signer access code")
         _assert_signature_type(signature_type)
-        if not content:
+        if not isinstance(content, (bytes, bytearray, memoryview)) or not content:
             raise ValidationError("Signature content is required")
+        if not isinstance(content_type, str) or content_type not in _SIGNATURE_CONTENT_TYPES:
+            raise ValidationError("Signature content type must be image/png or image/jpeg")
+        if reuse is not None and not isinstance(reuse, bool):
+            raise ValidationError("reuse must be boolean")
         self._call_void(
             "Failed to upload signer signature",
             lambda: self._http.post(
@@ -299,7 +362,7 @@ class SignerResource(BaseResource):
                     },
                     QUERY_PARAM_ALIASES,
                 ),
-                content=content,
+                content=bytes(content),
                 headers={"Content-Type": content_type},
             ),
         )
@@ -329,28 +392,39 @@ class SignerResource(BaseResource):
 
 
 def _build_signer_payload(payload: dict[str, Any], require_full_name: bool) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValidationError("Signer payload must be a mapping")
+    allowed = _SIGNER_FIELDS if require_full_name else _SIGNER_FIELDS | {"government_id"}
+    unknown = payload.keys() - allowed
+    if unknown:
+        raise ValidationError(f"Unknown signer fields: {', '.join(sorted(unknown))}")
     full_name = payload.get("full_name")
-    if require_full_name and not full_name:
+    if require_full_name and (not isinstance(full_name, str) or not full_name.strip()):
         raise ValidationError("full_name is required")
+    if full_name is not None and (not isinstance(full_name, str) or not full_name.strip()):
+        raise ValidationError("full_name must be a non-empty string")
     email = payload.get("email")
-    if email:
-        _assert_email(str(email))
+    if email is not None:
+        _assert_email(email)
+    phone = payload.get("whatsapp_phone_number")
+    if phone is not None and (not isinstance(phone, str) or not phone.strip()):
+        raise ValidationError("whatsapp_phone_number must be a non-empty string")
     return clean_params(
         {
             "full_name": full_name,
             "email": email,
-            "whatsapp_phone_number": payload.get("whatsapp_phone_number"),
+            "whatsapp_phone_number": phone,
         }
     )
 
 
 def _assert_email(email: str) -> None:
-    if not email or not _EMAIL_RE.match(email):
+    if not isinstance(email, str) or not email or not _EMAIL_RE.match(email):
         raise ValidationError("Invalid email address", {"email": email})
 
 
 def _assert_signature_type(signature_type: str) -> None:
-    if signature_type not in _SIGNATURE_TYPES:
+    if not isinstance(signature_type, str) or signature_type not in _SIGNATURE_TYPES:
         raise ValidationError(
             "Signature type must be 'signature' or 'initial'",
             {"type": signature_type},

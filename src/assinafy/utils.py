@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from .errors import ApiError, AssinafyError, NetworkError
+from .errors import ApiError, AssinafyError, NetworkError, ValidationError
 from .types import Logger
 
 # Pythonic keyword -> documented hyphenated query/body key mapping.
@@ -73,5 +73,7 @@ def clean_params(
     query strings (``per-page=20``) without sending phantom ``key=None``
     pairs.
     """
+    if not isinstance(params, dict):
+        raise ValidationError("Parameters must be a mapping")
     aliases = aliases or {}
     return {aliases.get(k, k): v for k, v in params.items() if v is not None}

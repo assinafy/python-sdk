@@ -2,11 +2,12 @@
 
 Python SDK for the [Assinafy API](https://api.assinafy.com.br/v1/docs).
 
-The SDK is synchronous, uses `httpx`, and covers every documented API group:
-authentication, documents, signers, signer documents, assignments, field
-definitions, templates, tags, and webhooks. Each public method's docstring names the
-exact HTTP verb and endpoint it calls, so you can cross-reference against the
-official docs in one step.
+The SDK is synchronous, uses `httpx`, and covers all 89 operations currently
+published by Assinafy: accounts, users, authentication, documents, signers,
+signer documents, assignments, field definitions, templates, tags, and
+webhooks. Endpoint docstrings identify the published verb/path and request /
+unwrapped-response shape; shared resource shapes are documented once and
+referenced by methods that return them.
 
 ## Requirements
 
@@ -25,22 +26,21 @@ pip install assinafy
 import os
 from assinafy import AssinafyClient
 
-client = AssinafyClient(
+with AssinafyClient(
     api_key=os.environ["ASSINAFY_API_KEY"],
     account_id=os.environ["ASSINAFY_ACCOUNT_ID"],
     webhook_secret=os.environ.get("ASSINAFY_WEBHOOK_SECRET"),
-)
+) as client:
+    result = client.upload_and_request_signatures(
+        source={"file_path": "./contract.pdf"},
+        signers=[
+            {"full_name": "John Doe", "email": "john@example.com"},
+            {"full_name": "Jane Smith", "email": "jane@example.com"},
+        ],
+        message="Please sign this contract",
+    )
 
-result = client.upload_and_request_signatures(
-    source={"file_path": "./contract.pdf"},
-    signers=[
-        {"full_name": "John Doe", "email": "john@example.com"},
-        {"full_name": "Jane Smith", "email": "jane@example.com"},
-    ],
-    message="Please sign this contract",
-)
-
-print(result["document"]["id"])
+    print(result["document"]["id"])
 ```
 
 `upload_and_request_signatures` chains three calls (upload, create each signer,
@@ -83,6 +83,7 @@ session = public_client.authentication.login("user@example.com", "password")
 ```python
 client.authentication.login("user@example.com", "password")
 client.authentication.social_login("google", "provider-token", True)
+client.authentication.link_social_login("google", "provider-token")
 client.authentication.create_api_key("password")
 client.authentication.get_api_key()
 client.authentication.delete_api_key()
@@ -90,6 +91,52 @@ client.authentication.change_password("user@example.com", "old", "new")
 client.authentication.request_password_reset("user@example.com")
 client.authentication.reset_password("user@example.com", "new", token="reset-token")
 ```
+
+### Accounts
+
+```python
+accounts = client.accounts.list()
+created_account = client.accounts.create("SDK Example Workspace")
+created_id = created_account["id"]
+created_account = client.accounts.update(
+    {"notification_sender_type": "Account"}, created_id
+)
+created_account = client.accounts.get(created_id)
+created_account = client.accounts.update({"name": "SDK Example Updated"}, created_id)
+theme = client.accounts.theme(created_id)
+stats = client.accounts.stats("monthly", account_id=created_id)
+daily_stats = client.accounts.stats("daily", "2026-08", account_id=created_id)
+client.accounts.upload_logo({"file_path": "./logo.png"}, created_id)
+logo_bytes = client.accounts.download_logo(created_id)
+client.accounts.delete_logo(created_id)
+
+# Delete only the disposable workspace created above.
+client.accounts.delete(created_id)
+```
+
+`delete()` targets the supplied account ID (or the client's default) and makes
+`force` keyword-only so a positional ID can never be mistaken for the force
+flag. Use `force=True` only when you intentionally want to cancel that
+account's active paid subscription as part of deletion. The current sandbox
+accepts sender type changes through `update()` but
+rejects that optional field during `create()`, despite the published create
+schema; the two-step example works on both deployments.
+
+### Current User
+
+```python
+user = client.users.me()
+stats = client.users.stats("monthly")
+preferences = client.users.notification_preferences()
+preferences = client.users.update_notification_preferences({
+    "DocumentCompleted": True,
+    "SignerDeclined": True,
+})
+```
+
+As of 2026-08-20, the sandbox returns 404 for both published stats routes and
+the notification-preferences routes. The SDK exposes their current official
+contracts and keeps them unit-tested, but cannot fabricate server-side data.
 
 ### Documents
 
@@ -105,14 +152,17 @@ client.documents.rename(doc["id"], "Service agreement.pdf")  # before signing st
 client.documents.activities(doc["id"])
 client.documents.wait_until_ready(doc["id"])
 client.documents.download(doc["id"], "certificated")
+client.documents.download(doc["id"], "pades")  # ICP-Brasil certificate artifact
 client.documents.thumbnail(doc["id"])
 client.documents.download_page(doc["id"], page_id)
 client.documents.verify(signature_hash)
 client.documents.public_info(doc["id"])
-client.documents.send_token(doc["id"], "signer@example.com", "email")
+# Choose one form; each call sends a real token.
+client.documents.send_token(doc["id"], email="signer@example.com")  # current OpenAPI
+# Older deployment alternative: client.documents.send_token(doc["id"], "signer@example.com", "email")
 client.documents.list_tags(doc["id"])
-client.documents.replace_tags(doc["id"], ["Contracts", "2026-Q1"])
-client.documents.append_tags(doc["id"], ["Urgent"])
+client.documents.replace_tags(doc["id"], [tag_id_a, tag_id_b])
+client.documents.append_tags(doc["id"], [tag_id_c])
 client.documents.detach_tag(doc["id"], tag_id)
 client.documents.delete(doc["id"])
 ```
@@ -122,7 +172,7 @@ Uploads follow the documented multipart shape and are locally limited to PDF fil
 ### Templates
 
 ```python
-templates = client.templates.list({"search": "NDA", "tags": "tag-id", "per_page": 20})
+templates = client.templates.list({"search": "NDA", "per_page": 20})
 template = client.templates.get(template_id)
 
 client.documents.create_from_template(
@@ -133,19 +183,20 @@ client.documents.create_from_template(
 
 client.documents.estimate_cost_from_template(
     template_id,
-    [{"role_id": "role-id", "id": signer_id}],
+    [{"role_id": "role-id", "verification_method": "Email"}],
 )
 ```
 
 ### Tags
 
 ```python
-tags = client.tags.list({"search": "contract", "per_page": 20})
+tags = client.tags.list({"search": "contract"})
 tag = client.tags.create({"name": "Contracts", "color": "ff8800"})
 client.tags.update(tag["id"], {"name": "Sales Contracts"})
 client.tags.update(tag["id"], {"color": None})  # clears color
 client.tags.delete(tag["id"])
-client.tags.delete(tag["id"], force=True)
+# If the tag is attached, use this instead of the prior line:
+# client.tags.delete(tag["id"], force=True)
 ```
 
 ### Signers
@@ -164,8 +215,8 @@ client.signers.create({
 client.signers.get(signer["id"])
 client.signers.list({"search": "john", "per_page": 50})
 client.signers.update(signer["id"], {"full_name": "Johnny Doe"})
-client.signers.delete(signer["id"])
 client.signers.find_by_email("john@example.com")
+client.signers.delete(signer["id"])
 ```
 
 Signer-access-code endpoints:
@@ -173,15 +224,15 @@ Signer-access-code endpoints:
 ```python
 client.signers.get_self(signer_access_code)
 client.signers.accept_terms(signer_access_code)
-client.signers.verify_email(signer_access_code, "123456")
+client.signers.verify_code(signer_access_code, "123456")
+# verify_email(...) remains as a backward-compatible alias.
 client.signers.confirm_data(
     document_id,
     signer_access_code,
-    {"email": "john@example.com", "has_accepted_terms": True},
-    # also accepts "full_name" and "government_id"
+    {"full_name": "John Doe", "email": "john@example.com", "government_id": "00000000000"},
 )
 client.signers.upload_signature(signer_access_code, png_bytes, "signature")
-client.signers.upload_signature(signer_access_code, png_bytes, reuse=True)  # sets is_signature_reusable
+# Alternative: client.signers.upload_signature(signer_access_code, png_bytes, reuse=True)
 client.signers.download_signature(signer_access_code, "signature")
 ```
 
@@ -204,9 +255,9 @@ assignment = client.assignments.create(document_id, {
 })
 
 client.assignments.reset_expiration(document_id, assignment["id"], "2027-01-31T00:00:00Z")
-client.assignments.reset_expiration(document_id, assignment["id"], None)  # clears expiration
-client.assignments.resend_notification(document_id, assignment["id"], signer["id"])
 client.assignments.estimate_resend_cost(document_id, assignment["id"], signer["id"])
+client.assignments.resend_notification(document_id, assignment["id"], signer["id"])
+# Alternative: client.assignments.reset_expiration(document_id, assignment["id"], None)
 client.assignments.whatsapp_notifications(document_id, assignment["id"])
 ```
 
@@ -214,20 +265,38 @@ Signer-facing assignment endpoints:
 
 ```python
 client.assignments.get_for_signer(signer_access_code)
-client.assignments.sign(document_id, assignment_id, [{"itemId": "item-1"}], signer_access_code)
-client.assignments.decline(document_id, assignment_id, "I do not agree.", signer_access_code)
+client.assignments.sign(
+    document_id,
+    assignment_id,
+    [{"itemId": "item-1", "fieldId": "field-1", "pageId": "page-1", "value": "John Doe"}],
+    signer_access_code,
+)
+# Mutually exclusive alternative:
+# client.assignments.decline(document_id, assignment_id, "I do not agree.", signer_access_code)
 ```
+
+`DigitalCertificate` is accepted as an assignment `verification_method`, and
+the `pades` artifact is downloadable. The current official prose then directs
+certificate signers to `POST /signers/certificate/start` and `/complete`, but
+those operations have no published path, authentication, request, or response
+schema and return no evidence of availability in the sandbox. The SDK does not
+invent that security-sensitive contract; Assinafy must publish it before a safe
+implementation can be added.
 
 ### Signer Documents
 
 ```python
 client.signer_documents.current(signer_id, signer_access_code)
-client.signer_documents.list(signer_id, signer_access_code, {"status": "pending_signature"})
+client.signer_documents.list(signer_id, signer_access_code, {"page": 1, "per_page": 20})
 client.signer_documents.search(signer_id, signer_access_code, "contract")  # lightweight, compact
 client.signer_documents.sign_multiple(["doc-1", "doc-2"], signer_access_code)
-client.signer_documents.decline_multiple(["doc-1"], "Unfavorable terms.", signer_access_code)
-client.signer_documents.download(signer_id, document_id, signer_access_code, "original")
+# Mutually exclusive alternative:
+# client.signer_documents.decline_multiple(["doc-1"], "Unfavorable terms.", signer_access_code)
+client.signer_documents.download(signer_id, document_id, artifact_name="original")
 ```
+
+The download route is public in the current contract. Its optional
+`signer_access_code` argument is retained for older deployments.
 
 ### Field Definitions
 
@@ -236,9 +305,9 @@ field = client.fields.create({"type": "text", "name": "CPF"})
 client.fields.list({"include_standard": True})
 client.fields.get(field["id"])
 client.fields.update(field["id"], {"name": "CPF updated"})
-client.fields.validate(field["id"], "400.676.228-36", signer_access_code=signer_access_code)
+client.fields.validate(field["id"], "000.000.000-00", signer_access_code=signer_access_code)
 client.fields.validate_multiple(
-    [{"field_id": field["id"], "value": "400.676.228-36"}],
+    [{"field_id": field["id"], "value": "000.000.000-00"}],  # synthetic CPF placeholder
     signer_access_code=signer_access_code,
 )
 client.fields.list_types()
@@ -248,17 +317,20 @@ client.fields.delete(field["id"])
 ### Webhooks
 
 ```python
-client.webhooks.register({
-    "url": "https://example.com/webhooks/assinafy",
-    "email": "admin@example.com",
-    "events": ["document_ready", "signer_signed_document"],
-})
-
 client.webhooks.get()
-client.webhooks.inactivate()  # stops delivery; the API has no DELETE endpoint
 client.webhooks.list_event_types()
 client.webhooks.list_dispatches({"delivered": False, "page": 1, "per_page": 20})
-client.webhooks.retry_dispatch(dispatch_id)
+
+# Mutating calls affect the workspace's single subscription or redeliver an
+# existing event. Snapshot and restore the subscription around test changes.
+# client.webhooks.register({
+#     "url": "https://example.com/webhooks/assinafy",
+#     "email": "admin@example.com",
+#     "events": ["document_ready", "signer_signed_document"],
+#     "is_active": True,
+# })
+# client.webhooks.inactivate()
+# client.webhooks.retry_dispatch(dispatch_id)
 ```
 
 A workspace has a single webhook subscription. There is no documented `DELETE`
@@ -299,9 +371,90 @@ if not client.webhook_verifier.verify(raw_body, signature):
 
 The SDK accepts Pythonic aliases for documented hyphenated query parameters. For example, `per_page` is sent as `per-page`, and `signer_access_code` is sent as `signer-access-code`.
 
+## Response Payloads
+
+JSON endpoints normally return `{"status": 200, "message": "", "data": ...}`;
+the SDK returns `data`. No-data operations return `None` or preserve their
+small `{"status", "message"}` envelope for backward compatibility, as stated
+in each method's docstring. Binary methods return `bytes`; paginated methods
+return `{"data": [...], "meta": {"current_page", "per_page", "total",
+"last_page"}}` using the API's pagination headers.
+
+The complete stable top-level resource payloads are:
+
+```json
+{
+  "Account": {
+    "resource": "account", "id": "account-id", "name": "Acme Inc.",
+    "primary_color": "aabbcc", "secondary_color": "112233",
+    "notification_sender_type": "User", "roles": ["owner"],
+    "is_delete_allowed": true, "created_at": "2026-06-03T03:54:16Z"
+  },
+  "User": {
+    "id": "user-id", "name": "Example User", "email": "user@example.com",
+    "telephone": null, "government_id": null, "is_email_verified": true,
+    "has_accepted_terms": true, "created_at": "2026-06-03T03:54:16Z",
+    "to_be_deleted_at": null
+  },
+  "Signer": {
+    "resource": "signer", "id": "signer-id", "full_name": "Example Signer",
+    "email": "signer@example.com", "whatsapp_phone_number": null,
+    "has_accepted_terms": false
+  },
+  "Document": {
+    "resource": "document", "id": "document-id", "account_id": "account-id",
+    "template_id": null, "name": "contract.pdf", "status": "metadata_ready",
+    "artifacts": {"original": "https://api.example/document/original"},
+    "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+    "decline_reason": null, "declined_by": null, "tags": [],
+    "assignment": null, "pages": [], "created_at": "2026-06-03T03:54:16Z",
+    "updated_at": "2026-06-03T03:54:17Z"
+  },
+  "Assignment": {
+    "resource": "assignment", "id": "assignment-id",
+    "sender_email": "sender@example.com", "method": "virtual",
+    "expires_at": null, "message": null, "signers": [], "copy_receivers": [],
+    "items": [], "summary": {"signer_count": 0, "completed_count": 0, "signers": []},
+    "signing_urls": []
+  },
+  "CostEstimate": {
+    "documents": 1, "credits": 0, "needs_extra_document": false,
+    "extra_document_cost": 0, "total_credits": 0, "breakdown": [],
+    "document_balance": 10, "credit_balance": 0,
+    "has_sufficient_resources": true, "blocking_reason": null, "message": null
+  },
+  "Field": {
+    "resource": "field", "id": "field-id", "name": "CPF", "type": "text",
+    "regex": null, "is_pre_defined": false, "is_active": true,
+    "is_required": true, "is_standard": false, "is_read_only": false,
+    "is_visible": true
+  },
+  "Tag": {
+    "resource": "tag", "id": "tag-id", "name": "Contracts", "color": null,
+    "created_at": "2026-06-03T03:54:16Z",
+    "updated_at": "2026-06-03T03:54:17Z"
+  },
+  "WebhookSubscription": {
+    "events": ["document_ready"], "is_active": true,
+    "url": "https://example.com/webhooks/assinafy", "email": "ops@example.com",
+    "updated_at": "2026-06-03T03:54:17Z"
+  }
+}
+```
+
+The current OpenAPI example uses `"resource": "field"`; the sandbox has also
+returned `"field_definition"`. The SDK preserves whichever value the server
+returns.
+
+Template, notification-preference, KPI, verification, webhook-dispatch, and
+operation-specific contracts are documented beside their public methods;
+methods returning shared resources reference the canonical shapes above.
+The SDK preserves extra server fields so additive API changes remain usable.
+
 ## Errors
 
-The SDK raises typed errors; every failure raises a subclass of `AssinafyError`.
+SDK validation, transport, HTTP, and response-shape failures raise a subclass
+of `AssinafyError`.
 
 ```python
 from assinafy import ApiError, AssinafyError, NetworkError, ValidationError
@@ -321,25 +474,36 @@ except AssinafyError as err:
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest --cov=assinafy --cov-report=term-missing
-mypy src
-ruff check src tests
-ruff format --check src tests
+python -m pip install -e ".[dev]"
+python -m pytest --cov=assinafy --cov-branch --cov-fail-under=90 --cov-report=term-missing
+python -m mypy src
+python -m ruff check src tests scripts
+python -m ruff format --check src tests scripts
 ```
 
 ### Live smoke test
 
 ```bash
-ASSINAFY_API_KEY=... ASSINAFY_ACCOUNT_ID=... python scripts/live_smoke.py
+ASSINAFY_API_KEY=... \
+ASSINAFY_ACCOUNT_ID=... \
+ASSINAFY_BASE_URL=https://sandbox.assinafy.com.br/v1 \
+ASSINAFY_TEST_EMAILS=first@example.com,second@example.com \
+ASSINAFY_SEND_TEST_NOTIFICATIONS=1 \
+ASSINAFY_TEST_ACCOUNT_LIFECYCLE=1 \
+ASSINAFY_TEST_USER_PREFERENCES=1 \
+python scripts/live_smoke.py
 ```
 
-Hits the live API to confirm read endpoints, signer/tag/field CRUD (including
+The script refuses production and missing base URLs. It confirms read
+endpoints, signer/tag/field CRUD (including
 clearing a field's regex), template lookup and cost estimation, document
 upload, document tagging, ``wait_until_ready`` polling, cost estimation, and
-cleanup all work end-to-end. It saves and restores the workspace's webhook
-subscription around its own register/inactivate test, since a workspace only
-has one.
+cleanup end-to-end. Every created resource is captured and removed in a
+`finally` block. Webhook mutation is skipped unless an explicit test endpoint
+is supplied; when enabled, the prior single-workspace subscription is restored.
+The notification opt-in sends real sandbox emails and may consume sandbox
+credits; omit it for CRUD-only smoke coverage. Account and user-preference
+mutations are separate opt-ins and are cleaned/restored in `finally`.
 
 ## License
 

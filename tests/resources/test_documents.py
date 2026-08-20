@@ -16,17 +16,24 @@ class MockHttp:
     def post(self, url: str, **kwargs: object) -> object:
         self.last_url = url
         self.last_kwargs = dict(kwargs)
-        return make_response(make_envelope({"id": "doc-1"}))
+        return make_response(make_envelope([] if url.endswith("/tags") else {"id": "doc-1"}))
 
     def get(self, url: str, **kwargs: object) -> object:
         self.last_url = url
         self.last_kwargs = dict(kwargs)
-        return make_response(make_envelope([]))
+        is_list = (
+            url in {"documents/statuses"}
+            or url.endswith("/activities")
+            or url.endswith("/tags")
+            or url.endswith("/documents")
+            or url.endswith("/documents/search")
+        )
+        return make_response(make_envelope([] if is_list else {"id": "doc-1"}))
 
     def put(self, url: str, **kwargs: object) -> object:
         self.last_url = url
         self.last_kwargs = dict(kwargs)
-        return make_response(make_envelope({"ok": True}))
+        return make_response(make_envelope([] if url.endswith("/tags") else {"ok": True}))
 
     def delete(self, url: str, **kwargs: object) -> object:
         self.last_url = url
@@ -166,6 +173,17 @@ class TestDocumentResource:
             "channel": "email",
         }
 
+        resource.send_token("doc-1", email="signer@example.com")
+        assert http.last_kwargs["json"] == {"email": "signer@example.com"}
+
+        resource.send_token("doc-1")
+        assert "json" not in http.last_kwargs
+
+        with pytest.raises(ValidationError, match="not both"):
+            resource.send_token("doc-1", "signer@example.com", "email", email="other@example.com")
+        with pytest.raises(ValidationError, match="Channel"):
+            resource.send_token("doc-1", "signer@example.com", "sms")
+
     def test_document_tag_methods_use_documented_endpoints(self) -> None:
         http = MockHttp()
         resource = DocumentResource(http, "acc")
@@ -177,9 +195,9 @@ class TestDocumentResource:
         assert http.last_url == "accounts/acc/documents/doc-1/tags"
         assert http.last_kwargs["json"] == {"tags": []}
 
-        resource.append_tags("doc-1", ["Contracts"])
+        resource.append_tags("doc-1", ["tag-1"])
         assert http.last_url == "accounts/acc/documents/doc-1/tags"
-        assert http.last_kwargs["json"] == {"tags": ["Contracts"]}
+        assert http.last_kwargs["json"] == {"tags": ["tag-1"]}
 
         resource.detach_tag("doc-1", "tag-1")
         assert http.last_url == "accounts/acc/documents/doc-1/tags/tag-1"
@@ -187,7 +205,7 @@ class TestDocumentResource:
     def test_document_tag_append_requires_at_least_one_tag(self) -> None:
         resource = DocumentResource(MockHttp(), "acc")
 
-        with pytest.raises(ValidationError, match="At least one tag name"):
+        with pytest.raises(ValidationError, match="At least one tag ID"):
             resource.append_tags("doc-1", [])
 
     def test_document_binary_and_detail_methods_use_documented_endpoints(self) -> None:
@@ -197,6 +215,8 @@ class TestDocumentResource:
                 self.last_kwargs = dict(kwargs)
                 if "/download/" in url or url.endswith("/thumbnail") or "/pages/" in url:
                     return MockResponse(content=b"pdf")
+                if url.endswith("/activities"):
+                    return make_response(make_envelope([]))
                 return make_response(make_envelope({"id": "doc-1"}))
 
         http = BinaryHttp()
@@ -207,6 +227,12 @@ class TestDocumentResource:
 
         assert resource.download("doc-1", "original") == b"pdf"
         assert http.last_url == "documents/doc-1/download/original"
+
+        assert resource.download("doc-1", "pades") == b"pdf"
+        assert http.last_url == "documents/doc-1/download/pades"
+
+        with pytest.raises(ValidationError, match="Unknown document artifact"):
+            resource.download("doc-1", "unknown")  # type: ignore[arg-type]
 
         assert resource.thumbnail("doc-1") == b"pdf"
         assert http.last_url == "documents/doc-1/thumbnail"
@@ -260,7 +286,7 @@ class TestWaitUntilReady:
             def get(self, url: str, **kwargs: object) -> object:
                 self.calls += 1
                 if self.calls < 2:
-                    raise RuntimeError("transient network blip")
+                    raise httpx.ConnectError("transient network blip")
                 return make_response(make_envelope({"id": "doc-1", "status": "metadata_ready"}))
 
         http = FlakyHttp()
@@ -268,6 +294,22 @@ class TestWaitUntilReady:
         result = resource.wait_until_ready("doc-1", timeout=1.0, poll_interval=0.01)
         assert result["status"] == "metadata_ready"
         assert http.calls >= 2
+
+    def test_rejects_invalid_wait_timing(self) -> None:
+        resource = DocumentResource(MockHttp(), "acc")
+        with pytest.raises(ValidationError, match="timeout"):
+            resource.wait_until_ready("doc-1", timeout=0)
+        with pytest.raises(ValidationError, match="poll_interval"):
+            resource.wait_until_ready("doc-1", poll_interval=0)
+        with pytest.raises(ValidationError, match="timeout"):
+            resource.wait_until_ready("doc-1", timeout="1")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError, match="poll_interval"):
+            resource.wait_until_ready("doc-1", poll_interval=float("nan"))
+
+    def test_upload_file_path_errors_are_typed(self) -> None:
+        resource = DocumentResource(MockHttp(), "acc")
+        with pytest.raises(ValidationError, match="Unable to read"):
+            resource.upload({"file_path": "/definitely/not/a/real/file.pdf"})
 
     def test_raises_immediately_on_404_instead_of_retrying_until_timeout(self) -> None:
         class NotFoundResponse(MockResponse):

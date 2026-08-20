@@ -7,7 +7,7 @@ DocumentStatus``.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, get_args
 
 DocumentStatus = Literal[
     "uploading",
@@ -23,7 +23,8 @@ DocumentStatus = Literal[
     "failed",
 ]
 
-DocumentArtifactName = Literal["original", "certificated", "certificate-page", "bundle"]
+DocumentArtifactName = Literal["original", "certificated", "certificate-page", "pades", "bundle"]
+DOCUMENT_ARTIFACT_NAMES = frozenset(get_args(DocumentArtifactName))
 
 AssignmentMethod = Literal["virtual", "collect"]
 
@@ -50,9 +51,22 @@ WebhookEventType = Literal[
 
 SignerReference = str | dict[str, Any]
 
+NotificationPreferenceCode = Literal[
+    "DocumentCompleted",
+    "SignerDeclined",
+    "DocumentCancelled",
+    "DocumentAboutToExpire",
+    "DocumentExpired",
+    "DocumentExpirationReset",
+    "DocumentProcessingFailed",
+    "TemplateProcessingFailed",
+    "SignerWhatsappFailed",
+]
+NOTIFICATION_PREFERENCE_CODES = frozenset(get_args(NotificationPreferenceCode))
+
 
 class Logger(Protocol):
-    """Structural type for the optional ``logger`` argument on :class:`AssinafyClient`.
+    """Structural type for ``logger`` on :class:`~assinafy.client.AssinafyClient`.
 
     Any object exposing ``debug``/``info``/``warning``/``error`` methods that
     accept ``(message, context)`` qualifies. The stdlib ``logging.Logger`` is

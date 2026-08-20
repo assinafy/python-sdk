@@ -17,7 +17,7 @@ class MockHttp:
         self.last_kwargs = dict(kwargs)
         if "/download/" in url:
             return MockResponse(content=b"pdf")
-        return make_response(make_envelope([]))
+        return make_response(make_envelope({"id": "doc-1"} if url.endswith("/document") else []))
 
     def put(self, url: str, **kwargs: object) -> object:
         self.last_url = url
@@ -110,3 +110,20 @@ class TestSignerDocumentResource:
 
         assert http.last_url == "signers/signer-1/documents/doc-1/download/original"
         assert content == b"pdf"
+
+    def test_download_is_public_without_access_code(self) -> None:
+        http = MockHttp()
+        resource = SignerDocumentResource(http)
+
+        resource.download("signer-1", "doc-1", artifact_name="original")
+
+        assert http.last_kwargs["params"] == {}
+
+    def test_download_supports_pades_and_rejects_unknown_artifacts(self) -> None:
+        http = MockHttp()
+        resource = SignerDocumentResource(http)
+
+        resource.download("signer-1", "doc-1", artifact_name="pades")
+        assert http.last_url.endswith("/download/pades")
+        with pytest.raises(ValidationError, match="Unknown document artifact"):
+            resource.download("signer-1", "doc-1", artifact_name="unknown")  # type: ignore[arg-type]

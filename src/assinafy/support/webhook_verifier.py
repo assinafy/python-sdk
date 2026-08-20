@@ -17,11 +17,11 @@ class WebhookVerifier:
           "event": "document_ready",
           "message": null,          # human-readable, may contain placeholders
           "payload": null,          # event-specific params (object|null)
-          "origin": {"ip": "...", "user-agent": "..."},
+          "origin": {"ip": "192.0.2.1", "user-agent": "example-agent/1.0"},
           "created_at": 1705312200, # unix seconds
-          "subject": {...},         # entity that performed the action (+ "type")
-          "object": {...},          # entity acted upon (+ "type")
-          "account_id": "..."
+          "subject": {"id": "actor-id", "type": "User"},
+          "object": {"id": "document-id", "type": "Document"},
+          "account_id": "account-id"
         }
 
     Use :meth:`get_event_type`, :meth:`get_event_payload`,

@@ -61,21 +61,32 @@ class WebhookResource(BaseResource):
               "updated_at": "2026-06-05T20:50:55Z"
             }
         """
-        if not payload.get("url"):
+        if not isinstance(payload, dict):
+            raise ValidationError("Webhook payload must be a mapping")
+        unknown = payload.keys() - {"url", "email", "events", "is_active"}
+        if unknown:
+            raise ValidationError(f"Unknown webhook fields: {', '.join(sorted(unknown))}")
+        if not isinstance(payload.get("url"), str) or not payload["url"]:
             raise ValidationError("Webhook URL is required")
-        if not payload.get("email"):
+        if not isinstance(payload.get("email"), str) or not payload["email"]:
             raise ValidationError("Webhook email is required")
+        if "events" in payload and (
+            not isinstance(payload["events"], list)
+            or any(not isinstance(event, str) or not event for event in payload["events"])
+        ):
+            raise ValidationError("Webhook events must be a list of event names")
+        if "is_active" in payload and not isinstance(payload["is_active"], bool):
+            raise ValidationError("Webhook is_active must be boolean")
 
         acc_id = self._account_id(account_id)
-        current = self.get(acc_id)
-
         events = payload.get("events")
-        if events is None:
-            events = (current or {}).get("events") if current else _DEFAULT_EVENTS
-
         is_active = payload.get("is_active")
-        if is_active is None:
-            is_active = (current or {}).get("is_active", True) if current else True
+        if events is None or is_active is None:
+            current = self.get(acc_id)
+            if events is None:
+                events = (current or {}).get("events") if current else _DEFAULT_EVENTS
+            if is_active is None:
+                is_active = (current or {}).get("is_active", True) if current else True
 
         body = {
             "url": payload["url"],
@@ -84,8 +95,8 @@ class WebhookResource(BaseResource):
             "is_active": is_active,
         }
 
-        self._logger.info("Registering webhook", {"url": payload["url"]})
-        return self._call(
+        self._logger.info("Registering webhook subscription")
+        return self._call_dict(
             "Failed to register webhook",
             lambda: self._http.put(f"accounts/{acc_id}/webhooks/subscriptions", json=body),
         )
@@ -131,7 +142,7 @@ class WebhookResource(BaseResource):
         """
         acc_id = self._account_id(account_id)
         self._logger.info("Inactivating webhook subscription")
-        return self._call(
+        return self._call_dict(
             "Failed to inactivate webhook subscription",
             lambda: self._http.put(f"accounts/{acc_id}/webhooks/inactivate"),
         )
@@ -174,8 +185,8 @@ class WebhookResource(BaseResource):
                              "object": {"id": "abc123", "type": "document"},
                              "subject": {"id": "def456", "type": "user"}},
                  "delivered": true, "http_status": 200, "response_body": "OK",
-                 "error": null, "created_at": 1705312200,
-                 "updated_at": 1705312200}
+                 "error": null, "created_at": "2026-06-05T20:50:55Z",
+                 "updated_at": "2026-06-05T20:50:56Z"}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
@@ -204,11 +215,12 @@ class WebhookResource(BaseResource):
              "id": "a1b2c3d4e5f6...", "event": "document_ready",
              "activity_id": 456, "endpoint": "https://example.com/webhook",
              "delivered": true, "http_status": 200, "response_body": "OK",
-             "error": null, "created_at": 1705312200, "updated_at": 1705312200}
+             "error": null, "created_at": "2026-06-05T20:50:55Z",
+             "updated_at": "2026-06-05T20:50:56Z"}
         """
         acc_id = self._account_id(account_id)
-        did = self._require_id(dispatch_id, "Dispatch ID")
-        return self._call(
+        did = self._path_id(dispatch_id, "Dispatch ID")
+        return self._call_dict(
             "Failed to retry webhook dispatch",
             lambda: self._http.post(f"accounts/{acc_id}/webhooks/{did}/retry"),
         )

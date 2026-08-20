@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from assinafy.errors import ValidationError
 from assinafy.resources.authentication import AuthenticationResource
 from tests.conftest import make_envelope, make_response
 
@@ -79,6 +82,24 @@ class TestAuthenticationResource:
             "has_accepted_terms": True,
         }
 
+    def test_link_social_login_posts_documented_no_data_request(self) -> None:
+        http = MockHttp()
+        resource = AuthenticationResource(http)
+
+        resource.link_social_login("google", "provider-token")
+
+        assert http.last_url == "auth/link-social-login"
+        assert http.last_kwargs["json"] == {"provider": "google", "token": "provider-token"}
+
+    def test_social_methods_validate_current_provider_and_boolean(self) -> None:
+        resource = AuthenticationResource(MockHttp())
+        with pytest.raises(ValidationError, match="provider"):
+            resource.link_social_login("github", "token")
+        with pytest.raises(ValidationError, match="provider"):
+            resource.link_social_login([], "token")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError, match="boolean"):
+            resource.social_login("google", "token", 1)  # type: ignore[arg-type]
+
     def test_change_password_posts_to_documented_endpoint(self) -> None:
         http = MockHttp()
         resource = AuthenticationResource(http)
@@ -111,4 +132,13 @@ class TestAuthenticationResource:
         assert http.last_kwargs["json"] == {
             "email": "user@example.com",
             "new_password": "new-secret",
+        }
+
+    def test_password_reset_includes_token_when_given(self) -> None:
+        http = MockHttp()
+        AuthenticationResource(http).reset_password("user@example.com", "new-secret", "reset-token")
+        assert http.last_kwargs["json"] == {
+            "email": "user@example.com",
+            "new_password": "new-secret",
+            "token": "reset-token",
         }

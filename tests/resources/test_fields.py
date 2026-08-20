@@ -20,7 +20,8 @@ class MockHttp:
     def get(self, url: str, **kwargs: object) -> object:
         self.last_url = url
         self.last_kwargs = dict(kwargs)
-        return make_response(make_envelope([]))
+        data: object = [] if url == "field-types" or url.endswith("/fields") else {"id": "field-1"}
+        return make_response(make_envelope(data))
 
     def put(self, url: str, **kwargs: object) -> object:
         self.last_url = url
@@ -55,6 +56,25 @@ class TestFieldResource:
 
         resource.delete("field-1")
         assert http.last_url == "accounts/acc/fields/field-1"
+
+        resource.list({"include_standard": True})
+        assert http.last_url == "accounts/acc/fields"
+        assert http.last_kwargs["params"] == {"include_standard": True}
+
+    def test_create_and_update_reject_undocumented_or_invalid_attributes(self) -> None:
+        resource = FieldResource(MockHttp(), "acc")
+        with pytest.raises(ValidationError, match="mapping"):
+            resource.create([])  # type: ignore[arg-type]
+        with pytest.raises(ValidationError, match="Unknown field attributes"):
+            resource.create({"type": "text", "name": "CPF", "is_visible": False})
+        with pytest.raises(ValidationError, match="is_required must be boolean"):
+            resource.create({"type": "text", "name": "CPF", "is_required": 1})
+        with pytest.raises(ValidationError, match="Unknown field attributes"):
+            resource.update("field-1", {"type": "date"})
+        with pytest.raises(ValidationError, match="is_active must be boolean"):
+            resource.update("field-1", {"is_active": 1})
+        with pytest.raises(ValidationError, match="regex"):
+            resource.update("field-1", {"regex": 1})
 
     def test_update_preserves_explicit_none_to_clear_regex(self) -> None:
         http = MockHttp()
@@ -100,6 +120,8 @@ class TestFieldResource:
         resource = FieldResource(MockHttp(), "acc")
         with pytest.raises(ValidationError, match="field value"):
             resource.validate_multiple([])
+        with pytest.raises(ValidationError, match="field value"):
+            resource.validate_multiple([{"field_id": "field-1"}])
 
     def test_list_types_hits_global_endpoint(self) -> None:
         http = MockHttp()

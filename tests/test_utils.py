@@ -58,6 +58,16 @@ class TestToSdkError:
         assert isinstance(result, ApiError)
         assert result.status_code == 404
 
+    def test_http_status_error_uses_error_or_fallback_message(self) -> None:
+        request = httpx.Request("GET", "https://example.test")
+        for body, expected in [({"error": "Denied"}, "Denied"), ([], "API request failed")]:
+            response = httpx.Response(403, request=request, json=body)
+            result = to_sdk_error(
+                httpx.HTTPStatusError("403", request=request, response=response), "fetch"
+            )
+            assert isinstance(result, ApiError)
+            assert str(result) == expected
+
 
 class TestCleanParams:
     def test_drops_none_values(self) -> None:

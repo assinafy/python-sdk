@@ -20,9 +20,10 @@ class TagResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /accounts/{account_id}/tags`` — list workspace tags.
 
-        ``params`` accepts ``search`` plus the standard ``page`` / ``per_page``
-        pagination keys. Returns ``{"data": [...], "meta": {...}}`` when the API
-        returns pagination headers.
+        ``params`` accepts the published ``search`` key. Other keys are
+        forwarded for compatibility with deployments that implement the API's
+        global list-query options. Returns ``{"data": [...], "meta": {...}}``
+        when the API returns pagination headers.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -64,7 +65,7 @@ class TagResource(BaseResource):
         """
         acc_id = self._account_id(account_id)
         body = _build_tag_payload(payload, require_name=True)
-        return self._call(
+        return self._call_dict(
             "Failed to create tag",
             lambda: self._http.post(f"accounts/{acc_id}/tags", json=body),
         )
@@ -91,9 +92,9 @@ class TagResource(BaseResource):
              "updated_at": "2026-06-05T20:50:43Z"}
         """
         acc_id = self._account_id(account_id)
-        tid = self._require_id(tag_id, "Tag ID")
+        tid = self._path_id(tag_id, "Tag ID")
         body = _build_tag_payload(payload, require_name=False)
-        return self._call(
+        return self._call_dict(
             "Failed to update tag",
             lambda: self._http.put(f"accounts/{acc_id}/tags/{tid}", json=body),
         )
@@ -101,21 +102,29 @@ class TagResource(BaseResource):
     def delete(
         self,
         tag_id: str,
+        account_id: str | bool | None = None,
+        *,
         force: bool = False,
-        account_id: str | None = None,
     ) -> dict[str, Any]:
         """``DELETE /accounts/{account_id}/tags/{tag_id}`` — delete a tag.
 
         Set ``force=True`` to detach the tag from documents/templates before
-        deletion, matching the documented ``force`` query parameter.
+        deletion, matching the documented ``force`` query parameter. ``force``
+        is keyword-only; a positional boolean remains accepted for compatibility
+        with SDK versions before 1.6.
 
         Example response (``data`` envelope unwrapped)::
 
             {"deleted": true}
         """
+        if isinstance(account_id, bool):
+            force = force or account_id
+            account_id = None
+        if not isinstance(force, bool):
+            raise ValidationError("force must be boolean")
         acc_id = self._account_id(account_id)
-        tid = self._require_id(tag_id, "Tag ID")
-        return self._call(
+        tid = self._path_id(tag_id, "Tag ID")
+        return self._call_dict(
             "Failed to delete tag",
             lambda: self._http.delete(
                 f"accounts/{acc_id}/tags/{tid}",
@@ -125,6 +134,11 @@ class TagResource(BaseResource):
 
 
 def _build_tag_payload(payload: dict[str, Any], require_name: bool) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValidationError("Tag payload must be a mapping")
+    unknown = payload.keys() - {"name", "color"}
+    if unknown:
+        raise ValidationError(f"Unknown tag fields: {', '.join(sorted(unknown))}")
     body: dict[str, Any] = {}
 
     if "name" in payload:

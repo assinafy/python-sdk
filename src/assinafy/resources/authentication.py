@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..errors import ValidationError
 from .base import BaseResource
+
+_SOCIAL_PROVIDERS = frozenset({"google"})
 
 
 class AuthenticationResource(BaseResource):
@@ -10,7 +13,18 @@ class AuthenticationResource(BaseResource):
 
     All request bodies use underscore-cased keys (the docs do not hyphenate any
     field in this area). Responses are unwrapped from the ``{status, data,
-    message}`` envelope.
+    message}`` envelope. Login methods return this complete session shape::
+
+        {"access_token": "synthetic-jwt",
+         "user": {"id": "user-id", "name": "Example User",
+                  "email": "user@example.com", "telephone": null,
+                  "government_id": null, "is_email_verified": true,
+                  "has_accepted_terms": true,
+                  "created_at": "2026-06-03T03:54:16Z",
+                  "to_be_deleted_at": null},
+         "accounts": [{"id": "account-id", "name": "Acme Inc.",
+                       "roles": ["owner"], "is_delete_allowed": true,
+                       "created_at": "2026-06-03T03:54:16Z"}]}
     """
 
     def login(self, email: str, password: str) -> dict[str, Any]:
@@ -20,16 +34,20 @@ class AuthenticationResource(BaseResource):
 
             {"email": "john@example.com", "password": "secret"}
 
-        Example response (``data`` envelope unwrapped, trimmed)::
+        Example response (``data`` envelope unwrapped)::
 
-            {"access_token": "eyJ0eXAiOiJKV1Qi...",
-             "user": {"id": "bgjazeo5...", "name": "John Smith",
-                      "email": "john@example.com", "is_email_verified": false,
-                      "has_accepted_terms": true},
-             "accounts": [{"id": "6401df46...", "name": "JS",
-                           "roles": ["owner"]}]}
+            {"access_token": "synthetic-jwt",
+             "user": {"id": "user-id", "name": "Example User",
+                      "email": "user@example.com", "telephone": null,
+                      "government_id": null, "is_email_verified": true,
+                      "has_accepted_terms": true,
+                      "created_at": "2026-06-03T03:54:16Z",
+                      "to_be_deleted_at": null},
+             "accounts": [{"id": "account-id", "name": "Acme Inc.",
+                           "roles": ["owner"], "is_delete_allowed": true,
+                           "created_at": "2026-06-03T03:54:16Z"}]}
         """
-        return self._call(
+        return self._call_dict(
             "Failed to login",
             lambda: self._http.post(
                 "login",
@@ -56,7 +74,10 @@ class AuthenticationResource(BaseResource):
         Returns the same ``{access_token, user, accounts}`` shape as
         :meth:`login` (``data`` envelope unwrapped).
         """
-        return self._call(
+        _validate_social_provider(provider)
+        if not isinstance(has_accepted_terms, bool):
+            raise ValidationError("has_accepted_terms must be boolean")
+        return self._call_dict(
             "Failed to complete social login",
             lambda: self._http.post(
                 "authentication/social-login",
@@ -64,6 +85,25 @@ class AuthenticationResource(BaseResource):
                     "provider": self._require_id(provider, "Provider"),
                     "token": self._require_id(token, "Token"),
                     "has_accepted_terms": has_accepted_terms,
+                },
+            ),
+        )
+
+    def link_social_login(self, provider: str, token: str) -> None:
+        """``POST /auth/link-social-login`` — link a provider to this user.
+
+        Sends ``{"provider": "google", "token": "provider-token"}``. The
+        documented success response is ``{"status": 200, "message": ""}``
+        with no data payload.
+        """
+        _validate_social_provider(provider)
+        self._call_void(
+            "Failed to link social login",
+            lambda: self._http.post(
+                "auth/link-social-login",
+                json={
+                    "provider": self._require_id(provider, "Provider"),
+                    "token": self._require_id(token, "Token"),
                 },
             ),
         )
@@ -77,9 +117,9 @@ class AuthenticationResource(BaseResource):
 
         Example response (``data`` envelope unwrapped)::
 
-            {"api_key": "mIpe_zdJfKUpMK9Va3XuYgzPXMxz49fIaRCWXseVkpVAX608A9j3i"}
+            {"api_key": "sandbox_example_api_key_replace_me"}
         """
-        return self._call(
+        return self._call_dict(
             "Failed to create API key",
             lambda: self._http.post(
                 "users/api-keys",
@@ -95,15 +135,19 @@ class AuthenticationResource(BaseResource):
 
         Example response (``data`` envelope unwrapped)::
 
-            {"api_key": "************************************************NEWq"}
+            {"api_key": "************************************last4"}
         """
-        return self._call(
+        return self._call_nullable_dict(
             "Failed to fetch API key",
             lambda: self._http.get("users/api-keys"),
         )
 
     def delete_api_key(self) -> None:
-        """``DELETE /users/api-keys`` — revoke the current user's API key."""
+        """``DELETE /users/api-keys`` — revoke the current user's API key.
+
+        Request body: none. Success returns ``None``; the response has no
+        ``data`` payload.
+        """
         self._call_void(
             "Failed to delete API key",
             lambda: self._http.delete("users/api-keys"),
@@ -126,7 +170,7 @@ class AuthenticationResource(BaseResource):
 
             {"email": "john@example.com"}
         """
-        return self._call(
+        return self._call_dict(
             "Failed to change password",
             lambda: self._http.put(
                 "authentication/change-password",
@@ -149,7 +193,7 @@ class AuthenticationResource(BaseResource):
 
             {"email": "john@example.com"}
         """
-        return self._call(
+        return self._call_dict(
             "Failed to request password reset",
             lambda: self._http.put(
                 "authentication/request-password-reset",
@@ -183,7 +227,12 @@ class AuthenticationResource(BaseResource):
         }
         if token is not None:
             body["token"] = self._require_id(token, "Token")
-        return self._call(
+        return self._call_dict(
             "Failed to reset password",
             lambda: self._http.put("authentication/reset-password", json=body),
         )
+
+
+def _validate_social_provider(provider: str) -> None:
+    if not isinstance(provider, str) or provider not in _SOCIAL_PROVIDERS:
+        raise ValidationError('provider must be "google"')

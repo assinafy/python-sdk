@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import builtins
 from typing import Any
 
 from ..errors import ValidationError
 from ..utils import QUERY_PARAM_ALIASES, clean_params
 from .base import BaseResource
+
+_CREATE_FIELDS = frozenset({"name", "type", "regex", "is_required"})
+_UPDATE_FIELDS = frozenset({"name", "regex", "is_active"})
 
 
 class FieldResource(BaseResource):
@@ -34,12 +38,19 @@ class FieldResource(BaseResource):
              "is_active": true, "is_required": true, "is_standard": false,
              "is_read_only": false, "is_visible": true}
         """
-        if not payload.get("type"):
-            raise ValidationError("type is required")
-        if not payload.get("name"):
-            raise ValidationError("name is required")
+        if not isinstance(payload, dict):
+            raise ValidationError("Field payload must be a mapping")
+        unknown = payload.keys() - _CREATE_FIELDS
+        if unknown:
+            raise ValidationError(f"Unknown field attributes: {', '.join(sorted(unknown))}")
+        self._require_id(payload.get("type"), "type")
+        self._require_id(payload.get("name"), "name")
+        if payload.get("regex") is not None and not isinstance(payload["regex"], str):
+            raise ValidationError("regex must be a string or None")
+        if "is_required" in payload and not isinstance(payload["is_required"], bool):
+            raise ValidationError("is_required must be boolean")
         acc_id = self._account_id(account_id)
-        return self._call(
+        return self._call_dict(
             "Failed to create field definition",
             lambda: self._http.post(
                 f"accounts/{acc_id}/fields",
@@ -54,14 +65,15 @@ class FieldResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /accounts/{account_id}/fields`` — list field definitions.
 
-        ``params`` accepts ``include_standard`` and ``include_inactive`` plus
-        the usual ``page`` / ``per_page`` / ``search`` / ``sort``.
+        ``params`` accepts the documented ``include_standard`` and
+        ``include_inactive`` flags. Other keys are forwarded for compatibility
+        with deployments that implement the API's global list-query options.
 
         Example response (``data`` envelope unwrapped, ``meta`` from
         ``x-pagination-*`` headers)::
 
             {"data": [
-                {"resource": "field_definition", "id": "102d25a4...", "name": "Nome",
+                {"resource": "field_definition", "id": "field-id", "name": "Nome",
                  "type": "personName", "regex": null, "is_pre_defined": true,
                  "is_active": true, "is_required": false, "is_standard": false,
                  "is_read_only": false, "is_visible": true}
@@ -86,8 +98,8 @@ class FieldResource(BaseResource):
              "is_read_only": false, "is_visible": true}
         """
         acc_id = self._account_id(account_id)
-        fid = self._require_id(field_id, "Field ID")
-        return self._call(
+        fid = self._path_id(field_id, "Field ID")
+        return self._call_dict(
             "Failed to fetch field definition",
             lambda: self._http.get(f"accounts/{acc_id}/fields/{fid}"),
         )
@@ -111,19 +123,34 @@ class FieldResource(BaseResource):
         Returns the updated field-definition object (``data`` envelope unwrapped).
         """
         acc_id = self._account_id(account_id)
-        fid = self._require_id(field_id, "Field ID")
+        fid = self._path_id(field_id, "Field ID")
+        if not isinstance(payload, dict):
+            raise ValidationError("Field payload must be a mapping")
+        unknown = payload.keys() - _UPDATE_FIELDS
+        if unknown:
+            raise ValidationError(f"Unknown field attributes: {', '.join(sorted(unknown))}")
+        if "name" in payload:
+            self._require_id(payload["name"], "name")
+        if payload.get("regex") is not None and not isinstance(payload["regex"], str):
+            raise ValidationError("regex must be a string or None")
+        if "is_active" in payload and not isinstance(payload["is_active"], bool):
+            raise ValidationError("is_active must be boolean")
         body = {k: v for k, v in payload.items() if k == "regex" or v is not None}
         if not body:
             raise ValidationError("At least one field attribute is required")
-        return self._call(
+        return self._call_dict(
             "Failed to update field definition",
             lambda: self._http.put(f"accounts/{acc_id}/fields/{fid}", json=body),
         )
 
     def delete(self, field_id: str, account_id: str | None = None) -> None:
-        """``DELETE /accounts/{account_id}/fields/{field_id}`` — delete a field."""
+        """``DELETE /accounts/{account_id}/fields/{field_id}`` — delete a field.
+
+        Request body: none. Success returns ``None``; the response has no
+        ``data`` payload.
+        """
         acc_id = self._account_id(account_id)
-        fid = self._require_id(field_id, "Field ID")
+        fid = self._path_id(field_id, "Field ID")
         self._call_void(
             "Failed to delete field definition",
             lambda: self._http.delete(f"accounts/{acc_id}/fields/{fid}"),
@@ -152,8 +179,8 @@ class FieldResource(BaseResource):
             {"type": "text", "success": true, "error_message": ""}
         """
         acc_id = self._account_id(account_id)
-        fid = self._require_id(field_id, "Field ID")
-        return self._call(
+        fid = self._path_id(field_id, "Field ID")
+        return self._call_dict(
             "Failed to validate field value",
             lambda: self._http.post(
                 f"accounts/{acc_id}/fields/{fid}/validate",
@@ -167,10 +194,10 @@ class FieldResource(BaseResource):
 
     def validate_multiple(
         self,
-        values: list[dict[str, Any]],
+        values: builtins.list[dict[str, Any]],
         signer_access_code: str | None = None,
         account_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> builtins.list[dict[str, Any]]:
         """``POST /accounts/{account_id}/fields/validate-multiple``.
 
         ``values`` is a list of ``{field_id, value}`` objects (sent as the raw
@@ -185,7 +212,17 @@ class FieldResource(BaseResource):
             [{"field_id": "1031ff86...", "type": "text", "success": true,
               "error_message": ""}]
         """
-        if not values:
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("field_id"), str)
+                or not item["field_id"]
+                or "value" not in item
+                for item in values
+            )
+        ):
             raise ValidationError("At least one field value is required")
         acc_id = self._account_id(account_id)
         return self._call_plain_list(
@@ -200,7 +237,7 @@ class FieldResource(BaseResource):
             ),
         )
 
-    def list_types(self) -> list[dict[str, Any]]:
+    def list_types(self) -> builtins.list[dict[str, Any]]:
         """``GET /field-types`` — global catalog of built-in field types.
 
         Example response (``data`` envelope unwrapped)::

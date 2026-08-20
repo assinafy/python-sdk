@@ -16,7 +16,7 @@ class MockHttp:
     def get(self, url: str, **kwargs: object) -> object:
         self.last_url = url
         self.last_kwargs = dict(kwargs)
-        return make_response(make_envelope([]))
+        return make_response(make_envelope([] if url.endswith("/templates") else {"id": "tpl-1"}))
 
     def post(self, url: str, **kwargs: object) -> object:
         self.last_url = url
@@ -98,3 +98,20 @@ class TestCreateFromTemplate:
 
         with pytest.raises(ValidationError, match="signer"):
             resource.estimate_cost_from_template("tpl-1", [])
+
+    def test_template_builders_validate_role_id_id_and_option_names(self) -> None:
+        resource = DocumentResource(MockHttp(), "acc")
+        with pytest.raises(ValidationError, match="role_id"):
+            resource.estimate_cost_from_template("tpl-1", [{}])
+        with pytest.raises(ValidationError, match="signer id"):
+            resource.create_from_template("tpl-1", [{"role_id": "role-1"}])
+        with pytest.raises(ValidationError, match="Unknown template options"):
+            resource.create_from_template(
+                "tpl-1", [{"role_id": "role-1", "id": "signer-1"}], {"typo": True}
+            )
+        with pytest.raises(ValidationError, match="Unknown template signer fields"):
+            resource.estimate_cost_from_template("tpl-1", [{"role_id": "role-1", "id": "signer-1"}])
+        with pytest.raises(ValidationError, match="verification_method"):
+            resource.estimate_cost_from_template(
+                "tpl-1", [{"role_id": "role-1", "verification_method": "SMS"}]
+            )

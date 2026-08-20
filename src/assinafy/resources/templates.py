@@ -12,11 +12,9 @@ class TemplateResource(BaseResource):
     Document creation from a template lives on
     :meth:`assinafy.resources.documents.DocumentResource.create_from_template`.
 
-    Note: the docs reference template create/update/delete/page-download
-    endpoints, but only ``list`` (and the single-template ``get`` shape) are
-    given a documented request/response contract. Those mutating endpoints are
-    intentionally not implemented here until Assinafy publishes their request
-    bodies; implementing them blind would risk shipping a wrong contract.
+    The published OpenAPI exposes ``list`` only. ``get`` is retained because it
+    is live-confirmed and the schema text refers to a single-template response;
+    no template mutation or page-download paths are currently published.
     """
 
     def list(
@@ -26,9 +24,9 @@ class TemplateResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /accounts/{account_id}/templates`` — list workspace templates.
 
-        ``params`` accepts ``page``, ``per_page``, ``search``, ``status``,
-        ``tags`` (comma-separated tag IDs, AND semantics), and ``sort``
-        (``name``, ``updated_at``).
+        ``params`` accepts the published ``page``, ``per_page``, and ``search``
+        keys. Other keys are forwarded for compatibility with deployments that
+        implement the API's global list-query options.
 
         Example response (``data`` envelope unwrapped, ``meta`` from
         ``x-pagination-*`` headers)::
@@ -60,18 +58,22 @@ class TemplateResource(BaseResource):
         ``default_document_tags`` (tags auto-applied to documents created from
         this template).
 
-        Example response (``data`` envelope unwrapped, trimmed)::
+        Example response (``data`` envelope unwrapped)::
 
             {"resource": "template", "id": "fa7f3e52...", "name": "nda.pdf",
              "document_name": "nda.pdf", "message": null, "status": "ready",
-             "pages": [...], "roles": [...], "tags": [{"id": "...", "name": "HR"}],
-             "default_document_tags": [{"id": "...", "name": "Signed"}],
+             "pages": [{"id": "page-id", "number": 1, "height": 2100,
+                        "width": 1275, "fields": []}],
+             "roles": [{"id": "role-id", "name": "Signer",
+                        "assignment_type": "Signer"}],
+             "tags": [{"id": "tag-id", "name": "HR"}],
+             "default_document_tags": [{"id": "tag-id", "name": "Signed"}],
              "created_at": "2024-07-19T15:23:03Z",
              "updated_at": "2024-07-19T15:23:03Z"}
         """
         acc_id = self._account_id(account_id)
-        tmpl_id = self._require_id(template_id, "Template ID")
-        return self._call(
+        tmpl_id = self._path_id(template_id, "Template ID")
+        return self._call_dict(
             "Failed to fetch template",
             lambda: self._http.get(f"accounts/{acc_id}/templates/{tmpl_id}"),
         )

@@ -5,7 +5,9 @@ from typing import Any
 
 import httpx
 
-from .errors import ValidationError
+from ._version import __version__
+from .errors import AssinafyError, ValidationError
+from .resources.accounts import AccountResource
 from .resources.assignments import AssignmentResource
 from .resources.authentication import AuthenticationResource
 from .resources.documents import DocumentResource
@@ -14,14 +16,14 @@ from .resources.signer_documents import SignerDocumentResource
 from .resources.signers import SignerResource
 from .resources.tags import TagResource
 from .resources.templates import TemplateResource
+from .resources.users import UserResource
 from .resources.webhooks import WebhookResource
 from .support.webhook_verifier import WebhookVerifier
 from .types import Logger
 from .utils import create_noop_logger
 
-_SDK_VERSION = "1.5.0"
 _DEFAULT_BASE_URL = "https://api.assinafy.com.br/v1"
-_USER_AGENT = f"assinafy-python-sdk/{_SDK_VERSION}"
+_USER_AGENT = f"assinafy-python-sdk/{__version__}"
 
 
 class AssinafyClient:
@@ -56,6 +58,22 @@ class AssinafyClient:
     ) -> None:
         self._logger: Logger = logger or create_noop_logger()
 
+        for name, value in (("api_key", api_key), ("token", token), ("account_id", account_id)):
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValidationError(f"{name} must be a non-empty string")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not timeout > 0:
+            raise ValidationError("timeout must be a positive number")
+
+        resolved_base_url = _DEFAULT_BASE_URL if base_url is None else base_url
+        if not isinstance(resolved_base_url, str) or not resolved_base_url.strip():
+            raise ValidationError("base_url must be a non-empty HTTP(S) URL")
+        try:
+            parsed_base_url = httpx.URL(resolved_base_url)
+        except (TypeError, httpx.InvalidURL) as exc:
+            raise ValidationError("base_url must be a non-empty HTTP(S) URL") from exc
+        if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.host:
+            raise ValidationError("base_url must be a non-empty HTTP(S) URL")
+
         headers: dict[str, str] = {
             "Accept": "application/json",
             "User-Agent": _USER_AGENT,
@@ -66,12 +84,14 @@ class AssinafyClient:
             headers["Authorization"] = f"Bearer {token}"
 
         self._http = httpx.Client(
-            base_url=(base_url or _DEFAULT_BASE_URL).rstrip("/") + "/",
+            base_url=resolved_base_url.rstrip("/") + "/",
             timeout=timeout,
             headers=headers,
         )
 
         self.authentication = AuthenticationResource(self._http, None, self._logger)
+        self.accounts = AccountResource(self._http, account_id, self._logger)
+        self.users = UserResource(self._http, account_id, self._logger)
         self.documents = DocumentResource(self._http, account_id, self._logger)
         self.signers = SignerResource(self._http, account_id, self._logger)
         self.signer_documents = SignerDocumentResource(self._http, account_id, self._logger)
@@ -121,25 +141,37 @@ class AssinafyClient:
             wait_poll_interval: Forwarded to ``documents.wait_until_ready`` when
                 ``wait_for_ready`` is ``True``.
             expires_at: Optional ISO 8601 expiration timestamp.
-            copy_receivers: Optional list of email addresses to copy on the
-                signature invitation.
+            copy_receivers: Optional signer IDs that receive a copy of the
+                completed document.
             account_id: Override the client's default account ID for this call.
 
         Returns:
-            ``{"document": ..., "assignment": ..., "signer_ids": [...]}``.
+            A mapping with ``document`` using the complete
+            :class:`DocumentResource` shape, ``assignment`` using the complete
+            :class:`AssignmentResource` shape, and ``signer_ids`` as the exact
+            list of created signer ID strings.
         """
-        if not signers:
+        if (
+            not isinstance(signers, list)
+            or not signers
+            or any(not isinstance(signer, dict) for signer in signers)
+        ):
             raise ValidationError("At least one signer is required")
 
         self._logger.info("Starting upload + signature workflow", {"signer_count": len(signers)})
 
         document = self.documents.upload(source, account_id)
+        document_id = _response_id(document, "Document upload")
         if wait_for_ready:
-            self.documents.wait_until_ready(
-                document["id"], timeout=wait_timeout, poll_interval=wait_poll_interval
+            document = self.documents.wait_until_ready(
+                document_id, timeout=wait_timeout, poll_interval=wait_poll_interval
             )
+            document_id = _response_id(document, "Document readiness")
 
-        signer_ids = [self.signers.create(signer, account_id)["id"] for signer in signers]
+        signer_ids = [
+            _response_id(self.signers.create(signer, account_id), "Signer creation")
+            for signer in signers
+        ]
 
         assignment_payload: dict[str, Any] = {"method": "virtual", "signers": signer_ids}
         if message is not None:
@@ -149,8 +181,8 @@ class AssinafyClient:
         if copy_receivers is not None:
             assignment_payload["copy_receivers"] = copy_receivers
 
-        assignment = self.assignments.create(document["id"], assignment_payload)
-        self._logger.info("Upload + signature workflow completed", {"document_id": document["id"]})
+        assignment = self.assignments.create(document_id, assignment_payload)
+        self._logger.info("Upload + signature workflow completed", {"document_id": document_id})
         return {"document": document, "assignment": assignment, "signer_ids": signer_ids}
 
     def get_http_client(self) -> httpx.Client:
@@ -171,3 +203,10 @@ class AssinafyClient:
         tb: TracebackType | None,
     ) -> None:
         self.close()
+
+
+def _response_id(payload: dict[str, Any], operation: str) -> str:
+    resource_id = payload.get("id")
+    if not isinstance(resource_id, str) or not resource_id:
+        raise AssinafyError(f"{operation}: API response is missing a resource ID")
+    return resource_id

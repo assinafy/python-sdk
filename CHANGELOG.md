@@ -2,6 +2,33 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.6.0] - 2026-08-20
+
+### Added
+
+- Account and authenticated-user resources, including themes, logos, KPI
+  routes, and notification preferences.
+- Social-login linking, channel-neutral signer-code verification, and the
+  `pades` document artifact.
+
+### Fixed
+
+- Signer verification and terms-acceptance now send access codes in the
+  documented query parameter; signer updates now forward `government_id`.
+- Account deletion serializes `force` correctly and makes it keyword-only;
+  explicit empty account IDs can no longer fall back to the default workspace.
+- Document readiness polling preserves API/authentication errors, retries only
+  transient failures, and returns the refreshed ready document.
+- Path IDs, request mappings, response shapes, upload I/O, and destructive
+  boolean flags now fail through the SDK's typed error hierarchy.
+
+### Changed
+
+- GitHub Actions use immutable action revisions, test Python 3.10 through 3.14
+  plus the minimum supported `httpx`, and verify distributions before release.
+- API examples use synthetic data and document current request/response shapes,
+  sandbox compatibility behavior, and irreversible operation boundaries.
+
 ## [1.5.0] - 2026-08-10
 
 Full file-by-file conformance review against the live OpenAPI spec
@@ -11,8 +38,7 @@ plumbing, the test suite, and CI/CD. Adds one confirmed-missing endpoint,
 fixes several real bugs (three of them confirmed against live sandbox
 responses), and closes test-coverage gaps across the board. No functionality
 was removed without first confirming — live, where possible — that the
-existing behavior was actually broken. See `CONFORMANCE.md` for the full
-findings breakdown.
+existing behavior was actually broken.
 
 ### Added
 

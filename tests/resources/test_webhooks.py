@@ -9,6 +9,26 @@ from tests.conftest import MockResponse, make_envelope, make_response
 
 
 class TestWebhookResource:
+    def test_register_complete_contract_body_does_not_require_a_preflight_get(self) -> None:
+        captured_body: list[object] = []
+
+        class MockHttp:
+            def get(self, url: str, **kwargs: object) -> object:
+                raise AssertionError("complete registration must not perform GET")
+
+            def put(self, url: str, **kwargs: object) -> object:
+                captured_body.append(kwargs.get("json"))
+                return make_response(make_envelope({"is_active": True}))
+
+        body = {
+            "url": "https://example.com/webhook",
+            "email": "ops@example.com",
+            "events": ["document_ready"],
+            "is_active": True,
+        }
+        WebhookResource(MockHttp(), "acc").register(body)
+        assert captured_body == [body]
+
     def test_register_defaults_include_document_prepared_when_no_subscription_exists(
         self,
     ) -> None:
@@ -207,7 +227,23 @@ class TestWebhookResource:
         with pytest.raises(ValidationError):
             resource.register({"email": "a@b.com"})
 
+        with pytest.raises(ValidationError, match="mapping"):
+            resource.register([])  # type: ignore[arg-type]
+
     def test_register_requires_email(self) -> None:
         resource = WebhookResource(object(), "acc")  # type: ignore[arg-type]
         with pytest.raises(ValidationError):
             resource.register({"url": "https://example.com"})
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"url": "https://example.com", "email": "ops@example.com", "typo": True},
+            {"url": "https://example.com", "email": "ops@example.com", "events": "event"},
+            {"url": "https://example.com", "email": "ops@example.com", "is_active": 1},
+        ],
+    )
+    def test_register_validates_exact_request_shape(self, payload: dict[str, object]) -> None:
+        resource = WebhookResource(object(), "acc")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError):
+            resource.register(payload)  # type: ignore[arg-type]

@@ -1,8 +1,9 @@
 import httpx
 import pytest
 
+from assinafy import __version__
 from assinafy.client import AssinafyClient
-from assinafy.errors import ValidationError
+from assinafy.errors import AssinafyError, ValidationError
 
 
 class TestAssinafyClient:
@@ -38,6 +39,9 @@ class TestAssinafyClient:
     def test_sends_x_api_key_header_when_api_key_provided(self) -> None:
         client = AssinafyClient(api_key="my-key", account_id="acc")
         assert client.get_http_client().headers["X-Api-Key"] == "my-key"
+        assert (
+            client.get_http_client().headers["User-Agent"] == f"assinafy-python-sdk/{__version__}"
+        )
         client.close()
 
     def test_does_not_set_global_content_type_header(self) -> None:
@@ -60,6 +64,27 @@ class TestAssinafyClient:
         assert base_url_str == "https://sandbox.assinafy.com.br/v1"
         client.close()
 
+    @pytest.mark.parametrize("base_url", ["", "   ", "ftp://example.com", "https:///v1"])
+    def test_rejects_invalid_explicit_base_url(self, base_url: str) -> None:
+        with pytest.raises(ValidationError, match="base_url"):
+            AssinafyClient(base_url=base_url)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"api_key": ""}, "api_key"),
+            ({"token": ""}, "token"),
+            ({"account_id": ""}, "account_id"),
+            ({"timeout": 0}, "timeout"),
+            ({"timeout": True}, "timeout"),
+        ],
+    )
+    def test_rejects_invalid_constructor_values(
+        self, kwargs: dict[str, object], message: str
+    ) -> None:
+        with pytest.raises(ValidationError, match=message):
+            AssinafyClient(**kwargs)  # type: ignore[arg-type]
+
     def test_context_manager_closes_client(self) -> None:
         with AssinafyClient(api_key="k", account_id="acc") as client:
             assert client.documents is not None
@@ -70,6 +95,28 @@ class TestAssinafyClient:
             client.upload_and_request_signatures(
                 source={"file_path": "contract.pdf"},
                 signers=[],
+            )
+        client.close()
+
+    def test_upload_and_request_signatures_rejects_malformed_resource_response(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST" and request.url.path.endswith("/documents"):
+                return httpx.Response(200, json={"status": 200, "data": {"id": "doc-1"}})
+            assert request.method == "GET" and request.url.path.endswith("/documents/doc-1")
+            return httpx.Response(
+                200,
+                json={"status": 200, "data": {"status": "metadata_ready"}},
+            )
+
+        client = AssinafyClient(api_key="k", account_id="acc")
+        client._http._transport = httpx.MockTransport(handler)
+
+        with pytest.raises(AssinafyError, match="missing a resource ID"):
+            client.upload_and_request_signatures(
+                source={"buffer": b"%PDF-1.4", "file_name": "contract.pdf"},
+                signers=[{"full_name": "John Doe"}],
+                wait_timeout=1.0,
+                wait_poll_interval=0.01,
             )
         client.close()
 
@@ -106,6 +153,7 @@ class TestAssinafyClient:
         )
 
         assert result["document"]["id"] == "doc-1"
+        assert result["document"]["status"] == "metadata_ready"
         assert result["assignment"]["id"] == "assignment-1"
         assert result["signer_ids"] == ["signer-1"]
         assert any(c.endswith("/documents") for c in calls)

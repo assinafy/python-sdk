@@ -73,6 +73,15 @@ class TestTagResource:
         assert http.last_url == "accounts/acc/tags/tag-1"
         assert http.last_kwargs["params"] == {"force": True}
 
+        resource.delete("tag-1", "other-acc", force=True)
+        assert http.last_url == "accounts/other-acc/tags/tag-1"
+
+        resource.delete("tag-1", True)  # pre-1.6 positional-force compatibility
+        assert http.last_kwargs["params"] == {"force": True}
+
+        with pytest.raises(ValidationError, match="force must be boolean"):
+            resource.delete("tag-1", force="acc-2")  # type: ignore[arg-type]
+
     def test_create_requires_name(self) -> None:
         resource = TagResource(MockHttp(), "acc")
         with pytest.raises(ValidationError, match="Tag name"):
@@ -82,3 +91,8 @@ class TestTagResource:
         resource = TagResource(MockHttp(), "acc")
         with pytest.raises(ValidationError, match="Tag color"):
             resource.create({"name": "Contracts", "color": "orange"})
+
+    def test_rejects_unknown_fields(self) -> None:
+        resource = TagResource(MockHttp(), "acc")
+        with pytest.raises(ValidationError, match="Unknown tag fields"):
+            resource.create({"name": "Contracts", "hidden": True})
