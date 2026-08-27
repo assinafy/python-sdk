@@ -39,7 +39,7 @@ class TagResource(BaseResource):
             "Failed to list tags",
             lambda: self._http.get(
                 f"accounts/{acc_id}/tags",
-                params=clean_params(params or {}, QUERY_PARAM_ALIASES),
+                params=clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES),
             ),
         )
 
@@ -50,8 +50,8 @@ class TagResource(BaseResource):
     ) -> dict[str, Any]:
         """``POST /accounts/{account_id}/tags`` — create a workspace tag.
 
-        ``payload`` requires ``name`` and may include ``color`` as a 6-character
-        hex value, with or without a leading ``#``.
+        ``payload`` requires ``name`` (maximum 64 characters) and may include
+        ``color`` as a 6-character hex value, with or without a leading ``#``.
 
         Example request body (JSON)::
 
@@ -145,6 +145,8 @@ def _build_tag_payload(payload: dict[str, Any], require_name: bool) -> dict[str,
         name = payload["name"]
         if not isinstance(name, str) or not name.strip():
             raise ValidationError("Tag name is required")
+        if len(name) > 64:
+            raise ValidationError("Tag name cannot exceed 64 characters")
         body["name"] = name
     elif require_name:
         raise ValidationError("Tag name is required")

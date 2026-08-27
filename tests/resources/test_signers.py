@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from assinafy.errors import ValidationError
+from assinafy.errors import ApiError, AssinafyError, ValidationError
 from assinafy.resources.signers import SignerResource
 from tests.conftest import MockResponse, make_envelope, make_response
 
@@ -62,6 +62,14 @@ class TestSignerResource:
         resource = SignerResource(MockHttp())
         with pytest.raises(ValidationError, match="Account ID"):
             resource.create({"full_name": "Test", "email": "test@example.com"})
+
+    def test_create_rejects_success_response_without_id_as_operational_error(self) -> None:
+        class NoIdHttp(MockHttp):
+            def post(self, url: str, **kwargs: object) -> object:
+                return make_response(make_envelope({}))
+
+        with pytest.raises(AssinafyError, match="without an ID"):
+            SignerResource(NoIdHttp(), "acc").create({"full_name": "Test"})
 
     def test_update_requires_signer_id(self) -> None:
         resource = SignerResource(MockHttp(), "acc")
@@ -197,6 +205,37 @@ class TestSignerResource:
         result = resource.find_by_email("john@example.com")
         assert result is not None
         assert result["id"] == "1"
+
+    def test_find_by_email_paginates_and_ignores_non_string_email(self) -> None:
+        class TrackingHttp(MockHttp):
+            def get(self, url: str, **kwargs: object) -> object:
+                params = kwargs["params"]
+                assert isinstance(params, dict)
+                page = params["page"]
+                data = (
+                    [{"id": "bad", "email": 123}]
+                    if page == 1
+                    else [{"id": "match", "email": "TARGET@EXAMPLE.COM"}]
+                )
+                return make_response(
+                    make_envelope(data),
+                    headers={
+                        "x-pagination-current-page": str(page),
+                        "x-pagination-page-count": "2",
+                    },
+                )
+
+        result = SignerResource(TrackingHttp(), "acc").find_by_email("target@example.com")
+        assert result == {"id": "match", "email": "TARGET@EXAMPLE.COM"}
+
+    def test_find_by_email_surfaces_list_404(self) -> None:
+        class NotFoundHttp(MockHttp):
+            def get(self, url: str, **kwargs: object) -> object:
+                return make_response({"message": "not found"}, status_code=404)
+
+        with pytest.raises(ApiError) as exc_info:
+            SignerResource(NotFoundHttp(), "acc").find_by_email("target@example.com")
+        assert exc_info.value.status_code == 404
 
     def test_get_self_uses_signer_access_code_query_alias(self) -> None:
         http = MockHttp()

@@ -47,10 +47,75 @@ with AssinafyClient(
 create the assignment) and is not transactional — a failure partway through
 does not roll back what already succeeded. It also accepts `wait_timeout` /
 `wait_poll_interval` to override the default document-readiness poll.
+Phone-only signers use WhatsApp verification and notification, which requires
+account availability and consumes credits; use `assignments.estimate_cost()`
+when the current cost must be known before sending.
+
+## Document signing flow
+
+Use the individual resources when you need explicit IDs, cost estimation, or
+cleanup control:
+
+```python
+import os
+from assinafy import AssinafyClient
+
+with AssinafyClient(
+    api_key=os.environ["ASSINAFY_API_KEY"],
+    account_id=os.environ["ASSINAFY_ACCOUNT_ID"],
+) as client:
+    # 1. Create or reuse the people who will sign.
+    signer = client.signers.find_by_email("signer@example.com")
+    if signer is None:
+        signer = client.signers.create({
+            "full_name": "Example Signer",
+            "email": "signer@example.com",
+        })
+
+    # 2. Upload and wait until field/signature metadata is ready.
+    document = client.documents.upload({"file_path": "./contract.pdf"})
+    document = client.documents.wait_until_ready(document["id"])
+
+    # 3. Estimate before creating the notification-producing assignment.
+    estimate = client.assignments.estimate_cost(document["id"], {
+        "method": "virtual",
+        "signers": [{
+            "verification_method": "Email",
+            "notification_methods": ["Email"],
+        }],
+    })
+
+    # 4. Request the signature. This can send a real notification.
+    assignment = client.assignments.create(document["id"], {
+        "method": "virtual",
+        "signers": [{
+            "id": signer["id"],
+            "verification_method": "Email",
+            "notification_methods": ["Email"],
+            "step": 1,
+        }],
+        "message": "Please review and sign.",
+        "expires_at": "2030-12-31T23:59:59Z",
+    })
+
+    # 5. Read progress and download the completed artifact when certificated.
+    document = client.documents.get(document["id"])
+    if document["status"] == "certificated":
+        signed_pdf = client.documents.download(document["id"], "certificated")
+```
+
+Keep the returned document, signer, and assignment IDs. Delete only disposable
+resources you created, and do so in reverse dependency order.
 
 ## Authentication
 
-Prefer `api_key`; it is sent as the documented `X-Api-Key` header. `token` sends `Authorization: Bearer <token>` for legacy/user-token flows.
+Prefer `api_key`; it is sent as the documented `X-Api-Key` header. `token` sends
+`Authorization: Bearer <token>` for legacy/user-token flows. If both are
+provided, the API key takes precedence.
+The SDK omits both credentials on routes whose OpenAPI security is public or
+signer-access-code-only.
+Every outbound production and sandbox request uses
+`User-Agent: Assinafy-Python-SDK/v<package-version>`.
 
 ```python
 client = AssinafyClient(api_key="k_xxx", account_id="acc_xxx")
@@ -117,10 +182,9 @@ client.accounts.delete(created_id)
 `delete()` targets the supplied account ID (or the client's default) and makes
 `force` keyword-only so a positional ID can never be mistaken for the force
 flag. Use `force=True` only when you intentionally want to cancel that
-account's active paid subscription as part of deletion. The current sandbox
-accepts sender type changes through `update()` but
-rejects that optional field during `create()`, despite the published create
-schema; the two-step example works on both deployments.
+account's active paid subscription as part of deletion. Creating the account
+first and setting `notification_sender_type` with `update()` is supported
+across deployed API versions.
 
 ### Current User
 
@@ -134,9 +198,8 @@ preferences = client.users.update_notification_preferences({
 })
 ```
 
-As of 2026-08-20, the sandbox returns 404 for both published stats routes and
-the notification-preferences routes. The SDK exposes their current official
-contracts and keeps them unit-tested, but cannot fabricate server-side data.
+The live smoke script reports routes unavailable in the configured sandbox as
+explicit skips.
 
 ### Documents
 
@@ -158,8 +221,8 @@ client.documents.download_page(doc["id"], page_id)
 client.documents.verify(signature_hash)
 client.documents.public_info(doc["id"])
 # Choose one form; each call sends a real token.
-client.documents.send_token(doc["id"], email="signer@example.com")  # current OpenAPI
-# Older deployment alternative: client.documents.send_token(doc["id"], "signer@example.com", "email")
+client.documents.send_token(doc["id"], email="signer@example.com")
+# Legacy body alternative: client.documents.send_token(doc["id"], "signer@example.com", "email")
 client.documents.list_tags(doc["id"])
 client.documents.replace_tags(doc["id"], [tag_id_a, tag_id_b])
 client.documents.append_tags(doc["id"], [tag_id_c])
@@ -261,10 +324,51 @@ client.assignments.resend_notification(document_id, assignment["id"], signer["id
 client.assignments.whatsapp_notifications(document_id, assignment["id"])
 ```
 
+For a `collect` assignment, `entries` places reusable fields on a page:
+
+```python
+collect_payload = {
+    "method": "collect",
+    "signers": [{
+        "id": signer["id"],
+        "verification_method": "Email",
+        "notification_methods": ["Email"],
+        "step": 1,
+    }],
+    "entries": [{
+        "page_id": page["id"],
+        "fields": [{
+            "signer_id": signer["id"],
+            "field_id": field["id"],
+            "display_settings": {
+                "left": 69,
+                "top": 282,
+                "width": 421,
+                "height": 45.86,
+                "fontSize": 18,
+                "fontFamily": "Arial",
+                "backgroundColor": "#D5EBFF",
+            },
+        }],
+    }],
+}
+```
+
+The five numeric display fields are required 150-DPI page-image pixel values;
+the rectangle must remain within the selected page. `fontFamily` and
+`backgroundColor` are optional.
+
+`resend_notification()` sends a real message and charges the notification
+channel again; call `estimate_resend_cost()` first when cost must be known.
+
 Signer-facing assignment endpoints:
 
 ```python
 client.assignments.get_for_signer(signer_access_code)
+# Virtual assignment: confirm signer data, then submit the empty item list.
+client.signers.confirm_data(document_id, signer_access_code, {"full_name": "Example Signer"})
+client.assignments.sign(document_id, assignment_id, [], signer_access_code)
+# Collect assignment: submit each completed item.
 client.assignments.sign(
     document_id,
     assignment_id,
@@ -276,12 +380,9 @@ client.assignments.sign(
 ```
 
 `DigitalCertificate` is accepted as an assignment `verification_method`, and
-the `pades` artifact is downloadable. The current official prose then directs
-certificate signers to `POST /signers/certificate/start` and `/complete`, but
-those operations have no published path, authentication, request, or response
-schema and return no evidence of availability in the sandbox. The SDK does not
-invent that security-sensitive contract; Assinafy must publish it before a safe
-implementation can be added.
+the `pades` artifact is downloadable. Certificate start/complete calls are not
+part of the published API contract, so the SDK leaves that security-sensitive
+step to the Assinafy-hosted signing flow.
 
 ### Signer Documents
 
@@ -295,8 +396,8 @@ client.signer_documents.sign_multiple(["doc-1", "doc-2"], signer_access_code)
 client.signer_documents.download(signer_id, document_id, artifact_name="original")
 ```
 
-The download route is public in the current contract. Its optional
-`signer_access_code` argument is retained for older deployments.
+The download route is public. Its optional `signer_access_code` argument is
+available for deployments that require it.
 
 ### Field Definitions
 
@@ -413,13 +514,43 @@ The complete stable top-level resource payloads are:
   "Assignment": {
     "resource": "assignment", "id": "assignment-id",
     "sender_email": "sender@example.com", "method": "virtual",
-    "expires_at": null, "message": null, "signers": [], "copy_receivers": [],
-    "items": [], "summary": {"signer_count": 0, "completed_count": 0, "signers": []},
-    "signing_urls": []
+    "expires_at": null, "message": null,
+    "signers": [{
+      "resource": "signer", "id": "signer-id", "full_name": "Example Signer",
+      "email": "signer@example.com", "whatsapp_phone_number": null,
+      "has_accepted_terms": false, "verification_method": "Email",
+      "notification_methods": ["Email"], "step": 1, "notified": true,
+      "completed": false, "notification_history": [{
+        "event": "signature_request", "status": "sent", "error_code": null,
+        "error_message": null, "sent_at": "2026-08-26T12:00:00Z",
+        "failed_at": null
+      }]
+    }],
+    "copy_receivers": [],
+    "items": [{
+      "id": "item-id",
+      "page": {"id": "page-id", "number": 1, "height": 2100,
+               "width": 1275, "download_url": "https://api.example/page"},
+      "signer": {"id": "signer-id", "full_name": "Example Signer",
+                 "email": "signer@example.com"},
+      "field": {"id": "field-id", "name": "Signature", "type": "signature"},
+      "display_settings": {"left": 69, "top": 282, "width": 421,
+                           "height": 45.86, "fontFamily": "Arial",
+                           "fontSize": 18, "backgroundColor": "#D5EBFF"},
+      "value": null, "completed": false
+    }],
+    "summary": {"signer_count": 1, "completed_count": 0,
+                "signers": [{"id": "signer-id", "full_name": "Example Signer",
+                             "email": "signer@example.com", "completed": false}]},
+    "signing_urls": [{"signer_id": "signer-id",
+                      "url": "https://api.example/sign/document-id"}]
   },
   "CostEstimate": {
-    "documents": 1, "credits": 0, "needs_extra_document": false,
-    "extra_document_cost": 0, "total_credits": 0, "breakdown": [],
+    "documents": 1, "credits": 0.45, "needs_extra_document": false,
+    "extra_document_cost": 0, "total_credits": 0.45,
+    "breakdown": [{"code": "NotificationWhatsapp",
+                   "name": "Whatsapp Notification", "cost": 0.45,
+                   "quantity": 1, "unit_cost": 0.45}],
     "document_balance": 10, "credit_balance": 0,
     "has_sufficient_resources": true, "blocking_reason": null, "message": null
   },
@@ -442,9 +573,8 @@ The complete stable top-level resource payloads are:
 }
 ```
 
-The current OpenAPI example uses `"resource": "field"`; the sandbox has also
-returned `"field_definition"`. The SDK preserves whichever value the server
-returns.
+Field resource values are returned verbatim. The documented value is `"field"`;
+`"field_definition"` is also supported.
 
 Template, notification-preference, KPI, verification, webhook-dispatch, and
 operation-specific contracts are documented beside their public methods;
@@ -476,12 +606,24 @@ except AssinafyError as err:
 ```bash
 python -m pip install -e ".[dev]"
 python -m pytest --cov=assinafy --cov-branch --cov-fail-under=90 --cov-report=term-missing
-python -m mypy src
+python -m mypy src scripts/live_smoke.py
 python -m ruff check src tests scripts
 python -m ruff format --check src tests scripts
 ```
 
 ### Live smoke test
+
+For CI-safe, non-mutating coverage (no test email required):
+
+```bash
+ASSINAFY_API_KEY=... \
+ASSINAFY_ACCOUNT_ID=... \
+ASSINAFY_BASE_URL=https://sandbox.assinafy.com.br/v1 \
+ASSINAFY_READ_ONLY=1 \
+python scripts/live_smoke.py
+```
+
+For the disposable write flow:
 
 ```bash
 ASSINAFY_API_KEY=... \
@@ -498,12 +640,26 @@ The script refuses production and missing base URLs. It confirms read
 endpoints, signer/tag/field CRUD (including
 clearing a field's regex), template lookup and cost estimation, document
 upload, document tagging, ``wait_until_ready`` polling, cost estimation, and
-cleanup end-to-end. Every created resource is captured and removed in a
-`finally` block. Webhook mutation is skipped unless an explicit test endpoint
-is supplied; when enabled, the prior single-workspace subscription is restored.
+cleanup end-to-end. Every successfully returned resource ID is captured and
+its cleanup is attempted in a `finally` block. Webhook mutation is skipped
+unless an explicit test endpoint is supplied; when enabled, the prior
+single-workspace subscription is restored.
 The notification opt-in sends real sandbox emails and may consume sandbox
 credits; omit it for CRUD-only smoke coverage. Account and user-preference
 mutations are separate opt-ins and are cleaned/restored in `finally`.
+
+### Release checklist
+
+1. Bump `src/assinafy/_version.py` and add user-facing release notes to
+   `CHANGELOG.md`.
+2. Run the development gates above, install release tooling with
+   `python -m pip install build twine`, then run `python -m build` and
+   `python -m twine check dist/*`.
+3. Push the GitLab source and verify that the branch and CI result reached the
+   GitHub mirror.
+4. Create and push an annotated `v<version>` tag matching `__version__`.
+5. Approve the protected `pypi` environment and verify Trusted Publishing
+   provenance after release.
 
 ## License
 

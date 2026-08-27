@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from ..errors import ValidationError
-from ..utils import QUERY_PARAM_ALIASES, clean_params
+from ..utils import QUERY_PARAM_ALIASES, clean_params, validate_email
 from .base import BaseResource
 
 # Curated convenience default used when ``register`` is called without an
@@ -66,10 +67,8 @@ class WebhookResource(BaseResource):
         unknown = payload.keys() - {"url", "email", "events", "is_active"}
         if unknown:
             raise ValidationError(f"Unknown webhook fields: {', '.join(sorted(unknown))}")
-        if not isinstance(payload.get("url"), str) or not payload["url"]:
-            raise ValidationError("Webhook URL is required")
-        if not isinstance(payload.get("email"), str) or not payload["email"]:
-            raise ValidationError("Webhook email is required")
+        _validate_webhook_url(payload.get("url"))
+        validate_email(payload.get("email"), "Webhook email")
         if "events" in payload and (
             not isinstance(payload["events"], list)
             or any(not isinstance(event, str) or not event for event in payload["events"])
@@ -182,8 +181,8 @@ class WebhookResource(BaseResource):
                 {"id": "a1b2c3d4e5f6...", "event": "document_ready",
                  "activity_id": 456, "endpoint": "https://example.com/webhook",
                  "payload": {"event": "document_ready", "id": 456,
-                             "object": {"id": "abc123", "type": "document"},
-                             "subject": {"id": "def456", "type": "user"}},
+                             "object": {"id": "abc123", "type": "Document"},
+                             "subject": {"id": "def456", "type": "User"}},
                  "delivered": true, "http_status": 200, "response_body": "OK",
                  "error": null, "created_at": "2026-06-05T20:50:55Z",
                  "updated_at": "2026-06-05T20:50:56Z"}
@@ -191,7 +190,7 @@ class WebhookResource(BaseResource):
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
         acc_id = self._account_id(account_id)
-        cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
+        cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
         return self._call_list(
             "Failed to list webhook dispatches",
             lambda: self._http.get(f"accounts/{acc_id}/webhooks", params=cleaned),
@@ -224,3 +223,14 @@ class WebhookResource(BaseResource):
             "Failed to retry webhook dispatch",
             lambda: self._http.post(f"accounts/{acc_id}/webhooks/{did}/retry"),
         )
+
+
+def _validate_webhook_url(value: Any) -> None:
+    if not isinstance(value, str):
+        raise ValidationError("Webhook URL must be an absolute HTTP(S) URL")
+    try:
+        parsed = urlsplit(value)
+    except ValueError as err:
+        raise ValidationError("Webhook URL must be an absolute HTTP(S) URL") from err
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValidationError("Webhook URL must be an absolute HTTP(S) URL")

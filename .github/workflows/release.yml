@@ -16,6 +16,7 @@ jobs:
   build:
     name: Build distribution
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,7 +48,7 @@ jobs:
         run: ruff format --check src tests scripts
 
       - name: Type check (mypy)
-        run: mypy src
+        run: mypy src scripts/live_smoke.py
 
       - name: Test (pytest)
         run: pytest -q --cov=assinafy --cov-branch --cov-fail-under=90 --cov-report=term-missing
@@ -64,6 +65,7 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/assinafy-wheel-test"
           "$RUNNER_TEMP/assinafy-wheel-test/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/assinafy-wheel-test/bin/python" -m pip check
           "$RUNNER_TEMP/assinafy-wheel-test/bin/python" -c 'import os; from importlib.metadata import version; import assinafy; expected = os.environ["RELEASE_TAG"].removeprefix("v"); assert version("assinafy") == expected == assinafy.__version__'
 
       - name: Upload artifacts
@@ -76,6 +78,7 @@ jobs:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 10
     environment:
       name: pypi
       url: https://pypi.org/p/assinafy

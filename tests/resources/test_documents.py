@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from assinafy.errors import ApiError, ValidationError
+from assinafy.errors import ApiError, AssinafyError, ValidationError
 from assinafy.resources.documents import DocumentResource
 from tests.conftest import MockResponse, make_envelope, make_response
 
@@ -90,13 +90,27 @@ class TestDocumentResource:
         with pytest.raises(ValidationError, match="file_path"):
             resource.upload({})
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            {"buffer": b"%PDF-1.4", "file_name": "contract.pdf", "file_path": "other.pdf"},
+            {"buffer": b"%PDF-1.4", "file_name": "contract.pdf", "unexpected": True},
+        ],
+    )
+    def test_upload_rejects_ambiguous_or_unknown_source_fields(
+        self, source: dict[str, object]
+    ) -> None:
+        resource = DocumentResource(MockHttp(), "acc")
+        with pytest.raises(ValidationError):
+            resource.upload(source)  # type: ignore[arg-type]
+
     def test_upload_raises_when_response_has_no_id(self) -> None:
         class NoIdHttp(MockHttp):
             def post(self, url: str, **kwargs: object) -> object:
                 return make_response(make_envelope({}))
 
         resource = DocumentResource(NoIdHttp(), "acc")
-        with pytest.raises(ValidationError, match="no document ID"):
+        with pytest.raises(AssinafyError, match="no document ID"):
             resource.upload({"buffer": b"%PDF-1.4", "file_name": "contract.pdf"})
 
     def test_delete_hits_documented_endpoint(self) -> None:
@@ -183,6 +197,10 @@ class TestDocumentResource:
             resource.send_token("doc-1", "signer@example.com", "email", email="other@example.com")
         with pytest.raises(ValidationError, match="Channel"):
             resource.send_token("doc-1", "signer@example.com", "sms")
+        with pytest.raises(ValidationError, match="Invalid email"):
+            resource.send_token("doc-1", email="not-an-email")
+        with pytest.raises(ValidationError, match="Invalid email"):
+            resource.send_token("doc-1", "not-an-email", "email")
 
     def test_document_tag_methods_use_documented_endpoints(self) -> None:
         http = MockHttp()
@@ -263,7 +281,7 @@ class TestWaitUntilReady:
                 return make_response(make_envelope({"id": "doc-1", "status": "failed"}))
 
         resource = DocumentResource(FailedHttp(), "acc")
-        with pytest.raises(ValidationError, match="failed"):
+        with pytest.raises(AssinafyError, match="failed"):
             resource.wait_until_ready("doc-1", timeout=1.0, poll_interval=0.01)
 
     def test_raises_timeout_when_status_never_settles(self) -> None:
@@ -274,7 +292,7 @@ class TestWaitUntilReady:
                 )
 
         resource = DocumentResource(PendingHttp(), "acc")
-        with pytest.raises(ValidationError, match="Timeout"):
+        with pytest.raises(AssinafyError, match="Timeout"):
             resource.wait_until_ready("doc-1", timeout=0.05, poll_interval=0.01)
 
     def test_retries_through_transient_errors_then_succeeds(self) -> None:
@@ -335,3 +353,99 @@ class TestWaitUntilReady:
             resource.wait_until_ready("doc-1", timeout=1.0, poll_interval=0.01)
         assert exc_info.value.status_code == 404
         assert http.calls == 1
+
+
+class TestTemplateDocuments:
+    def test_create_from_template_validates_and_posts_complete_body(self) -> None:
+        http = MockHttp()
+        resource = DocumentResource(http, "acc")
+        signers = [
+            {
+                "role_id": "role-1",
+                "id": "signer-1",
+                "verification_method": "Email",
+                "notification_methods": ["Email"],
+                "step": 1,
+            }
+        ]
+        options = {
+            "name": "Contract.pdf",
+            "message": "Please sign",
+            "expires_at": "2030-12-31T00:00:00Z",
+            "editor_fields": [{"field_id": "field-1", "value": "value"}],
+            "tags": ["Contracts"],
+        }
+
+        resource.create_from_template("template-1", signers, options)
+
+        assert http.last_url == "accounts/acc/templates/template-1/documents"
+        assert http.last_kwargs["json"] == {**options, "signers": signers}
+
+    def test_create_from_template_omits_none_options(self) -> None:
+        http = MockHttp()
+        signers = [{"role_id": "role-1", "id": "signer-1"}]
+
+        DocumentResource(http, "acc").create_from_template(
+            "template-1", signers, {"name": None, "message": None}
+        )
+
+        assert http.last_kwargs["json"] == {"signers": signers}
+
+    @pytest.mark.parametrize(
+        ("signers", "options"),
+        [
+            (
+                [{"role_id": "r1", "id": "s1", "notification_methods": ["Email", "Whatsapp"]}],
+                None,
+            ),
+            ([{"role_id": "r1", "id": "s1"}], {"expires_at": "2030-12-31"}),
+            ([{"role_id": "r1", "id": "s1"}], {"tags": [""]}),
+            (
+                [{"role_id": "r1", "id": "s1"}],
+                {"editor_fields": [{"field_id": "field-1"}]},
+            ),
+            ([{"role_id": "r1", "id": "s1"}], {"signers": []}),
+        ],
+    )
+    def test_create_from_template_rejects_invalid_contract_values(
+        self,
+        signers: list[dict[str, object]],
+        options: dict[str, object] | None,
+    ) -> None:
+        with pytest.raises(ValidationError):
+            DocumentResource(object(), "acc").create_from_template(  # type: ignore[arg-type]
+                "template-1",
+                signers,  # type: ignore[arg-type]
+                options,  # type: ignore[arg-type]
+            )
+
+    def test_create_from_template_defers_role_aware_step_validation(self) -> None:
+        http = MockHttp()
+        signers = [
+            {
+                "role_id": "signer-role",
+                "id": "signer-1",
+                "verification_method": "DigitalCertificate",
+                "step": 1,
+            },
+            {"role_id": "copy-receiver-role", "id": "signer-2"},
+        ]
+
+        DocumentResource(http, "acc").create_from_template("template-1", signers)
+
+        assert http.last_kwargs["json"] == {"signers": signers}
+
+    def test_estimate_cost_from_template_posts_documented_body(self) -> None:
+        http = MockHttp()
+        signers = [
+            {
+                "role_id": "role-1",
+                "verification_method": "Whatsapp",
+                "notification_methods": ["Whatsapp"],
+            }
+        ]
+
+        DocumentResource(http, "acc").estimate_cost_from_template("template-1", signers)
+
+        assert http.last_url == "accounts/acc/templates/template-1/documents/estimate-cost"
+        assert http.last_kwargs["json"] == {"signers": signers}

@@ -2,6 +2,41 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.6.1] - 2026-08-26
+
+### Added
+
+- A complete document-signing flow, request/response references, live-smoke
+  modes, and a release checklist in the README and public method docstrings.
+- A main-branch, read-only sandbox workflow using environment secrets, plus
+  weekly updates for pinned GitHub Actions.
+
+### Fixed
+
+- Every production and sandbox request now uses
+  `User-Agent: Assinafy-Python-SDK/v<package-version>`, even when callers
+  override the underlying HTTP headers.
+- Client credentials are withheld from public, signer-code-only, cross-origin,
+  and out-of-base-path requests while remaining attached to protected routes.
+- Composite document workflows validate all signer, assignment, expiration,
+  and wait options before the first write and preserve Email and WhatsApp
+  channel behavior.
+- Template, signer, webhook, tag, upload-source, query-alias, and RFC 3339
+  validation now fails before malformed requests are sent.
+- Signer lookup paginates exact email matches, response-shape failures use the
+  SDK error hierarchy, and binary endpoints accept their documented media
+  types.
+- Virtual assignment signing accepts the required empty item list; template
+  creation omits unset options and leaves role-aware step checks to the API.
+- Read-only live smoke runs cannot execute preference restoration writes, and
+  missing created-resource IDs fail immediately while cleanup still runs.
+
+### Changed
+
+- Supported HTTPX releases are constrained to `>=0.27.0,<1`.
+- Mirrored branch pushes run the full Python 3.10–3.14, Ruff, strict mypy,
+  minimum-HTTPX, test, and distribution gates.
+
 ## [1.6.0] - 2026-08-20
 
 ### Added
@@ -26,19 +61,10 @@ All notable changes to `assinafy` are documented in this file.
 
 - GitHub Actions use immutable action revisions, test Python 3.10 through 3.14
   plus the minimum supported `httpx`, and verify distributions before release.
-- API examples use synthetic data and document current request/response shapes,
-  sandbox compatibility behavior, and irreversible operation boundaries.
+- API examples use synthetic data and document request/response shapes and
+  irreversible operation boundaries.
 
 ## [1.5.0] - 2026-08-10
-
-Full file-by-file conformance review against the live OpenAPI spec
-(`https://api.assinafy.com.br/v1/docs/openapi.json`, 66 paths as of this
-release) and the Assinafy sandbox, covering every resource, the core HTTP
-plumbing, the test suite, and CI/CD. Adds one confirmed-missing endpoint,
-fixes several real bugs (three of them confirmed against live sandbox
-responses), and closes test-coverage gaps across the board. No functionality
-was removed without first confirming — live, where possible — that the
-existing behavior was actually broken.
 
 ### Added
 
@@ -51,9 +77,7 @@ existing behavior was actually broken.
   `is_signature_reusable` flag.
 - `client.signers.confirm_data()` now also accepts `full_name` and
   `government_id`, matching the documented request schema (kept the existing
-  `whatsapp_phone_number` / `has_accepted_terms` fields rather than removing
-  them, since this endpoint's full request/response has never been
-  live-tested with a real signer session).
+  `whatsapp_phone_number` / `has_accepted_terms` compatibility fields).
 - `client.upload_and_request_signatures(..., wait_timeout=30.0, wait_poll_interval=2.0)`
   — forwarded to `documents.wait_until_ready` (previously hardcoded).
 
@@ -74,9 +98,8 @@ existing behavior was actually broken.
   normalized request body instead of the raw payload, so it no longer reports
   0 signers when the caller uses the legacy `signer_ids` alias.
 - `client.fields.update()` silently dropped an explicit `{"regex": None}`,
-  making it impossible to clear a field's regex — **confirmed live**: the
-  regex remained set after the call. Now mirrors `tags.update()`'s handling of
-  `color: None`.
+  making it impossible to clear a field's regex. It now mirrors
+  `tags.update()`'s handling of `color: None`.
 - `client.webhooks.register()` treated an explicit `events=[]` the same as
   "omitted" and replaced it with the curated default — an empty list is now
   preserved as-is.
@@ -87,8 +110,7 @@ existing behavior was actually broken.
   can't clobber existing configuration. First-time registration (no existing
   subscription) is unaffected.
 - `client.signer_documents.list()` now requires `signer_access_code` (previously
-  optional-but-effectively-useless, since the API always 401s without it) —
-  aligned with every sibling signer-facing method.
+  optional), aligned with every sibling signer-facing method.
 - `scripts/live_smoke.py` now saves the workspace's webhook subscription
   before its register/inactivate test and restores it exactly at the end,
   instead of relying on a human to notice and fix it out-of-band afterward.
@@ -101,11 +123,10 @@ existing behavior was actually broken.
   `documents.upload(source, {"account_id": "..."})` with
   `documents.upload(source, "...")`.
 - `fields.create()`'s docstring no longer lists `is_read_only`/`is_visible` as
-  accepted input — **confirmed live** that the API silently ignores them; they
-  are server-controlled response fields only.
+  accepted input; they are server-controlled response fields only.
 - `signers.confirm_data()` now raises `ValidationError` on an empty body
   instead of silently sending `{}`, matching `signers.update()`.
-- Corrected several docstring examples to match the live/resolved-spec
+- Corrected several docstring examples to match the published
   contract: `create_from_template` (dropped undocumented `copy_receivers`,
   added `tags`), `estimate_cost_from_template` (dropped an undocumented `id`
   field from the example), `signers.get_self` (added the documented
@@ -113,42 +134,15 @@ existing behavior was actually broken.
   `fields.list()` (added the missing `resource` field).
 - CI: added `permissions: contents: read` to both workflows, a concurrency
   group to `release.yml`, `ruff format --check`, and `pytest --cov` reporting.
-  Verified `actions/checkout@v7`, `actions/setup-python@v7`,
-  `actions/upload-artifact@v7`, `actions/download-artifact@v8`, and
-  `pypa/gh-action-pypi-publish@release/v1` are all still current; verified the
-  Python 3.10–3.14 CI matrix covers every currently-supported CPython release
-  (3.15 is prerelease-only as of this writing).
 - `assinafy.types.SignerReference` is now actually used in
   `assignments.py`'s signer-normalization signatures instead of sitting
   unused in `__all__`.
 - Simplified `BaseResource._read_header`'s dead `hasattr` guard (every real
   and test-mocked `headers` object has `.get`).
 
-### Verified (no change)
-
-- `templates.get()` targeting `GET /accounts/{id}/templates/{id}` (absent from
-  the OpenAPI `paths`) still returns 200 live.
-- `documents.public_info()`'s reduced response shape matches its docstring.
-- `fields.list()`/`templates.list()`'s documented `search`/`page`/`per-page`/
-  `sort` params are backed by the spec's global "Searching, paginating and
-  sorting" contract (not per-operation `parameters`, which only enumerate a
-  subset) — no docstring change needed for the resources that only claimed
-  these four.
-- 169 unit tests pass (up from 120); `ruff check`, `ruff format --check`, and
-  `mypy --strict` are all clean.
-- Live sandbox run: read paths, signer/tag/field CRUD (incl. the regex-clear
-  fix), template lookup + cost estimate, document upload → ready → rename →
-  delete, a real assignment invitation sent to two real test inboxes
-  (estimate-cost, reset-expiration incl. null-clear, resend-notification,
-  estimate-resend-cost, whatsapp-notifications), and the webhook
-  register/inactivate/restore cycle all pass end-to-end.
-
 ## [1.4.0] - 2026-07-20
 
-Coverage audit against the authoritative OpenAPI spec
-(`https://api.assinafy.com.br/v1/docs/openapi.json`, 68 paths), re-validated
-end-to-end against the Assinafy sandbox. Adds the documented signing-workflow
-endpoints that the SDK did not yet expose. No breaking changes.
+Adds documented signing-workflow endpoints. No breaking changes.
 
 ### Added
 
@@ -162,16 +156,6 @@ endpoints that the SDK did not yet expose. No breaking changes.
   account's assignments (account context is supplied automatically as the
   `accountId` query parameter). Returns the standard `{"data": [...], "meta": {...}}`.
 
-### Verified (no change)
-
-- `client.documents.send_token()` sends the documented `{"recipient", "channel"}`
-  body — confirmed correct against the live sandbox (the OpenAPI spec's
-  `{"email"}` shape returns `400 "channel is required"`; live behavior is
-  authoritative).
-- `client.templates.get()` targets a real endpoint
-  (`GET /accounts/{id}/templates/{id}` returns 200 live) even though it is absent
-  from the OpenAPI `paths`.
-
 ### Changed
 
 - CI/release workflows: bumped `actions/checkout` and `actions/setup-python`
@@ -183,24 +167,16 @@ endpoints that the SDK did not yet expose. No breaking changes.
 
 - Corrected the response payload examples in the docstrings for
   `assignments.whatsapp_notifications`, `webhooks.list_dispatches`, and
-  `webhooks.retry_dispatch` to match the documented object shapes (these
-  endpoints returned empty arrays during live testing, so the 1.3.1 examples had
-  invented fields such as `response_status` and the wrong types for `id`/
-  `sent_at`/`created_at`). Also aligned the `fields.validate` example
-  request/response so the value matches the echoed field type. Docstrings only —
-  no code or behavior changes.
+  `webhooks.retry_dispatch` to match the documented object shapes. Also aligned
+  the `fields.validate` example request/response so the value matches the echoed
+  field type. Docstrings only — no code or behavior changes.
 
 ## [1.3.1] - 2026-06-05
-
-Full conformance audit against `https://api.assinafy.com.br/v1/docs`, validated
-with live testing against the Assinafy sandbox. Every public method's docstring
-now includes a real request/response payload example captured from the API.
 
 ### Removed
 
 - `client.webhooks.delete()` — `DELETE /accounts/{account_id}/webhooks/subscriptions`
-  is **not a real endpoint** (the live API returns `404 Não encontrada`), so the
-  method could never succeed. The documented way to stop delivery is
+  is not a documented endpoint. The supported way to stop delivery is
   `client.webhooks.inactivate()`, which preserves the configured URL/events.
   Migration: replace any `webhooks.delete()` call with `webhooks.inactivate()`.
 
@@ -237,16 +213,6 @@ now includes a real request/response payload example captured from the API.
   boundary, and bare-array/object unwrapping centralized in `_call_plain_list` /
   `_call_plain_dict` (removes ~10 duplicated coercion sites). No behavior change.
 
-### Verified
-
-- 114 unit tests pass; `ruff` and `mypy --strict` are clean.
-- Live sandbox run: 49 SDK calls succeed end-to-end (read paths, signer/tag/field
-  CRUD, document upload → ready → download → tagging → delete, assignment
-  create/estimate/resend/reset incl. null-clear, webhook register/inactivate).
-  The 8 signer-access-code endpoints return `401` with an invalid code,
-  confirming they are correctly wired; their happy path requires an
-  interactively verified signer session.
-
 ## [1.3.0] - 2026-05-27
 
 ### Added
@@ -270,20 +236,11 @@ now includes a real request/response payload example captured from the API.
 
 ### Changed
 
-- `User-Agent` header now includes the SDK version (`assinafy-python-sdk/1.2.0`).
+- `User-Agent` header now includes the SDK version.
 - `documents.create_from_template` and `documents.estimate_cost_from_template`
   now validate that `signers` is non-empty before sending the request.
 - `WebhookVerifier` class docstring documents the assumed HMAC-SHA256 scheme
   and how to subclass for accounts using a different scheme.
-
-### Verified
-
-- 100% endpoint coverage versus https://api.assinafy.com.br/v1/docs — all
-  documented routes for authentication, documents, signers, signer-documents,
-  templates, assignments, fields, and webhooks are implemented with matching
-  verbs, paths, body shapes, and hyphenated query-parameter aliases.
-- 95 unit tests pass; `ruff` and `mypy --strict` are clean.
-- Live API smoke test passes against `https://api.assinafy.com.br/v1`.
 
 ## [1.1.1] - 2026-05-09
 

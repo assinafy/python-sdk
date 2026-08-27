@@ -142,3 +142,17 @@ class TestAuthenticationResource:
             "new_password": "new-secret",
             "token": "reset-token",
         }
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda resource: resource.login("invalid", "secret"),
+            lambda resource: resource.change_password("invalid", "old", "new"),
+            lambda resource: resource.request_password_reset("invalid"),
+            lambda resource: resource.reset_password("invalid", "new"),
+        ],
+    )
+    def test_email_flows_reject_invalid_addresses(self, call: object) -> None:
+        resource = AuthenticationResource(MockHttp())
+        with pytest.raises(ValidationError, match="email"):
+            call(resource)  # type: ignore[operator]

@@ -5,7 +5,7 @@ from typing import Any
 
 from ..errors import ValidationError
 from ..types import SignerReference
-from ..utils import QUERY_PARAM_ALIASES, clean_params
+from ..utils import QUERY_PARAM_ALIASES, clean_params, validate_datetime
 from .base import BaseResource
 
 _ASSIGNMENT_METHODS = frozenset({"virtual", "collect"})
@@ -45,6 +45,8 @@ def build_assignment_payload(
     unknown = payload.keys() - _ASSIGNMENT_FIELDS
     if unknown:
         raise ValidationError(f"Unknown assignment fields: {', '.join(sorted(unknown))}")
+    if "signers" in payload and "signer_ids" in payload:
+        raise ValidationError("Use signers or signer_ids, not both")
     method = payload.get("method", "virtual")
     if not isinstance(method, str) or method not in _ASSIGNMENT_METHODS:
         raise ValidationError('method must be "virtual" or "collect"')
@@ -57,10 +59,12 @@ def build_assignment_payload(
         not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries)
     ):
         raise ValidationError("entries must be a list")
-    for field in ("message", "expires_at"):
-        value = payload.get(field)
-        if value is not None and not isinstance(value, str):
-            raise ValidationError(f"{field} must be a string")
+    message = payload.get("message")
+    if message is not None and not isinstance(message, str):
+        raise ValidationError("message must be a string")
+    expires_at = payload.get("expires_at")
+    if expires_at is not None:
+        validate_datetime(expires_at, "expires_at")
     copy_receivers = payload.get("copy_receivers")
     if copy_receivers is not None and (
         not isinstance(copy_receivers, list)
@@ -102,6 +106,8 @@ def _normalise_signer_ref(ref: SignerReference, allow_without_id: bool) -> dict[
         unknown = ref.keys() - _SIGNER_REFERENCE_FIELDS
         if unknown:
             raise ValidationError(f"Unknown signer fields: {', '.join(sorted(unknown))}")
+        if "id" in ref and "signer_id" in ref:
+            raise ValidationError("Use signer id or signer_id, not both")
         signer_id = ref.get("id") or ref.get("signer_id")
         if signer_id is not None and (not isinstance(signer_id, str) or not signer_id):
             raise ValidationError("Signer ID must be a non-empty string")
@@ -197,10 +203,40 @@ class AssignmentResource(BaseResource):
 
         {"resource": "assignment", "id": "assignment-id",
          "sender_email": "sender@example.com", "method": "virtual",
-         "expires_at": null, "message": null, "signers": [],
-         "copy_receivers": [], "items": [],
-         "summary": {"signer_count": 0, "completed_count": 0, "signers": []},
-         "signing_urls": []}
+         "expires_at": null, "message": null,
+         "signers": [{"resource": "signer", "id": "signer-id",
+                       "full_name": "Example Signer", "email": "signer@example.com",
+                       "whatsapp_phone_number": null, "has_accepted_terms": false,
+                       "verification_method": "Email",
+                       "notification_methods": ["Email"], "step": 1,
+                       "notified": true, "completed": false,
+                       "notification_history": [
+                           {"event": "signature_request", "status": "sent",
+                            "error_code": null, "error_message": null,
+                            "sent_at": "2026-08-26T12:00:00Z", "failed_at": null}
+                       ]}],
+         "copy_receivers": [],
+         "items": [{"id": "item-id",
+                    "page": {"id": "page-id", "number": 1, "height": 2100,
+                             "width": 1275, "download_url": "https://api.example/page"},
+                    "signer": {"id": "signer-id", "full_name": "Example Signer",
+                               "email": "signer@example.com"},
+                    "field": {"id": "field-id", "name": "Signature",
+                              "type": "signature"},
+                    "display_settings": {"left": 69, "top": 282, "width": 421,
+                                         "height": 45.86, "fontFamily": "Arial",
+                                         "fontSize": 18,
+                                         "backgroundColor": "#D5EBFF"},
+                    "value": null, "completed": false}],
+         "summary": {"signer_count": 1, "completed_count": 0,
+                     "signers": [{"id": "signer-id", "full_name": "Example Signer",
+                                  "email": "signer@example.com", "completed": false}]},
+         "signing_urls": [{"signer_id": "signer-id",
+                           "url": "https://api.example/sign/document-id"}]}
+
+    ``copy_receivers`` entries are objects, but the current OpenAPI does not
+    define fields for those objects. Virtual/legacy items may return an empty
+    or non-object ``display_settings`` value; collect items use the object shown.
 
     ``DigitalCertificate`` is a published assignment verification method, but
     the API prose points certificate signers to unlisted ``certificate/start``
@@ -215,11 +251,10 @@ class AssignmentResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /assignments`` — list the account's assignments.
 
-        The current contract scopes results to the authenticated user's account
-        and accepts only pagination. ``params`` accepts ``page`` and
-        ``per_page`` (sent as ``per-page``). Passing ``account_id`` explicitly
-        adds the legacy ``accountId`` filter for older deployments; the client's
-        default account is not sent because that query key is not published.
+        The production contract documents ``page`` and ``per_page`` (sent as
+        ``per-page``). The SDK also sends the explicit or client-default
+        ``accountId`` context when available and omits it for account-less token
+        clients.
         Returns
         ``{"data": [...], "meta": {...}}`` when the API returns ``x-pagination-*``
         headers.
@@ -240,13 +275,15 @@ class AssignmentResource(BaseResource):
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
-        query: dict[str, Any] = dict(params or {})
-        if account_id is not None:
-            query["accountId"] = self._path_id(account_id, "Account ID")
-        cleaned = clean_params(query, QUERY_PARAM_ALIASES)
+        query = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
+        scoped_account_id = self._default_account_id if account_id is None else account_id
+        if scoped_account_id is not None:
+            if "accountId" in query:
+                raise ValidationError("Pass account_id separately from params")
+            query["accountId"] = self._path_id(scoped_account_id, "Account ID")
         return self._call_list(
             "Failed to list assignments",
-            lambda: self._http.get("assignments", params=cleaned),
+            lambda: self._http.get("assignments", params=query),
         )
 
     def create(
@@ -273,6 +310,30 @@ class AssignmentResource(BaseResource):
                  "notification_methods": ["Email"], "step": 1}
               ]
             }
+
+        A complete ``collect`` request places fields on document pages::
+
+            {
+              "method": "collect",
+              "signers": [{"id": "signer-id", "verification_method": "Email",
+                           "notification_methods": ["Email"], "step": 1}],
+              "entries": [{
+                "page_id": "page-id",
+                "fields": [{
+                  "signer_id": "signer-id", "field_id": "field-id",
+                  "display_settings": {
+                    "left": 69, "top": 282, "width": 421, "height": 45.86,
+                    "fontSize": 18, "fontFamily": "Arial",
+                    "backgroundColor": "#D5EBFF"
+                  }
+                }]
+              }]
+            }
+
+        ``left``, ``top``, ``width``, ``height``, and ``fontSize`` are required
+        150-DPI page-image pixel values; width/height/font size must be positive,
+        coordinates non-negative, and the rectangle must stay within the page.
+        ``fontFamily`` and ``backgroundColor`` are optional.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -333,8 +394,11 @@ class AssignmentResource(BaseResource):
 
         Example response (``data`` envelope unwrapped)::
 
-            {"documents": 1, "credits": 0, "needs_extra_document": false,
-             "extra_document_cost": 0, "total_credits": 0, "breakdown": [],
+            {"documents": 1, "credits": 0.45, "needs_extra_document": false,
+             "extra_document_cost": 0, "total_credits": 0.45,
+             "breakdown": [{"code": "NotificationWhatsapp",
+                            "name": "Whatsapp Notification", "cost": 0.45,
+                            "quantity": 1, "unit_cost": 0.45}],
              "document_balance": 66, "credit_balance": 0,
              "has_sufficient_resources": true, "blocking_reason": null,
              "message": null}
@@ -358,10 +422,8 @@ class AssignmentResource(BaseResource):
         """``PUT /documents/{document_id}/assignments/{assignment_id}/reset-expiration``.
 
         ``expires_at`` must be an ISO 8601 timestamp (e.g.
-        ``2030-08-03T21:00:00Z``) or ``None``. Live sandbox behavior confirms
-        that ``null`` clears the expiration even though the current OpenAPI
-        schema describes only a string; the key is always sent so the server
-        can apply the change. An empty string is rejected as malformed.
+        ``2030-08-03T21:00:00Z``) or ``None`` to clear the expiration. The key is
+        always sent so the server can apply the change.
 
         Example request body (JSON)::
 
@@ -372,10 +434,7 @@ class AssignmentResource(BaseResource):
         """
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")
-        if expires_at == "":
-            raise ValidationError(
-                "expires_at must be an ISO 8601 timestamp, or None to clear the expiration"
-            )
+        validate_datetime(expires_at, "expires_at", allow_none=True)
         return self._call_dict(
             "Failed to update assignment expiration",
             lambda: self._http.put(
@@ -399,8 +458,13 @@ class AssignmentResource(BaseResource):
         The unwrapped response uses the complete
         :class:`~assinafy.resources.documents.DocumentResource` payload, with
         its ``assignment`` and ``pages`` fields expanded for the signer view.
+        ``has_accepted_terms`` must be boolean when provided. Digital-certificate
+        signers must confirm their identity data and accept the terms before the
+        certificate flow can begin.
         """
         access_code = self._require_id(signer_access_code, "Signer access code")
+        if has_accepted_terms is not None and not isinstance(has_accepted_terms, bool):
+            raise ValidationError("has_accepted_terms must be boolean")
         return self._call_dict(
             "Failed to fetch signer assignment",
             lambda: self._http.get(
@@ -424,10 +488,10 @@ class AssignmentResource(BaseResource):
     ) -> dict[str, Any]:
         """``POST /documents/{document_id}/assignments/{assignment_id}``.
 
-        Submits a signer's completed items. ``entries`` is the documented list
-        of ``{itemId, fieldId, pageId, value}`` objects (sent as the raw JSON
-        request body). For virtual assignments, the signer must have called
-        :meth:`~assinafy.resources.signers.SignerResource.confirm_data` first.
+        Submits a signer's completed items. ``entries`` is sent as the raw JSON
+        request body. Virtual assignments have no input fields and use ``[]``
+        after :meth:`~assinafy.resources.signers.SignerResource.confirm_data`.
+        Collect assignments use ``{itemId, fieldId, pageId, value}`` objects.
 
         Example request body (JSON array)::
 
@@ -439,19 +503,16 @@ class AssignmentResource(BaseResource):
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
-        if (
-            not isinstance(entries, list)
-            or not entries
+        if not isinstance(entries, list) or any(
+            not isinstance(entry, dict)
             or any(
-                not isinstance(entry, dict)
-                or any(
-                    not isinstance(entry.get(field), str) or not entry[field]
-                    for field in ("itemId", "fieldId", "pageId", "value")
-                )
-                for entry in entries
+                not isinstance(entry.get(field), str) or not entry[field]
+                for field in ("itemId", "fieldId", "pageId")
             )
+            or not isinstance(entry.get("value"), str)
+            for entry in entries
         ):
-            raise ValidationError("At least one assignment entry is required")
+            raise ValidationError("Invalid assignment entry list")
         return self._call_dict(
             "Failed to sign assignment",
             lambda: self._http.post(
@@ -479,8 +540,8 @@ class AssignmentResource(BaseResource):
 
             {"decline_reason": "I do not agree with the terms."}
 
-        Request body on success: none. Returns ``None``; the API response has
-        no ``data`` payload.
+        OpenAPI returns ``data: []`` on success; the SDK maps that empty result
+        to ``None``.
         """
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")
@@ -534,7 +595,9 @@ class AssignmentResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /documents/{document_id}/assignments/{assignment_id}/signers/{signer_id}/resend``.
 
-        Resends a signer's signature-request notification.
+        Resends a signer's signature-request notification and can send a real
+        message. The notification channel is charged again; call
+        :meth:`estimate_resend_cost` first when cost must be known.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -561,8 +624,11 @@ class AssignmentResource(BaseResource):
 
         Example response (``data`` envelope unwrapped)::
 
-            {"documents": 1, "credits": 0, "needs_extra_document": false,
-             "extra_document_cost": 0, "total_credits": 0, "breakdown": [],
+            {"documents": 1, "credits": 0.45, "needs_extra_document": false,
+             "extra_document_cost": 0, "total_credits": 0.45,
+             "breakdown": [{"code": "NotificationWhatsapp",
+                            "name": "Whatsapp Notification", "cost": 0.45,
+                            "quantity": 1, "unit_cost": 0.45}],
              "document_balance": 66, "credit_balance": 0,
              "has_sufficient_resources": true, "blocking_reason": null,
              "message": null}

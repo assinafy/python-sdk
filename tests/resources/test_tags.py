@@ -96,3 +96,7 @@ class TestTagResource:
         resource = TagResource(MockHttp(), "acc")
         with pytest.raises(ValidationError, match="Unknown tag fields"):
             resource.create({"name": "Contracts", "hidden": True})
+
+    def test_rejects_name_over_documented_limit(self) -> None:
+        with pytest.raises(ValidationError, match="64"):
+            TagResource(MockHttp(), "acc").create({"name": "x" * 65})

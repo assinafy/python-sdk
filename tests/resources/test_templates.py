@@ -72,17 +72,16 @@ class TestCreateFromTemplate:
         with pytest.raises(ValidationError, match="signer"):
             resource.create_from_template("tpl-1", [])
 
-    def test_create_from_template_signers_win_over_options_signers_key(self) -> None:
+    def test_create_from_template_rejects_signers_inside_options(self) -> None:
         http = MockHttp()
         resource = DocumentResource(http, "acc")
 
-        resource.create_from_template(
-            "tpl-1",
-            [{"role_id": "role-1", "id": "signer-1"}],
-            {"signers": []},
-        )
-
-        assert http.last_kwargs["json"] == {"signers": [{"role_id": "role-1", "id": "signer-1"}]}
+        with pytest.raises(ValidationError, match="Unknown template options"):
+            resource.create_from_template(
+                "tpl-1",
+                [{"role_id": "role-1", "id": "signer-1"}],
+                {"signers": []},
+            )
 
     def test_estimate_cost_from_template_posts_signers(self) -> None:
         http = MockHttp()

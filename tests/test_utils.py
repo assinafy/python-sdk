@@ -87,3 +87,7 @@ class TestCleanParams:
             {"per_page": "per-page", "signer_access_code": "signer-access-code"},
         )
         assert result == {"per-page": 20, "signer-access-code": "abc"}
+
+    def test_rejects_conflicting_aliases(self) -> None:
+        with pytest.raises(ValidationError, match="Conflicting"):
+            clean_params({"per_page": 20, "per-page": 50}, {"per_page": "per-page"})

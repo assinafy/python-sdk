@@ -33,7 +33,7 @@ class BaseResource:
     ) -> None:
         self._http = http
         self._default_account_id = default_account_id
-        self._logger: Logger = logger or create_noop_logger()
+        self._logger: Logger = logger if logger is not None else create_noop_logger()
 
     def _account_id(self, explicit: str | None = None) -> str:
         account_id = self._default_account_id if explicit is None else explicit
@@ -44,7 +44,7 @@ class BaseResource:
         return self._path_id(account_id, "Account ID")
 
     def _require_id(self, value: str | None, name: str) -> str:
-        if not isinstance(value, str) or not value:
+        if not isinstance(value, str) or not value.strip():
             raise ValidationError(f"{name} is required")
         return value
 

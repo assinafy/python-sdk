@@ -47,6 +47,15 @@ class TestSignerDocumentResource:
             "signer-access-code": "code",
         }
 
+    @pytest.mark.parametrize("params", [[], {"signer_access_code": "other"}])
+    def test_list_rejects_invalid_or_ambiguous_params(self, params: object) -> None:
+        with pytest.raises(ValidationError):
+            SignerDocumentResource(object()).list(  # type: ignore[arg-type]
+                "signer-1",
+                "code",
+                params,  # type: ignore[arg-type]
+            )
+
     def test_search_hits_lightweight_endpoint_with_access_code(self) -> None:
         http = MockHttp()
         resource = SignerDocumentResource(http)

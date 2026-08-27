@@ -41,9 +41,8 @@ class AccountResource(BaseResource):
 
         Sends ``{"name": "Acme"}`` and, when provided,
         ``notification_sender_type`` (``"User"`` or ``"Account"``). It is
-        optional because the current sandbox rejects both
-        explicit values while accepting an omitted field; the published
-        contract documents the enum. Returns the complete account payload
+        optional; setting it later with :meth:`update` provides broad deployment
+        compatibility. Returns the complete account payload
         documented on :class:`AccountResource`.
         """
         body: dict[str, Any] = {"name": self._require_id(name, "Account name")}
@@ -98,7 +97,8 @@ class AccountResource(BaseResource):
 
         When ``force=True``, sends ``{"force": true}`` to cancel an active
         paid subscription and proceed; otherwise the JSON body is omitted.
-        Success returns ``None``; the API response has no ``data`` payload.
+        OpenAPI returns ``data: []`` on success; the SDK maps that empty result
+        to ``None``.
         """
         if not isinstance(force, bool):
             raise ValidationError("force must be boolean")
@@ -132,16 +132,17 @@ class AccountResource(BaseResource):
     ) -> builtins.list[dict[str, Any]]:
         """``GET /accounts/{account_id}/stats`` — return document KPI rows.
 
-        This follows the current published contract. The sandbox returned 404
-        for this published route on 2026-08-20; no client-side fallback can
-        synthesize authoritative KPI data.
-
         Complete unwrapped response example::
 
             [{"period": "2026-06", "documents_uploaded": 42,
               "documents_sent": 37, "signature_requests": 61,
-              "signature_requests_email": 55,
-              "signature_requests_whatsapp": 18,
+              "signature_requests_notification_email": 55,
+              "signature_requests_notification_whatsapp": 18,
+              "signature_requests_notification_bypass": 3,
+              "signature_requests_verification_email": 48,
+              "signature_requests_verification_whatsapp": 6,
+              "signature_requests_verification_bypass": 3,
+              "signature_requests_verification_digital_certificate": 4,
               "signature_requests_viewed": 44,
               "signature_requests_completed": 52,
               "documents_certified": 30}]

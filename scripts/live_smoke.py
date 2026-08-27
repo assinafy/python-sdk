@@ -4,7 +4,11 @@ Required environment variables:
     ASSINAFY_API_KEY
     ASSINAFY_ACCOUNT_ID
     ASSINAFY_BASE_URL=https://sandbox.assinafy.com.br/v1
+
+Write-mode requirement:
     ASSINAFY_TEST_EMAILS (comma-separated; one temporary signer per address)
+
+Set ``ASSINAFY_READ_ONLY=1`` for non-mutating coverage without test emails.
 
 Set ``ASSINAFY_SEND_TEST_NOTIFICATIONS=1`` to create an assignment for those
 signers and exercise notification/resend operations. This opt-in sends email
@@ -28,7 +32,7 @@ from base64 import b64decode
 from collections.abc import Callable
 from typing import Any
 
-from assinafy import ApiError, AssinafyClient, AssinafyError
+from assinafy import ApiError, AssinafyClient, AssinafyError, NotificationPreferenceCode
 
 SANDBOX_BASE_URL = "https://sandbox.assinafy.com.br/v1"
 
@@ -98,7 +102,9 @@ def _make_minimal_pdf() -> bytes:
     return bytes(pdf)
 
 
-def _validated_configuration() -> tuple[str, str, str, tuple[str, ...]]:
+def _validated_configuration(
+    *, require_emails: bool = True
+) -> tuple[str, str, str, tuple[str, ...]]:
     api_key = os.environ.get("ASSINAFY_API_KEY")
     account_id = os.environ.get("ASSINAFY_ACCOUNT_ID")
     base_url = os.environ.get("ASSINAFY_BASE_URL")
@@ -107,7 +113,7 @@ def _validated_configuration() -> tuple[str, str, str, tuple[str, ...]]:
         for email in os.environ.get("ASSINAFY_TEST_EMAILS", "").split(",")
         if email.strip()
     )
-    if not api_key or not account_id or not emails:
+    if not api_key or not account_id or (require_emails and not emails):
         raise ValueError("missing required smoke-test environment")
     if not base_url or base_url.rstrip("/") != SANDBOX_BASE_URL:
         raise ValueError("smoke test requires the canonical HTTPS sandbox URL")
@@ -158,6 +164,13 @@ def _resource_id(value: Any) -> str | None:
     return resource_id if isinstance(resource_id, str) and resource_id else None
 
 
+def _required_resource_id(value: Any, operation: str) -> str:
+    resource_id = _resource_id(value)
+    if resource_id is None:
+        raise RuntimeError(f"{operation} returned no resource ID")
+    return resource_id
+
+
 def _tagged_email(email: str, tag: str) -> str:
     """Return a unique plus-address without logging or persisting the mailbox."""
     local, separator, domain = email.partition("@")
@@ -172,6 +185,13 @@ def _first_template_role_id(templates: Any) -> str | None:
     roles = template.get("roles") if template else None
     role = roles[0] if isinstance(roles, list) and roles and isinstance(roles[0], dict) else None
     return _resource_id(role)
+
+
+def _template_role_ids(template: Any) -> list[str]:
+    roles = template.get("roles") if isinstance(template, dict) else None
+    if not isinstance(roles, list):
+        return []
+    return [role_id for role in roles if (role_id := _resource_id(role)) is not None]
 
 
 def _first_document_page_id(document: Any) -> str | None:
@@ -192,7 +212,10 @@ def _send_document_token(client: AssinafyClient, document_id: str, email: str) -
 
 def main() -> int:
     try:
-        api_key, account_id, base_url, test_emails = _validated_configuration()
+        read_only = _opt_in("ASSINAFY_READ_ONLY")
+        api_key, account_id, base_url, test_emails = _validated_configuration(
+            require_emails=not read_only
+        )
         webhook_opt_in = _webhook_opt_in()
         send_test_notifications = _opt_in("ASSINAFY_SEND_TEST_NOTIFICATIONS")
         test_account_lifecycle = _opt_in("ASSINAFY_TEST_ACCOUNT_LIFECYCLE")
@@ -207,10 +230,12 @@ def main() -> int:
     tag_id: str | None = None
     field_id: str | None = None
     document_id: str | None = None
+    template_document_id: str | None = None
     webhook_restore: dict[str, Any] | None = None
     webhook_mutation_attempted = False
     temporary_account_id: str | None = None
-    preference_restore: dict[str, bool] | None = None
+    preference_restore: dict[NotificationPreferenceCode, bool] | None = None
+    preference_mutation_attempted = False
     client = AssinafyClient(api_key=api_key, account_id=account_id, base_url=base_url)
 
     try:
@@ -230,15 +255,6 @@ def main() -> int:
             original = preferences.get("DocumentCompleted")
             if isinstance(original, bool):
                 preference_restore = {"DocumentCompleted": original}
-                step(
-                    "users.update_notification_preferences()",
-                    lambda: client.users.update_notification_preferences(
-                        {"DocumentCompleted": not original}
-                    ),
-                    failures,
-                )
-        elif not test_user_preferences:
-            print("\n=== user preference mutation ===\n  SKIP [explicit opt-in not configured]")
 
         step("documents.statuses()", lambda: client.documents.statuses(), failures)
         step("fields.list_types()", lambda: client.fields.list_types(), failures)
@@ -264,8 +280,11 @@ def main() -> int:
             if isinstance(template_data, list) and template_data
             else None
         )
+        template = None
         if template_id:
-            step("templates.get(real id)", lambda: client.templates.get(template_id), failures)
+            template = step(
+                "templates.get(real id)", lambda: client.templates.get(template_id), failures
+            )
         step(
             "documents.search(search=sdk)",
             lambda: client.documents.search({"search": "sdk", "per_page": 5}),
@@ -277,6 +296,11 @@ def main() -> int:
             failures,
         )
         step("fields.list()", lambda: client.fields.list(), failures)
+        step(
+            "documents.verify(invalid hash)",
+            lambda: client.documents.verify("0" * 40),
+            failures,
+        )
         step(
             "tags.list(search=sdk-smoke)",
             lambda: client.tags.list({"search": "sdk-smoke"}),
@@ -291,26 +315,6 @@ def main() -> int:
 
         if webhook_opt_in:
             webhook_restore = _restorable_webhook(original_webhook)
-            if webhook_restore is None:
-                print("\n=== webhook mutation ===\n  SKIP [original subscription not restorable]")
-            else:
-                webhook_url, webhook_email = webhook_opt_in
-                webhook_mutation_attempted = True
-                step(
-                    "webhooks.register()",
-                    lambda: client.webhooks.register(
-                        {
-                            "url": webhook_url,
-                            "email": webhook_email,
-                            "events": list(webhook_restore["events"]),
-                            "is_active": True,
-                        }
-                    ),
-                    failures,
-                )
-                step("webhooks.inactivate()", lambda: client.webhooks.inactivate(), failures)
-        else:
-            print("\n=== webhook mutation ===\n  SKIP [explicit opt-in not configured]")
 
         access_token = os.environ.get("ASSINAFY_ACCESS_TOKEN")
         if access_token:
@@ -326,6 +330,58 @@ def main() -> int:
         else:
             print("\n=== authentication.get_api_key() ===\n  SKIP [access token not configured]")
 
+        if read_only:
+            return 1 if failures else 0
+
+        if failures:
+            print("\n=== mutation flow ===\n  SKIP [read preflight failed]")
+            return 1
+
+        if test_user_preferences and preference_restore is not None:
+            preference_mutation_attempted = True
+            step(
+                "users.update_notification_preferences()",
+                lambda: client.users.update_notification_preferences(
+                    {"DocumentCompleted": not preference_restore["DocumentCompleted"]}
+                ),
+                failures,
+            )
+        else:
+            reason = (
+                "endpoint unavailable"
+                if test_user_preferences
+                else "explicit opt-in not configured"
+            )
+            print(f"\n=== user preference mutation ===\n  SKIP [{reason}]")
+
+        if webhook_opt_in and webhook_restore is not None:
+            webhook_url, webhook_email = webhook_opt_in
+            webhook_mutation_attempted = True
+            step(
+                "webhooks.register()",
+                lambda: client.webhooks.register(
+                    {
+                        "url": webhook_url,
+                        "email": webhook_email,
+                        "events": list(webhook_restore["events"]),
+                        "is_active": True,
+                    }
+                ),
+                failures,
+            )
+            step("webhooks.inactivate()", lambda: client.webhooks.inactivate(), failures)
+        else:
+            reason = (
+                "subscription not restorable"
+                if webhook_opt_in
+                else "explicit opt-in not configured"
+            )
+            print(f"\n=== webhook mutation ===\n  SKIP [{reason}]")
+
+        if failures:
+            print("\n=== resource mutation flow ===\n  SKIP [mutation preflight failed]")
+            return 1
+
         # Write flow. IDs are captured immediately and cleaned only in finally.
         timestamp = int(time.time())
         if test_account_lifecycle:
@@ -334,7 +390,7 @@ def main() -> int:
                 lambda: client.accounts.create(f"SDK Smoke {timestamp}"),
                 failures,
             )
-            temporary_account_id = _resource_id(account)
+            temporary_account_id = _required_resource_id(account, "accounts.create()")
             if temporary_account_id:
                 step(
                     "accounts.get() disposable account",
@@ -383,15 +439,14 @@ def main() -> int:
             tagged_email = _tagged_email(signer_email, f"assinafy-sdk-{timestamp}-{index}")
             signer = step(
                 f"signers.create() #{index}",
-                lambda email=tagged_email: client.signers.create(
-                    {"full_name": "SDK Smoke Test", "email": email}
+                lambda: client.signers.create(
+                    {"full_name": "SDK Smoke Test", "email": tagged_email}
                 ),
                 failures,
             )
-            signer_id = _resource_id(signer)
-            if signer_id:
-                signer_ids.append(signer_id)
-                signer_emails.append(tagged_email)
+            signer_id = _required_resource_id(signer, "signers.create()")
+            signer_ids.append(signer_id)
+            signer_emails.append(tagged_email)
 
         primary_signer_id = signer_ids[0] if signer_ids else None
         if primary_signer_id:
@@ -413,7 +468,7 @@ def main() -> int:
             lambda: client.tags.create({"name": tag_name, "color": "3366ff"}),
             failures,
         )
-        tag_id = _resource_id(tag)
+        tag_id = _required_resource_id(tag, "tags.create()")
         if tag_id:
             step(
                 "tags.update()",
@@ -426,7 +481,7 @@ def main() -> int:
             lambda: client.fields.create({"type": "text", "name": f"sdk-smoke-field-{timestamp}"}),
             failures,
         )
-        field_id = _resource_id(field)
+        field_id = _required_resource_id(field, "fields.create()")
         if field_id:
             step("fields.get()", lambda: client.fields.get(field_id), failures)
             step(
@@ -460,7 +515,7 @@ def main() -> int:
             ),
             failures,
         )
-        document_id = _resource_id(document)
+        document_id = _required_resource_id(document, "documents.upload()")
         if document_id:
             step("documents.get()", lambda: client.documents.get(document_id), failures)
             step(
@@ -551,7 +606,7 @@ def main() -> int:
                     ),
                     failures,
                 )
-                assignment_id = _resource_id(assignment)
+                assignment_id = _required_resource_id(assignment, "assignments.create()")
                 if assignment_id and primary_signer_id:
                     step(
                         "documents.send_token() sends test OTP",
@@ -606,6 +661,38 @@ def main() -> int:
                     ),
                     failures,
                 )
+            role_ids = _template_role_ids(template)
+            if role_ids and signer_ids and send_test_notifications:
+                template_document = step(
+                    "documents.create_from_template() sends test notifications",
+                    lambda: client.documents.create_from_template(
+                        template_id,
+                        [
+                            {
+                                "role_id": template_role_id,
+                                "id": signer_ids[index % len(signer_ids)],
+                                "verification_method": "Email",
+                                "notification_methods": ["Email"],
+                            }
+                            for index, template_role_id in enumerate(role_ids)
+                        ],
+                        {"name": f"sdk-template-smoke-{timestamp}.pdf"},
+                    ),
+                    failures,
+                )
+                template_document_id = _required_resource_id(
+                    template_document, "documents.create_from_template()"
+                )
+                step(
+                    "documents.wait_until_ready() template document",
+                    lambda: client.documents.wait_until_ready(template_document_id, timeout=60),
+                    failures,
+                )
+            else:
+                print(
+                    "\n=== template document creation ===\n"
+                    "  SKIP [template roles or notification opt-in unavailable]"
+                )
     except Exception as err:  # noqa: BLE001
         print(f"\n=== smoke execution ===\n  FAIL [{type(err).__name__}]")
         failures.append("smoke execution")
@@ -616,10 +703,16 @@ def main() -> int:
                 lambda: client.webhooks.register(webhook_restore),
                 failures,
             )
-        if preference_restore is not None:
+        if preference_mutation_attempted and preference_restore is not None:
             step(
                 "users.update_notification_preferences() restores original",
                 lambda: client.users.update_notification_preferences(preference_restore),
+                failures,
+            )
+        if template_document_id:
+            step(
+                "documents.delete() template cleanup",
+                lambda: client.documents.delete(template_document_id),
                 failures,
             )
         if document_id:
@@ -635,7 +728,7 @@ def main() -> int:
         for signer_id in reversed(signer_ids):
             step(
                 "signers.delete() cleanup",
-                lambda current_id=signer_id: client.signers.delete(current_id),
+                lambda: client.signers.delete(signer_id),
                 failures,
             )
         if temporary_account_id:

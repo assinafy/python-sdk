@@ -74,6 +74,9 @@ class FakeClient:
             raise RuntimeError("PRIVATE_EXCEPTION_VALUE")
         if name == "templates.list":
             return self.templates_result
+        if name == "templates.get":
+            data = self.templates_result.get("data")
+            return data[0] if isinstance(data, list) and data else {}
         if name == "webhooks.get":
             return self.webhook
         if name == "signers.create":
@@ -87,6 +90,8 @@ class FakeClient:
             return {"regex": args[1].get("regex")}
         if name == "documents.upload":
             return {"id": "PRIVATE_DOCUMENT_ID"}
+        if name == "documents.create_from_template":
+            return {"id": "PRIVATE_TEMPLATE_DOCUMENT_ID"}
         if name == "documents.wait_until_ready":
             return {"id": "PRIVATE_DOCUMENT_ID", "pages": [{"id": "PRIVATE_PAGE_ID"}]}
         if name == "assignments.create":
@@ -115,6 +120,7 @@ def _set_safe_env(monkeypatch: pytest.MonkeyPatch, emails: str = "user@example.t
         "ASSINAFY_SEND_TEST_NOTIFICATIONS",
         "ASSINAFY_TEST_ACCOUNT_LIFECYCLE",
         "ASSINAFY_TEST_USER_PREFERENCES",
+        "ASSINAFY_READ_ONLY",
         "ASSINAFY_WEBHOOK_TEST_EMAIL",
         "ASSINAFY_WEBHOOK_TEST_URL",
     ):
@@ -223,6 +229,69 @@ def test_optional_404_step_skips_only_not_found(
     assert "private" not in capsys.readouterr().out
 
 
+def test_read_preflight_failure_aborts_all_mutations(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_safe_env(monkeypatch)
+    client = FakeClient(fail_methods={"accounts.get"})
+    _install_client(monkeypatch, client)
+
+    assert live_smoke.main() == 1
+    names = [name for name, _, _ in client.calls]
+    assert "signers.create" not in names
+    assert "tags.create" not in names
+    assert "fields.create" not in names
+    assert "documents.upload" not in names
+    assert client.closed is True
+
+
+def test_read_only_mode_needs_no_emails_and_never_mutates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_safe_env(monkeypatch)
+    monkeypatch.delenv("ASSINAFY_TEST_EMAILS")
+    monkeypatch.setenv("ASSINAFY_READ_ONLY", "1")
+    monkeypatch.setenv("ASSINAFY_TEST_USER_PREFERENCES", "1")
+    client = FakeClient()
+    _install_client(monkeypatch, client)
+
+    assert live_smoke.main() == 0
+    names = [name for name, _, _ in client.calls]
+    assert "accounts.create" not in names
+    assert "signers.create" not in names
+    assert "tags.create" not in names
+    assert "fields.create" not in names
+    assert "documents.upload" not in names
+    assert "users.update_notification_preferences" not in names
+    assert client.closed is True
+
+
+def test_missing_created_id_aborts_dependent_writes_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MissingTagIdClient(FakeClient):
+        def invoke(
+            self,
+            resource: str,
+            method: str,
+            args: tuple[Any, ...],
+            kwargs: dict[str, Any],
+        ) -> Any:
+            if (resource, method) == ("tags", "create"):
+                self.calls.append(("tags.create", args, kwargs))
+                return {}
+            return super().invoke(resource, method, args, kwargs)
+
+    _set_safe_env(monkeypatch)
+    client = MissingTagIdClient()
+    _install_client(monkeypatch, client)
+
+    assert live_smoke.main() == 1
+    names = [name for name, _, _ in client.calls]
+    assert "fields.create" not in names
+    assert "documents.upload" not in names
+    assert "signers.delete" in names
+    assert client.closed is True
+
+
 def test_minimal_pdf_has_computed_xref_offsets() -> None:
     pdf = live_smoke._make_minimal_pdf()
     startxref = int(pdf.rsplit(b"startxref\n", 1)[1].splitlines()[0])
@@ -321,6 +390,31 @@ def test_notification_opt_in_exercises_assignment_and_resend(
     assert token_call[2] == {"email": created_email}
     assert "signer_documents.download" in names
     assert names.index("assignments.create") < names.index("documents.delete")
+
+
+def test_notification_opt_in_exercises_template_document_flow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_safe_env(monkeypatch)
+    monkeypatch.setenv("ASSINAFY_SEND_TEST_NOTIFICATIONS", "1")
+    client = FakeClient(
+        templates={
+            "data": [
+                {
+                    "id": "PRIVATE_TEMPLATE_ID",
+                    "roles": [{"id": "PRIVATE_ROLE_ID"}],
+                }
+            ]
+        }
+    )
+    _install_client(monkeypatch, client)
+
+    assert live_smoke.main() == 0
+    names = [name for name, _, _ in client.calls]
+    assert "documents.create_from_template" in names
+    assert "documents.wait_until_ready" in names
+    delete_ids = [args[0] for name, args, _ in client.calls if name == "documents.delete"]
+    assert delete_ids == ["PRIVATE_TEMPLATE_DOCUMENT_ID", "PRIVATE_DOCUMENT_ID"]
 
 
 def test_send_document_token_falls_back_only_for_contract_rejection() -> None:

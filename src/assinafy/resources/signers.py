@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
-from ..errors import ApiError, ValidationError
-from ..utils import QUERY_PARAM_ALIASES, clean_params
+from ..errors import AssinafyError, ValidationError
+from ..utils import QUERY_PARAM_ALIASES, clean_params, validate_email
 from .base import BaseResource
 
-_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _SIGNATURE_TYPES = frozenset({"signature", "initial"})
 _SIGNATURE_CONTENT_TYPES = frozenset({"image/png", "image/jpeg"})
 _SIGNER_FIELDS = frozenset({"full_name", "email", "whatsapp_phone_number"})
@@ -57,7 +55,7 @@ class SignerResource(BaseResource):
             lambda: self._http.post(f"accounts/{acc_id}/signers", json=body),
         )
         if not isinstance(signer.get("id"), str) or not signer["id"]:
-            raise ValidationError("Signer creation succeeded without an ID", {"response": signer})
+            raise AssinafyError("Signer creation succeeded without an ID", {"response": signer})
         return signer
 
     def get(self, signer_id: str, account_id: str | None = None) -> dict[str, Any]:
@@ -97,7 +95,7 @@ class SignerResource(BaseResource):
              "meta": {"current_page": 1, "per_page": 20, "total": 3, "last_page": 1}}
         """
         acc_id = self._account_id(account_id)
-        cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
+        cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
         return self._call_list(
             "Failed to list signers",
             lambda: self._http.get(f"accounts/{acc_id}/signers", params=cleaned),
@@ -111,13 +109,15 @@ class SignerResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /accounts/{account_id}/signers/{signer_id}`` — update a signer.
 
-        Verification integrity rules apply server-side: ``email`` cannot be
+        Supported fields are ``full_name``, ``email``,
+        ``whatsapp_phone_number``, and ``government_id``. Verification
+        integrity rules apply server-side: ``email`` cannot be
         changed once email-verified for an in-flight document, and the same for
         ``whatsapp_phone_number``.
 
         Example request body (JSON)::
 
-            {"full_name": "Johnny Doe"}
+            {"full_name": "Johnny Doe", "government_id": "00000000000"}
 
         Returns the updated signer object (``data`` envelope unwrapped).
         """
@@ -142,8 +142,8 @@ class SignerResource(BaseResource):
     def delete(self, signer_id: str, account_id: str | None = None) -> None:
         """``DELETE /accounts/{account_id}/signers/{signer_id}`` — delete a signer.
 
-        Request body: none. Success returns ``None``; the response has no
-        ``data`` payload.
+        Request body: none. OpenAPI returns ``data: []`` on success; the SDK
+        maps that empty result to ``None``.
         """
         acc_id = self._account_id(account_id)
         sid = self._path_id(signer_id, "Signer ID")
@@ -155,9 +155,9 @@ class SignerResource(BaseResource):
     def find_by_email(self, email: str, account_id: str | None = None) -> dict[str, Any] | None:
         """Convenience wrapper around :meth:`list` that filters by exact email.
 
-        Performs ``GET /accounts/{account_id}/signers?search={email}&per-page=100``
-        and returns the first signer whose ``email`` matches case-insensitively,
-        or ``None``.
+        Pages through ``GET /accounts/{account_id}/signers?search={email}`` and
+        returns the first signer whose ``email`` matches case-insensitively, or
+        ``None``. API errors are surfaced unchanged.
 
         Example return value::
 
@@ -165,18 +165,22 @@ class SignerResource(BaseResource):
              "email": "john@example.com", "whatsapp_phone_number": null,
              "has_accepted_terms": false}
         """
-        _assert_email(email)
-        try:
-            result = self.list({"search": email, "per_page": 100}, account_id)
-        except ApiError as err:
-            if err.status_code == 404:
-                return None
-            raise
+        validate_email(email)
         target = email.lower()
-        for signer in result.get("data", []):
-            if isinstance(signer, dict) and (signer.get("email") or "").lower() == target:
-                return signer
-        return None
+        page = 1
+        while True:
+            result = self.list({"search": email, "page": page, "per_page": 100}, account_id)
+            for signer in result.get("data", []):
+                if not isinstance(signer, dict):
+                    continue
+                candidate = signer.get("email")
+                if isinstance(candidate, str) and candidate.lower() == target:
+                    return signer
+            meta = result.get("meta")
+            last_page = meta.get("last_page") if isinstance(meta, dict) else None
+            if not isinstance(last_page, int) or page >= last_page:
+                return None
+            page += 1
 
     def get_self(self, signer_access_code: str) -> dict[str, Any]:
         """``GET /signers/self?signer-access-code={access_code}`` — signer self-view.
@@ -297,7 +301,7 @@ class SignerResource(BaseResource):
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValidationError(f"{field} must be a non-empty string")
         if payload.get("email") is not None:
-            _assert_email(payload["email"])
+            validate_email(payload["email"])
         accepted_terms = payload.get("has_accepted_terms")
         if accepted_terms is not None and not isinstance(accepted_terms, bool):
             raise ValidationError("has_accepted_terms must be boolean")
@@ -405,7 +409,7 @@ def _build_signer_payload(payload: dict[str, Any], require_full_name: bool) -> d
         raise ValidationError("full_name must be a non-empty string")
     email = payload.get("email")
     if email is not None:
-        _assert_email(email)
+        validate_email(email)
     phone = payload.get("whatsapp_phone_number")
     if phone is not None and (not isinstance(phone, str) or not phone.strip()):
         raise ValidationError("whatsapp_phone_number must be a non-empty string")
@@ -416,11 +420,6 @@ def _build_signer_payload(payload: dict[str, Any], require_full_name: bool) -> d
             "whatsapp_phone_number": phone,
         }
     )
-
-
-def _assert_email(email: str) -> None:
-    if not isinstance(email, str) or not email or not _EMAIL_RE.match(email):
-        raise ValidationError("Invalid email address", {"email": email})
 
 
 def _assert_signature_type(signature_type: str) -> None:

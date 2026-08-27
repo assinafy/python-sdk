@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from types import TracebackType
 from typing import Any
 
@@ -8,12 +9,12 @@ import httpx
 from ._version import __version__
 from .errors import AssinafyError, ValidationError
 from .resources.accounts import AccountResource
-from .resources.assignments import AssignmentResource
+from .resources.assignments import AssignmentResource, build_assignment_payload
 from .resources.authentication import AuthenticationResource
-from .resources.documents import DocumentResource
+from .resources.documents import DocumentResource, _validate_wait_options
 from .resources.fields import FieldResource
 from .resources.signer_documents import SignerDocumentResource
-from .resources.signers import SignerResource
+from .resources.signers import SignerResource, _build_signer_payload
 from .resources.tags import TagResource
 from .resources.templates import TemplateResource
 from .resources.users import UserResource
@@ -23,7 +24,36 @@ from .types import Logger
 from .utils import create_noop_logger
 
 _DEFAULT_BASE_URL = "https://api.assinafy.com.br/v1"
-_USER_AGENT = f"assinafy-python-sdk/{__version__}"
+_USER_AGENT = f"Assinafy-Python-SDK/v{__version__}"
+_NO_CLIENT_AUTH_OPERATIONS = frozenset(
+    {
+        ("GET", "sign"),
+        ("GET", "signers/self"),
+        ("POST", "authentication/social-login"),
+        ("POST", "login"),
+        ("POST", "signature"),
+        ("POST", "verify"),
+        ("PUT", "authentication/request-password-reset"),
+        ("PUT", "authentication/reset-password"),
+        ("PUT", "signers/accept-terms"),
+        ("PUT", "signers/documents/decline-multiple"),
+        ("PUT", "signers/documents/sign-multiple"),
+    }
+)
+_NO_CLIENT_AUTH_OPERATION_PATTERNS = tuple(
+    (method, re.compile(pattern))
+    for method, pattern in (
+        ("GET", r"documents/[^/]+/verify"),
+        ("GET", r"public/documents/[^/]+"),
+        ("GET", r"signature/[^/]+"),
+        ("GET", r"signers/[^/]+/document"),
+        ("GET", r"signers/[^/]+/documents(?:/search|/[^/]+/download/[^/]+)?"),
+        ("POST", r"documents/[^/]+/assignments/(?!estimate-cost$)[^/]+"),
+        ("PUT", r"documents/[^/]+/assignments/[^/]+/reject"),
+        ("PUT", r"documents/[^/]+/signers/confirm-data"),
+        ("PUT", r"public/documents/[^/]+/send-token"),
+    )
+)
 
 
 class AssinafyClient:
@@ -56,10 +86,10 @@ class AssinafyClient:
         timeout: float = 30.0,
         logger: Logger | None = None,
     ) -> None:
-        self._logger: Logger = logger or create_noop_logger()
+        self._logger: Logger = logger if logger is not None else create_noop_logger()
 
         for name, value in (("api_key", api_key), ("token", token), ("account_id", account_id)):
-            if value is not None and (not isinstance(value, str) or not value):
+            if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValidationError(f"{name} must be a non-empty string")
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not timeout > 0:
             raise ValidationError("timeout must be a positive number")
@@ -73,9 +103,11 @@ class AssinafyClient:
             raise ValidationError("base_url must be a non-empty HTTP(S) URL") from exc
         if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.host:
             raise ValidationError("base_url must be a non-empty HTTP(S) URL")
+        self._base_path = parsed_base_url.path.rstrip("/")
+        self._base_origin = (parsed_base_url.scheme, parsed_base_url.host, parsed_base_url.port)
 
         headers: dict[str, str] = {
-            "Accept": "application/json",
+            "Accept": "*/*",
             "User-Agent": _USER_AGENT,
         }
         if api_key:
@@ -87,6 +119,7 @@ class AssinafyClient:
             base_url=resolved_base_url.rstrip("/") + "/",
             timeout=timeout,
             headers=headers,
+            event_hooks={"request": [self._prepare_request]},
         )
 
         self.authentication = AuthenticationResource(self._http, None, self._logger)
@@ -131,8 +164,13 @@ class AssinafyClient:
         Args:
             source: Either ``{"file_path": "..."}`` or
                 ``{"buffer": b"...", "file_name": "..."}``.
-            signers: List of signer payloads (``full_name`` + ``email`` or
-                ``whatsapp_phone_number``).
+            signers: List of signer payloads with ``full_name`` and at least one
+                of ``email`` or ``whatsapp_phone_number``. Email is preferred
+                when both are present; otherwise the assignment uses WhatsApp
+                for verification and notification. WhatsApp requires account
+                availability and consumes credits; use
+                :meth:`AssignmentResource.estimate_cost` before sending when
+                cost must be known.
             message: Optional message included in signer notifications.
             wait_for_ready: If ``True`` (default), poll ``documents.get`` until
                 the document leaves ``uploaded`` / ``metadata_processing``.
@@ -157,6 +195,38 @@ class AssinafyClient:
             or any(not isinstance(signer, dict) for signer in signers)
         ):
             raise ValidationError("At least one signer is required")
+        if not isinstance(wait_for_ready, bool):
+            raise ValidationError("wait_for_ready must be boolean")
+
+        validated_signers = [
+            _build_signer_payload(signer, require_full_name=True) for signer in signers
+        ]
+        assignment_signers: list[dict[str, Any]] = []
+        for signer in validated_signers:
+            if signer.get("email"):
+                channel = "Email"
+            elif signer.get("whatsapp_phone_number"):
+                channel = "Whatsapp"
+            else:
+                raise ValidationError("Each signer requires email or whatsapp_phone_number")
+            assignment_signers.append(
+                {
+                    "id": "pending",
+                    "verification_method": channel,
+                    "notification_methods": [channel],
+                }
+            )
+        assignment_payload = build_assignment_payload(
+            {
+                "method": "virtual",
+                "signers": assignment_signers,
+                "message": message,
+                "expires_at": expires_at,
+                "copy_receivers": copy_receivers,
+            }
+        )
+        if wait_for_ready:
+            _validate_wait_options(wait_timeout, wait_poll_interval)
 
         self._logger.info("Starting upload + signature workflow", {"signer_count": len(signers)})
 
@@ -170,16 +240,13 @@ class AssinafyClient:
 
         signer_ids = [
             _response_id(self.signers.create(signer, account_id), "Signer creation")
-            for signer in signers
+            for signer in validated_signers
         ]
 
-        assignment_payload: dict[str, Any] = {"method": "virtual", "signers": signer_ids}
-        if message is not None:
-            assignment_payload["message"] = message
-        if expires_at is not None:
-            assignment_payload["expires_at"] = expires_at
-        if copy_receivers is not None:
-            assignment_payload["copy_receivers"] = copy_receivers
+        assignment_payload["signers"] = [
+            {**signer, "id": signer_id}
+            for signer, signer_id in zip(assignment_signers, signer_ids, strict=True)
+        ]
 
         assignment = self.assignments.create(document_id, assignment_payload)
         self._logger.info("Upload + signature workflow completed", {"document_id": document_id})
@@ -188,6 +255,31 @@ class AssinafyClient:
     def get_http_client(self) -> httpx.Client:
         """Return the underlying ``httpx.Client``. Useful for advanced use only."""
         return self._http
+
+    def _prepare_request(self, request: httpx.Request) -> None:
+        """Apply the SDK identity and protect client credentials."""
+        request.headers["User-Agent"] = _USER_AGENT
+        path = request.url.path
+        in_base_path = (
+            not self._base_path or path == self._base_path or path.startswith(f"{self._base_path}/")
+        )
+        if self._base_path and in_base_path:
+            path = path[len(self._base_path) + 1 :]
+        else:
+            path = path.lstrip("/")
+        operation = (request.method, path)
+        request_origin = (request.url.scheme, request.url.host, request.url.port)
+        if (
+            request_origin != self._base_origin
+            or not in_base_path
+            or operation in _NO_CLIENT_AUTH_OPERATIONS
+            or any(
+                method == request.method and pattern.fullmatch(path)
+                for method, pattern in _NO_CLIENT_AUTH_OPERATION_PATTERNS
+            )
+        ):
+            request.headers.pop("X-Api-Key", None)
+            request.headers.pop("Authorization", None)
 
     def close(self) -> None:
         """Close the underlying HTTP connection pool."""

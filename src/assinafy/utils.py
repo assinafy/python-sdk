@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -14,6 +16,10 @@ QUERY_PARAM_ALIASES = {
     "per_page": "per-page",
     "signer_access_code": "signer-access-code",
 }
+_RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+)
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 def handle_assinafy_response(response: Any) -> Any:
@@ -76,4 +82,32 @@ def clean_params(
     if not isinstance(params, dict):
         raise ValidationError("Parameters must be a mapping")
     aliases = aliases or {}
-    return {aliases.get(k, k): v for k, v in params.items() if v is not None}
+    cleaned: dict[str, Any] = {}
+    for key, value in params.items():
+        if value is None:
+            continue
+        wire_key = aliases.get(key, key)
+        if wire_key in cleaned:
+            raise ValidationError(f"Conflicting parameter aliases for {wire_key}")
+        cleaned[wire_key] = value
+    return cleaned
+
+
+def validate_datetime(value: Any, name: str, *, allow_none: bool = False) -> None:
+    """Validate an OpenAPI ``date-time`` value without changing it."""
+    if value is None and allow_none:
+        return
+    if not isinstance(value, str) or not _RFC3339_RE.fullmatch(value):
+        raise ValidationError(f"{name} must be an RFC 3339 timestamp")
+    candidate = value[:-1] + "+00:00" if value[-1] in "Zz" else value
+    try:
+        datetime.fromisoformat(candidate)
+    except ValueError as err:
+        raise ValidationError(f"{name} must be an RFC 3339 timestamp") from err
+
+
+def validate_email(value: Any, name: str = "Email") -> str:
+    """Return a syntactically valid email address."""
+    if not isinstance(value, str) or not _EMAIL_RE.fullmatch(value):
+        raise ValidationError(f"Invalid {name.lower()}", {name.lower(): value})
+    return value

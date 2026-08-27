@@ -225,7 +225,7 @@ class TestWebhookResource:
     def test_register_requires_url(self) -> None:
         resource = WebhookResource(object(), "acc")  # type: ignore[arg-type]
         with pytest.raises(ValidationError):
-            resource.register({"email": "a@b.com"})
+            resource.register({"email": "user@example.com"})
 
         with pytest.raises(ValidationError, match="mapping"):
             resource.register([])  # type: ignore[arg-type]
@@ -241,6 +241,8 @@ class TestWebhookResource:
             {"url": "https://example.com", "email": "ops@example.com", "typo": True},
             {"url": "https://example.com", "email": "ops@example.com", "events": "event"},
             {"url": "https://example.com", "email": "ops@example.com", "is_active": 1},
+            {"url": "/relative", "email": "ops@example.com"},
+            {"url": "https://example.com", "email": "not-an-email"},
         ],
     )
     def test_register_validates_exact_request_shape(self, payload: dict[str, object]) -> None:

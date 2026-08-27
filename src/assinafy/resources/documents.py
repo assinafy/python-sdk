@@ -6,9 +6,9 @@ import os
 import time
 from typing import Any
 
-from ..errors import ApiError, NetworkError, ValidationError
+from ..errors import ApiError, AssinafyError, NetworkError, ValidationError
 from ..types import DOCUMENT_ARTIFACT_NAMES, DocumentArtifactName
-from ..utils import QUERY_PARAM_ALIASES, clean_params
+from ..utils import QUERY_PARAM_ALIASES, clean_params, validate_datetime, validate_email
 from .base import BaseResource
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -16,7 +16,7 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 _READY_STATUSES = frozenset({"metadata_ready", "pending_signature", "certificated"})
 _FAILED_STATUSES = frozenset({"failed", "rejected_by_signer", "rejected_by_user", "expired"})
 _TOKEN_CHANNELS = frozenset({"email", "whatsapp"})
-_TEMPLATE_OPTIONS = frozenset({"name", "message", "expires_at", "editor_fields", "tags", "signers"})
+_TEMPLATE_OPTIONS = frozenset({"name", "message", "expires_at", "editor_fields", "tags"})
 _TEMPLATE_SIGNER_FIELDS = frozenset(
     {"role_id", "id", "verification_method", "notification_methods", "step"}
 )
@@ -83,7 +83,7 @@ class DocumentResource(BaseResource):
             ),
         )
         if not document or not document.get("id"):
-            raise ValidationError(
+            raise AssinafyError(
                 "Upload succeeded but no document ID was returned",
                 {"response": document},
             )
@@ -122,7 +122,7 @@ class DocumentResource(BaseResource):
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
         acc_id = self._account_id(account_id)
-        cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
+        cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
         return self._call_list(
             "Failed to list documents",
             lambda: self._http.get(f"accounts/{acc_id}/documents", params=cleaned),
@@ -243,7 +243,7 @@ class DocumentResource(BaseResource):
              ]}
         """
         acc_id = self._account_id(account_id)
-        cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
+        cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
         return self._call_list(
             "Failed to search documents",
             lambda: self._http.get(f"accounts/{acc_id}/documents/search", params=cleaned),
@@ -259,27 +259,14 @@ class DocumentResource(BaseResource):
 
         Resolves (returning the document) when the status is one of
         ``metadata_ready``, ``pending_signature``, or ``certificated``. Raises
-        :class:`~assinafy.errors.ValidationError` if the status reaches a
+        :class:`~assinafy.errors.AssinafyError` if the status reaches a
         terminal failure (``failed``, ``rejected_by_signer``,
         ``rejected_by_user``, ``expired``) or if the timeout elapses.
         Re-raises immediately (no retry) if the document can't be found at all
         (``404``), since that will never resolve by waiting.
         """
         doc_id = self._path_id(document_id, "Document ID")
-        if (
-            isinstance(timeout, bool)
-            or not isinstance(timeout, (int, float))
-            or not math.isfinite(timeout)
-            or timeout <= 0
-        ):
-            raise ValidationError("timeout must be greater than zero")
-        if (
-            isinstance(poll_interval, bool)
-            or not isinstance(poll_interval, (int, float))
-            or not math.isfinite(poll_interval)
-            or poll_interval <= 0
-        ):
-            raise ValidationError("poll_interval must be greater than zero")
+        _validate_wait_options(timeout, poll_interval)
         deadline = time.monotonic() + timeout
         attempts = 0
         self._logger.info(
@@ -305,7 +292,7 @@ class DocumentResource(BaseResource):
                 if status in _READY_STATUSES:
                     return document
                 if status in _FAILED_STATUSES:
-                    raise ValidationError(
+                    raise AssinafyError(
                         f"Document processing failed with status: {status}",
                         {"status": status},
                     )
@@ -313,7 +300,7 @@ class DocumentResource(BaseResource):
             if remaining > 0:
                 time.sleep(min(poll_interval, remaining))
 
-        raise ValidationError(
+        raise AssinafyError(
             "Timeout waiting for document to be ready",
             {"document_id": doc_id, "attempts": attempts},
         )
@@ -360,14 +347,14 @@ class DocumentResource(BaseResource):
         )
 
     def activities(self, document_id: str) -> builtins.list[dict[str, Any]]:
-        """``GET /documents/{document_id}/activities`` — event audit log.
+        """``GET /documents/{document_id}/activities`` — event activity log.
 
         Example response (``data`` envelope unwrapped)::
 
             [{"id": 8257, "event": "document_uploaded",
-              "message": "Documento criado.", "payload": [],
+              "message": "Documento criado.", "payload": null,
               "origin": {"ip": "192.0.2.1",
-                         "user-agent": "assinafy-python-sdk/1.x"},
+                         "user-agent": "Assinafy-Python-SDK/v<package-version>"},
               "created_at": "2026-06-05T20:50:44Z"}]
         """
         doc_id = self._path_id(document_id, "Document ID")
@@ -383,8 +370,8 @@ class DocumentResource(BaseResource):
         status (``metadata_ready``, ``expired``, ``pending_signature``,
         ``rejected_by_signer``, ``rejected_by_user``, ``failed``). A 400 is
         returned otherwise and surfaced as :class:`~assinafy.errors.ApiError`.
-        Request body: none. Success returns ``None``; the API response has no
-        ``data`` payload.
+        Request body: none. OpenAPI returns ``data: []`` on success; the SDK
+        maps that empty result to ``None``.
         """
         doc_id = self._path_id(document_id, "Document ID")
         return self._call_void(
@@ -402,9 +389,16 @@ class DocumentResource(BaseResource):
         """``POST /accounts/{account_id}/templates/{template_id}/documents``.
 
         ``signers`` is the documented list of role assignments (each entry needs
-        ``role_id`` plus ``id``/``verification_method``/...). ``options`` may
-        include ``name``, ``message``, ``expires_at``, ``editor_fields``,
-        ``tags``.
+        ``role_id`` plus ``id``/``verification_method``/...). The API requires
+        contiguous signing ``step`` values and a DigitalCertificate signer to
+        be alone in its step; copy-receiver roles ignore ``step``. At most one
+        notification method is allowed per template signer.
+
+        ``options`` may include string ``name``/``message``, RFC 3339
+        ``expires_at``, ``editor_fields`` entries shaped as
+        ``{"field_id": "...", "value": "..."}``, and a list of tag names.
+        Missing tag names are auto-created and merged with the template's
+        default document tags.
 
         Example request body (JSON)::
 
@@ -421,12 +415,7 @@ class DocumentResource(BaseResource):
         _validate_template_signers(signers, require_id=True)
         if options is not None and not isinstance(options, dict):
             raise ValidationError("Template options must be a mapping")
-        option_values = options or {}
-        unknown = option_values.keys() - _TEMPLATE_OPTIONS
-        if unknown:
-            raise ValidationError(f"Unknown template options: {', '.join(sorted(unknown))}")
-        # `signers` is applied last so an `options` dict can never silently
-        # override the just-validated list (e.g. a stray "signers" key in options).
+        option_values = _validate_template_options(options or {})
         body: dict[str, Any] = {**option_values, "signers": signers}
         self._logger.info(
             "Creating document from template",
@@ -483,6 +472,10 @@ class DocumentResource(BaseResource):
              "completed_at": "2026-06-03T03:54:16Z",
              "verified_at": "2026-06-03T03:55:00Z", "is_valid": true,
              "message": ""}
+
+        An unknown or invalid hash is also a successful verification response,
+        with ``is_valid: false``, a diagnostic ``message``, and nullable
+        document-specific fields rather than an HTTP error.
         """
         h = self._path_id(signature_hash, "Signature hash")
         return self._call_dict(
@@ -495,8 +488,7 @@ class DocumentResource(BaseResource):
 
         The current OpenAPI schema describes the full :class:`DocumentResource`
         payload documented above.
-        Sandbox deployments have also returned this compact, backward-compatible
-        public representation, which the SDK preserves without discarding fields::
+        The SDK also preserves this compact public representation when returned::
 
             {"resource": "document", "id": "1031ff86...", "name": "sdk.pdf",
              "page_count": "1", "created_by": "Acme Inc."}
@@ -517,10 +509,10 @@ class DocumentResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /public/documents/{document_id}/send-token``.
 
-        The current OpenAPI body is optional and accepts ``email``. Existing
-        sandbox deployments still require the earlier ``recipient`` +
-        ``channel`` shape (``email`` or ``whatsapp``), so both forms remain
-        supported. Do not mix them. A successful no-data envelope is returned.
+        The request body is optional and accepts ``email``. The
+        ``recipient`` + ``channel`` shape (``email`` or ``whatsapp``) is also
+        supported. Do not mix the two forms. A successful no-data envelope is
+        returned.
 
         Current request body (JSON)::
 
@@ -534,12 +526,15 @@ class DocumentResource(BaseResource):
         if email is not None and (recipient is not None or channel is not None):
             raise ValidationError("Use email or recipient/channel, not both")
         if email is not None:
-            body = {"email": self._require_id(email, "Email")}
+            body = {"email": validate_email(email)}
         elif recipient is not None or channel is not None:
             if not isinstance(channel, str) or channel not in _TOKEN_CHANNELS:
                 raise ValidationError('Channel must be "email" or "whatsapp"')
+            validated_recipient = self._require_id(recipient, "Recipient")
+            if channel == "email":
+                validated_recipient = validate_email(validated_recipient)
             body = {
-                "recipient": self._require_id(recipient, "Recipient"),
+                "recipient": validated_recipient,
                 "channel": self._require_id(channel, "Channel"),
             }
         else:
@@ -652,6 +647,11 @@ class DocumentResource(BaseResource):
 def _load_source(source: dict[str, Any]) -> tuple[bytes, str]:
     if not isinstance(source, dict):
         raise ValidationError("source must be a mapping")
+    unknown = source.keys() - {"buffer", "file_path", "file_name"}
+    if unknown:
+        raise ValidationError(f"Unknown source fields: {', '.join(sorted(unknown))}")
+    if ("buffer" in source) == ("file_path" in source):
+        raise ValidationError("source must contain exactly one of buffer or file_path")
     if "buffer" in source:
         file_name = source.get("file_name")
         if not isinstance(file_name, str) or not file_name:
@@ -674,6 +674,17 @@ def _load_source(source: dict[str, Any]) -> tuple[bytes, str]:
     if not isinstance(file_name, str):
         raise ValidationError("file_name must be a string")
     return buffer, file_name
+
+
+def _validate_wait_options(timeout: float, poll_interval: float) -> None:
+    for name, value in (("timeout", timeout), ("poll_interval", poll_interval)):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValidationError(f"{name} must be greater than zero")
 
 
 def _validate_upload(buffer: bytes, file_name: str) -> None:
@@ -720,6 +731,7 @@ def _validate_template_signers(
         notifications = signer.get("notification_methods")
         if notifications is not None and (
             not isinstance(notifications, list)
+            or len(notifications) != 1
             or any(
                 not isinstance(method, str) or method not in _NOTIFICATION_METHODS
                 for method in notifications
@@ -729,3 +741,38 @@ def _validate_template_signers(
         step = signer.get("step")
         if step is not None and (not isinstance(step, int) or isinstance(step, bool) or step < 1):
             raise ValidationError("Template signer step must be a positive integer")
+
+
+def _validate_template_options(options: dict[str, Any]) -> dict[str, Any]:
+    unknown = options.keys() - _TEMPLATE_OPTIONS
+    if unknown:
+        raise ValidationError(f"Unknown template options: {', '.join(sorted(unknown))}")
+    name = options.get("name")
+    if name is not None and (not isinstance(name, str) or not name.strip()):
+        raise ValidationError("Template document name must be a non-empty string")
+    message = options.get("message")
+    if message is not None and not isinstance(message, str):
+        raise ValidationError("Template message must be a string")
+    expires_at = options.get("expires_at")
+    if expires_at is not None:
+        validate_datetime(expires_at, "expires_at")
+    tags = options.get("tags")
+    if tags is not None and (
+        not isinstance(tags, list)
+        or any(not isinstance(tag, str) or not tag.strip() for tag in tags)
+    ):
+        raise ValidationError("Template tags must be a list of non-empty names")
+    editor_fields = options.get("editor_fields")
+    if editor_fields is not None and (
+        not isinstance(editor_fields, list)
+        or any(
+            not isinstance(field, dict)
+            or field.keys() != {"field_id", "value"}
+            or not isinstance(field["field_id"], str)
+            or not field["field_id"].strip()
+            or not isinstance(field["value"], str)
+            for field in editor_fields
+        )
+    ):
+        raise ValidationError("Template editor_fields must contain field_id and string value")
+    return clean_params(options)

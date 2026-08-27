@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+
 
 class MockResponse:
     def __init__(
@@ -20,7 +22,16 @@ class MockResponse:
         return self._json_data
 
     def raise_for_status(self) -> None:
-        pass
+        if self.status_code >= 400:
+            request = httpx.Request("GET", "https://api.example.test/resource")
+            response = httpx.Response(
+                self.status_code,
+                json=self._json_data,
+                request=request,
+            )
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=request, response=response
+            )
 
 
 def make_response(

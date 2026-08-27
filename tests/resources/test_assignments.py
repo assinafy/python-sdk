@@ -71,12 +71,12 @@ class TestBuildAssignmentPayload:
             {
                 "signers": ["a"],
                 "message": "hi",
-                "expires_at": "2024-12-31",
+                "expires_at": "2024-12-31T23:59:59Z",
                 "copy_receivers": ["c"],
             }
         )
         assert body["message"] == "hi"
-        assert body["expires_at"] == "2024-12-31"
+        assert body["expires_at"] == "2024-12-31T23:59:59Z"
         assert body["copy_receivers"] == ["c"]
 
     def test_omits_missing_optional_fields(self) -> None:
@@ -91,6 +91,27 @@ class TestBuildAssignmentPayload:
     def test_throws_on_invalid_signer_reference(self) -> None:
         with pytest.raises(ValidationError):
             build_assignment_payload({"signers": [{}]})
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"signers": ["a"], "signer_ids": ["b"]},
+            {"signers": [{"id": "a", "signer_id": "b"}]},
+        ],
+    )
+    def test_rejects_ambiguous_signer_aliases(self, payload: dict[str, object]) -> None:
+        with pytest.raises(ValidationError, match="not both"):
+            build_assignment_payload(payload)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "expires_at",
+        ["2030-12-31", "not-a-date", "2030-02-30T00:00:00Z", 1],
+    )
+    def test_rejects_invalid_expiration(self, expires_at: object) -> None:
+        with pytest.raises(ValidationError, match="RFC 3339"):
+            build_assignment_payload(  # type: ignore[arg-type]
+                {"signers": ["a"], "expires_at": expires_at}
+            )
 
     def test_collect_assignment_requires_signers_and_entries(self) -> None:
         with pytest.raises(ValidationError, match="signer"):
@@ -137,7 +158,7 @@ class TestAssignmentResource:
                 {"method": "collect", "entries": [{"page_id": "page-1", "fields": []}]},
             )
 
-    def test_list_uses_only_published_pagination_by_default(self) -> None:
+    def test_list_adds_default_account_context_for_sandbox_compatibility(self) -> None:
         captured_url: list[str] = []
         captured_params: list[object] = []
 
@@ -151,7 +172,7 @@ class TestAssignmentResource:
         result = resource.list({"per_page": 5})
 
         assert captured_url[0] == "assignments"
-        assert captured_params[0] == {"per-page": 5}
+        assert captured_params[0] == {"per-page": 5, "accountId": "acc"}
         assert result["data"] == [{"id": "assignment-1"}]
 
     def test_list_allows_account_id_override(self) -> None:
@@ -177,6 +198,10 @@ class TestAssignmentResource:
 
         AssignmentResource(MockHttp()).list({"per_page": 5})
         assert captured_params[0] == {"per-page": 5}
+
+    def test_list_rejects_non_mapping_params(self) -> None:
+        with pytest.raises(ValidationError, match="mapping"):
+            AssignmentResource(object()).list("bad")  # type: ignore[arg-type]
 
     def test_resend_notification_requires_all_three_ids(self) -> None:
         class MockHttp:
@@ -291,6 +316,9 @@ class TestAssignmentResource:
             "has_accepted_terms": True,
         }
 
+        with pytest.raises(ValidationError, match="boolean"):
+            resource.get_for_signer("code", has_accepted_terms=1)  # type: ignore[arg-type]
+
     def test_sign_and_decline_use_signer_assignment_endpoints(self) -> None:
         captured_calls: list[tuple[str, object, object]] = []
 
@@ -323,6 +351,29 @@ class TestAssignmentResource:
             {"signer-access-code": "code"},
             {"decline_reason": "No"},
         )
+
+    def test_sign_allows_documented_empty_string_value(self) -> None:
+        captured_body: list[object] = []
+
+        class MockHttp:
+            def post(self, url: str, **kwargs: object) -> object:
+                captured_body.append(kwargs.get("json"))
+                return make_response(make_envelope({}))
+
+        entry = {"itemId": "item", "fieldId": "field", "pageId": "page", "value": ""}
+        AssignmentResource(MockHttp(), "acc").sign("doc", "assignment", [entry], "code")
+        assert captured_body == [[entry]]
+
+    def test_sign_sends_empty_array_for_virtual_assignment(self) -> None:
+        captured_body: list[object] = []
+
+        class MockHttp:
+            def post(self, url: str, **kwargs: object) -> object:
+                captured_body.append(kwargs.get("json"))
+                return make_response(make_envelope({}))
+
+        AssignmentResource(MockHttp(), "acc").sign("doc", "assignment", [], "code")
+        assert captured_body == [[]]
 
     def test_sign_rejects_incomplete_entries(self) -> None:
         resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
@@ -361,10 +412,11 @@ class TestAssignmentResource:
         resource.reset_expiration("doc-1", "a", None)
         assert captured_body[0] == {"expires_at": None}
 
-    def test_reset_expiration_rejects_empty_string(self) -> None:
+    @pytest.mark.parametrize("expires_at", ["", "2030-12-31", 1])
+    def test_reset_expiration_rejects_invalid_value(self, expires_at: object) -> None:
         resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
         with pytest.raises(ValidationError, match="expires_at"):
-            resource.reset_expiration("doc-1", "a", "")
+            resource.reset_expiration("doc-1", "a", expires_at)  # type: ignore[arg-type]
 
     def test_estimate_resend_cost_posts_to_documented_endpoint(self) -> None:
         captured_url: list[str] = []

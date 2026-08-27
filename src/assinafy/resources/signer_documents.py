@@ -50,7 +50,7 @@ class SignerDocumentResource(BaseResource):
         """``GET /signers/{signer_id}/documents?signer-access-code=...``.
 
         ``params`` accepts the published ``page`` and ``per_page`` keys. Other
-        keys are forwarded for compatibility with older deployments. This
+        keys are forwarded for deployment compatibility. This
         endpoint requires the signer access code (the
         documented security scheme for every signer-facing endpoint); an
         omitted/invalid code always returns 401.
@@ -60,8 +60,10 @@ class SignerDocumentResource(BaseResource):
         """
         sid = self._path_id(signer_id, "Signer ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
-        query = {**(params or {}), "signer_access_code": access_code}
-        cleaned = clean_params(query, QUERY_PARAM_ALIASES)
+        cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
+        if "signer-access-code" in cleaned:
+            raise ValidationError("Pass signer_access_code separately from params")
+        cleaned["signer-access-code"] = access_code
         return self._call_list(
             "Failed to list signer documents",
             lambda: self._http.get(f"signers/{sid}/documents", params=cleaned),
@@ -105,7 +107,8 @@ class SignerDocumentResource(BaseResource):
 
             {"document_ids": ["doc-1", "doc-2"]}
 
-        Success returns ``None``; the API response has no ``data`` payload.
+        OpenAPI returns ``data: []`` on success; the SDK maps that empty result
+        to ``None``.
         """
         access_code = self._require_id(signer_access_code, "Signer access code")
         _assert_document_ids(document_ids)
@@ -136,7 +139,8 @@ class SignerDocumentResource(BaseResource):
             {"document_ids": ["doc-1", "doc-2"],
              "decline_reason": "Unfavorable terms."}
 
-        Success returns ``None``; the API response has no ``data`` payload.
+        OpenAPI returns ``data: []`` on success; the SDK maps that empty result
+        to ``None``.
         """
         access_code = self._require_id(signer_access_code, "Signer access code")
         reason = self._require_id(decline_reason, "Decline reason")

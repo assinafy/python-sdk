@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..errors import ValidationError
+from ..utils import validate_email
 from .base import BaseResource
 
 _SOCIAL_PROVIDERS = frozenset({"google"})
@@ -52,7 +53,7 @@ class AuthenticationResource(BaseResource):
             lambda: self._http.post(
                 "login",
                 json={
-                    "email": self._require_id(email, "Email"),
+                    "email": validate_email(email),
                     "password": self._require_id(password, "Password"),
                 },
             ),
@@ -145,8 +146,8 @@ class AuthenticationResource(BaseResource):
     def delete_api_key(self) -> None:
         """``DELETE /users/api-keys`` — revoke the current user's API key.
 
-        Request body: none. Success returns ``None``; the response has no
-        ``data`` payload.
+        Request body: none. OpenAPI returns ``data: []`` on success; the SDK
+        maps that empty result to ``None``.
         """
         self._call_void(
             "Failed to delete API key",
@@ -175,7 +176,7 @@ class AuthenticationResource(BaseResource):
             lambda: self._http.put(
                 "authentication/change-password",
                 json={
-                    "email": self._require_id(email, "Email"),
+                    "email": validate_email(email),
                     "password": self._require_id(password, "Password"),
                     "new_password": self._require_id(new_password, "New password"),
                 },
@@ -197,7 +198,7 @@ class AuthenticationResource(BaseResource):
             "Failed to request password reset",
             lambda: self._http.put(
                 "authentication/request-password-reset",
-                json={"email": self._require_id(email, "Email")},
+                json={"email": validate_email(email)},
             ),
         )
 
@@ -222,7 +223,7 @@ class AuthenticationResource(BaseResource):
             {"email": "john@example.com"}
         """
         body: dict[str, Any] = {
-            "email": self._require_id(email, "Email"),
+            "email": validate_email(email),
             "new_password": self._require_id(new_password, "New password"),
         }
         if token is not None:

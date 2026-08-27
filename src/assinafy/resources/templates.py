@@ -12,9 +12,9 @@ class TemplateResource(BaseResource):
     Document creation from a template lives on
     :meth:`assinafy.resources.documents.DocumentResource.create_from_template`.
 
-    The published OpenAPI exposes ``list`` only. ``get`` is retained because it
-    is live-confirmed and the schema text refers to a single-template response;
-    no template mutation or page-download paths are currently published.
+    The published OpenAPI exposes ``list`` only. ``get`` is retained because
+    the deployed endpoint and schema text expose a single-template response;
+    no template mutation or page-download paths are published.
     """
 
     def list(
@@ -33,11 +33,18 @@ class TemplateResource(BaseResource):
 
             {"data": [
                 {"id": "fa7f3e52...", "name": "nda.pdf",
-                 "document_name": "nda.pdf", "message": null, "status": "Ready",
+                 "document_name": "nda.pdf", "message": null, "status": "ready",
                  "pages": [{"id": "fa7f3e52...", "number": 1, "height": 2100,
-                            "width": 1275, "fields": []}],
+                            "width": 1275, "download_url": "https://api.example/page",
+                            "fields": [{"id": "placement-id", "field_id": "field-id",
+                                        "role_id": "role-id", "label": "Signature",
+                                        "display_settings": {"left": 69, "top": 282},
+                                        "created_at": "2024-07-19T15:23:03Z",
+                                        "updated_at": "2024-07-19T15:23:03Z"}]}],
                  "roles": [{"id": "fa7f3e52...", "name": "Editor",
-                            "assignment_type": "Editor"}],
+                            "assignment_type": "Editor",
+                            "created_at": "2024-07-19T15:23:03Z",
+                            "updated_at": "2024-07-19T15:23:03Z"}],
                  "tags": [{"id": "fa8c09f3...", "name": "HR"}],
                  "created_at": "2024-07-19T15:23:03Z",
                  "updated_at": "2024-07-19T15:23:03Z"}
@@ -45,7 +52,7 @@ class TemplateResource(BaseResource):
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
         acc_id = self._account_id(account_id)
-        cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
+        cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
         return self._call_list(
             "Failed to list templates",
             lambda: self._http.get(f"accounts/{acc_id}/templates", params=cleaned),
@@ -63,9 +70,16 @@ class TemplateResource(BaseResource):
             {"resource": "template", "id": "fa7f3e52...", "name": "nda.pdf",
              "document_name": "nda.pdf", "message": null, "status": "ready",
              "pages": [{"id": "page-id", "number": 1, "height": 2100,
-                        "width": 1275, "fields": []}],
+                        "width": 1275, "download_url": "https://api.example/page",
+                        "fields": [{"id": "placement-id", "field_id": "field-id",
+                                    "role_id": "role-id", "label": "Signature",
+                                    "display_settings": {"left": 69, "top": 282},
+                                    "created_at": "2024-07-19T15:23:03Z",
+                                    "updated_at": "2024-07-19T15:23:03Z"}]}],
              "roles": [{"id": "role-id", "name": "Signer",
-                        "assignment_type": "Signer"}],
+                        "assignment_type": "Signer",
+                        "created_at": "2024-07-19T15:23:03Z",
+                        "updated_at": "2024-07-19T15:23:03Z"}],
              "tags": [{"id": "tag-id", "name": "HR"}],
              "default_document_tags": [{"id": "tag-id", "name": "Signed"}],
              "created_at": "2024-07-19T15:23:03Z",

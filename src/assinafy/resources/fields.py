@@ -12,7 +12,11 @@ _UPDATE_FIELDS = frozenset({"name", "regex", "is_active"})
 
 
 class FieldResource(BaseResource):
-    """Field-definition endpoints (custom and standard fields)."""
+    """Field-definition endpoints (custom and standard fields).
+
+    The documented ``resource`` value is ``"field"``; ``"field_definition"``
+    is also preserved when returned by the API.
+    """
 
     def create(
         self,
@@ -24,8 +28,7 @@ class FieldResource(BaseResource):
         ``payload`` requires ``type`` (one of the values returned by
         :meth:`list_types`) and ``name``. Optional: ``regex``, ``is_required``.
         ``is_read_only``/``is_visible`` are server-controlled response fields,
-        not accepted create input (confirmed live: passing them is silently
-        ignored).
+        not accepted create input.
 
         Example request body (JSON)::
 
@@ -33,7 +36,7 @@ class FieldResource(BaseResource):
 
         Example response (``data`` envelope unwrapped)::
 
-            {"resource": "field_definition", "id": "1031ff86...", "name": "CPF",
+            {"resource": "field", "id": "1031ff86...", "name": "CPF",
              "type": "text", "regex": null, "is_pre_defined": false,
              "is_active": true, "is_required": true, "is_standard": false,
              "is_read_only": false, "is_visible": true}
@@ -73,7 +76,7 @@ class FieldResource(BaseResource):
         ``x-pagination-*`` headers)::
 
             {"data": [
-                {"resource": "field_definition", "id": "field-id", "name": "Nome",
+                {"resource": "field", "id": "field-id", "name": "Nome",
                  "type": "personName", "regex": null, "is_pre_defined": true,
                  "is_active": true, "is_required": false, "is_standard": false,
                  "is_read_only": false, "is_visible": true}
@@ -81,7 +84,7 @@ class FieldResource(BaseResource):
              "meta": {"current_page": 1, "per_page": 20, "total": 11, "last_page": 1}}
         """
         acc_id = self._account_id(account_id)
-        cleaned = clean_params(params or {}, QUERY_PARAM_ALIASES)
+        cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
         return self._call_list(
             "Failed to list field definitions",
             lambda: self._http.get(f"accounts/{acc_id}/fields", params=cleaned),
@@ -92,7 +95,7 @@ class FieldResource(BaseResource):
 
         Example response (``data`` envelope unwrapped)::
 
-            {"resource": "field_definition", "id": "1031ff86...", "name": "CPF",
+            {"resource": "field", "id": "1031ff86...", "name": "CPF",
              "type": "text", "regex": null, "is_pre_defined": false,
              "is_active": true, "is_required": true, "is_standard": false,
              "is_read_only": false, "is_visible": true}
@@ -146,8 +149,8 @@ class FieldResource(BaseResource):
     def delete(self, field_id: str, account_id: str | None = None) -> None:
         """``DELETE /accounts/{account_id}/fields/{field_id}`` — delete a field.
 
-        Request body: none. Success returns ``None``; the response has no
-        ``data`` payload.
+        Request body: none. OpenAPI returns ``data: []`` on success; the SDK
+        maps that empty result to ``None``.
         """
         acc_id = self._account_id(account_id)
         fid = self._path_id(field_id, "Field ID")

@@ -29,6 +29,15 @@ def test_path_ids_reject_non_strings() -> None:
         client.close()
 
 
+def test_required_ids_reject_whitespace_only_strings() -> None:
+    client = httpx.Client(base_url="https://example.test/v1/")
+    try:
+        with pytest.raises(ValidationError, match="Document ID is required"):
+            DocumentResource(client, "acc").get("   ")
+    finally:
+        client.close()
+
+
 def test_object_and_list_response_helpers_reject_wrong_shapes() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         data: object = [] if request.url.path.endswith("/doc-1") else {"not": "a list"}

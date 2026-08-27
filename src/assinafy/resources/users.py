@@ -37,9 +37,6 @@ class UserResource(BaseResource):
     ) -> list[dict[str, Any]]:
         """``GET /users/self/stats`` — return cross-account KPI rows.
 
-        This follows the current published contract. The sandbox returned 404
-        for this published route on 2026-08-20.
-
         The response uses the complete KPI-row shape documented by
         :meth:`~assinafy.resources.accounts.AccountResource.stats`.
         """
@@ -51,9 +48,6 @@ class UserResource(BaseResource):
 
     def notification_preferences(self) -> dict[NotificationPreferenceCode, bool]:
         """``GET /users/self/notification-preferences`` — return all preferences.
-
-        This follows the current published contract. The sandbox returned 404
-        for this published route on 2026-08-20.
 
         Complete unwrapped response::
 
