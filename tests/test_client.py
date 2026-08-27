@@ -165,6 +165,55 @@ class TestAssinafyClient:
             AssinafyClient(base_url=base_url)
 
     @pytest.mark.parametrize(
+        ("base_url", "message"),
+        [
+            ("https://user:pw@api.assinafy.com.br/v1", "must not embed credentials"),
+            ("https://user@api.assinafy.com.br/v1", "must not embed credentials"),
+            ("https://api.assinafy.com.br/v1?x=1", "query string or fragment"),
+            ("https://api.assinafy.com.br/v1#frag", "query string or fragment"),
+        ],
+    )
+    def test_rejects_base_url_with_credentials_query_or_fragment(
+        self, base_url: str, message: str
+    ) -> None:
+        """Embedded userinfo would replace SDK auth with HTTP Basic; a query or
+        fragment silently glues the request path into the wrong URL component."""
+        with pytest.raises(ValidationError, match=message):
+            AssinafyClient(api_key="k", account_id="acc", base_url=base_url)
+        with pytest.raises(ValidationError, match=message):
+            AssinafyClient(base_url=base_url)
+
+    @pytest.mark.parametrize(
+        "credentials",
+        [{"api_key": "secret"}, {"token": "secret"}],
+    )
+    def test_rejects_plaintext_http_base_url_when_credentials_are_set(
+        self, credentials: dict[str, str]
+    ) -> None:
+        with pytest.raises(ValidationError, match="must use https"):
+            AssinafyClient(
+                account_id="acc", base_url="http://api.assinafy.com.br/v1", **credentials
+            )
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "http://localhost:8080/v1",
+            "http://LOCALHOST:8080/v1",
+            "http://127.0.0.1:8080/v1",
+            "http://127.0.0.2:8080/v1",
+            "http://[::1]:8080/v1",
+        ],
+    )
+    def test_allows_plaintext_http_for_loopback_hosts(self, base_url: str) -> None:
+        with AssinafyClient(api_key="k", account_id="acc", base_url=base_url) as client:
+            assert client.documents is not None
+
+    def test_allows_plaintext_http_without_credentials(self) -> None:
+        with AssinafyClient(base_url="http://mock.internal.test/v1") as client:
+            assert client.documents is not None
+
+    @pytest.mark.parametrize(
         ("kwargs", "message"),
         [
             ({"api_key": ""}, "api_key"),

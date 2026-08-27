@@ -251,10 +251,13 @@ class AssignmentResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /assignments`` — list the account's assignments.
 
-        The production contract documents ``page`` and ``per_page`` (sent as
-        ``per-page``). The SDK also sends the explicit or client-default
-        ``accountId`` context when available and omits it for account-less token
-        clients.
+        The published contract documents ``page`` and ``per_page`` (sent as
+        ``per-page``) and scopes results to *the authenticated credential's
+        current account*. The SDK forwards the explicit or client-default
+        account as an ``accountId`` context parameter and omits it for
+        account-less token clients, but passing an ``account_id`` for a
+        different workspace does not re-scope this endpoint — use a credential
+        belonging to that workspace instead.
         Returns
         ``{"data": [...], "meta": {...}}`` when the API returns ``x-pagination-*``
         headers.

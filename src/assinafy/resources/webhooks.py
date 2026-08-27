@@ -170,9 +170,11 @@ class WebhookResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /accounts/{account_id}/webhooks`` — webhook delivery history.
 
-        ``params`` accepts ``event``, ``delivered`` (bool), ``from`` / ``to``
-        (Unix-second timestamps), and standard pagination keys (``page``,
-        ``per_page``). Returns ``{"data": [...], "meta": {...}}``.
+        ``params`` accepts ``event`` (an event-type name), ``delivered``
+        (Python ``True``/``False``, sent as the documented ``true``/``false``
+        strings), ``from`` / ``to`` (Unix-second timestamps), and standard
+        pagination keys (``page``, ``per_page``). Returns
+        ``{"data": [...], "meta": {...}}``.
 
         Example response (``data`` envelope unwrapped, ``meta`` from
         ``x-pagination-*`` headers)::

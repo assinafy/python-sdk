@@ -2,6 +2,39 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.6.2] - 2026-08-27
+
+### Fixed
+
+- `AssinafyClient` now rejects a `base_url` that embeds credentials
+  (`https://user:pass@host/v1`). Such a URL made HTTPX derive an
+  `Authorization: Basic` header that replaced the configured `api_key` or
+  `token` on every request, and put those URL credentials into any proxy or
+  access log along the way.
+- `AssinafyClient` now rejects a `base_url` carrying a query string or
+  fragment. Previously the request path was appended to the wrong URL
+  component — `https://host/v1?x=1` sent every call to
+  `https://host/v1?x=1/accounts/...` while still attaching the API key.
+- `AssinafyClient` now rejects a plaintext `http://` `base_url` pointing at a
+  non-loopback host while `api_key` or `token` is set, so a mistyped or
+  misconfigured URL can no longer send credentials in the clear. Loopback
+  hosts and credential-free clients still accept `http://`, keeping local and
+  mock servers usable.
+
+### Changed
+
+- `assignments.list()` documents that the API scopes results to the
+  authenticated credential's current account, so passing a different
+  `account_id` does not re-scope the endpoint.
+- `webhooks.list_dispatches()` documents the wire values the `delivered`
+  filter accepts.
+- `templates.get()` records that the route is deployed and answers on the live
+  API even though the published schema lists only `templates.list()`.
+- The README is reorganised as a single end-to-end flow — install,
+  authenticate, configure, then the seven signing stages from upload to
+  certified download — with a table of contents ahead of the flat resource
+  reference.
+
 ## [1.6.1] - 2026-08-26
 
 ### Added

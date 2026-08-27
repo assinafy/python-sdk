@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 from types import TracebackType
 from typing import Any
@@ -69,7 +70,13 @@ class AssinafyClient:
             ``api_key`` is not provided.
         account_id: Workspace/account ID used as the default for account-scoped
             methods (e.g. ``documents.list``). May be overridden per call.
-        base_url: API base URL. Defaults to ``https://api.assinafy.com.br/v1``.
+        base_url: API base URL. Defaults to ``https://api.assinafy.com.br/v1``
+            (use ``https://sandbox.assinafy.com.br/v1`` for sandbox). It must
+            carry only scheme, host, port, and path: embedded credentials
+            (``user:pass@``), a query string, or a fragment are rejected.
+            Plaintext ``http://`` is rejected when ``api_key`` or ``token`` is
+            set unless the host is loopback, so a misconfigured URL cannot send
+            credentials in the clear.
         webhook_secret: Shared secret used by :class:`WebhookVerifier`.
         timeout: Per-request timeout in seconds.
         logger: Optional ``Logger``-shaped object (``debug``/``info``/``warning``
@@ -103,6 +110,21 @@ class AssinafyClient:
             raise ValidationError("base_url must be a non-empty HTTP(S) URL") from exc
         if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.host:
             raise ValidationError("base_url must be a non-empty HTTP(S) URL")
+        if parsed_base_url.userinfo:
+            raise ValidationError(
+                "base_url must not embed credentials; pass api_key or token instead"
+            )
+        if parsed_base_url.query or parsed_base_url.fragment:
+            raise ValidationError("base_url must not contain a query string or fragment")
+        if (
+            parsed_base_url.scheme == "http"
+            and (api_key or token)
+            and not _is_loopback_host(parsed_base_url.host)
+        ):
+            raise ValidationError(
+                "base_url must use https when api_key or token is set; "
+                "plaintext http is allowed only for loopback hosts"
+            )
         self._base_path = parsed_base_url.path.rstrip("/")
         self._base_origin = (parsed_base_url.scheme, parsed_base_url.host, parsed_base_url.port)
 
@@ -295,6 +317,16 @@ class AssinafyClient:
         tb: TracebackType | None,
     ) -> None:
         self.close()
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True when plaintext traffic to ``host`` cannot leave the local machine."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _response_id(payload: dict[str, Any], operation: str) -> str:

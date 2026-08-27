@@ -13,8 +13,9 @@ class TemplateResource(BaseResource):
     :meth:`assinafy.resources.documents.DocumentResource.create_from_template`.
 
     The published OpenAPI exposes ``list`` only. ``get`` is retained because
-    the deployed endpoint and schema text expose a single-template response;
-    no template mutation or page-download paths are published.
+    the route is deployed and answers on the live API (it authenticates rather
+    than 404s) and the published schema text describes a single-template
+    response. No template mutation or page-download paths are published.
     """
 
     def list(
