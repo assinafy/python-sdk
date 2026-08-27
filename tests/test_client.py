@@ -185,15 +185,19 @@ class TestAssinafyClient:
 
     @pytest.mark.parametrize(
         "credentials",
-        [{"api_key": "secret"}, {"token": "secret"}],
+        [{"api_key": "secret"}, {"token": "secret"}, {}],
     )
-    def test_rejects_plaintext_http_base_url_when_credentials_are_set(
+    def test_rejects_plaintext_http_base_url_for_non_loopback_hosts(
         self, credentials: dict[str, str]
     ) -> None:
+        """A credential-free client still POSTs passwords to /login, so plaintext
+        http off the loopback interface is refused whether or not api_key is set."""
         with pytest.raises(ValidationError, match="must use https"):
             AssinafyClient(
                 account_id="acc", base_url="http://api.assinafy.com.br/v1", **credentials
             )
+        with pytest.raises(ValidationError, match="must use https"):
+            AssinafyClient(base_url="http://mock.internal.test/v1", **credentials)
 
     @pytest.mark.parametrize(
         "base_url",
@@ -209,8 +213,8 @@ class TestAssinafyClient:
         with AssinafyClient(api_key="k", account_id="acc", base_url=base_url) as client:
             assert client.documents is not None
 
-    def test_allows_plaintext_http_without_credentials(self) -> None:
-        with AssinafyClient(base_url="http://mock.internal.test/v1") as client:
+    def test_allows_plaintext_http_for_loopback_without_credentials(self) -> None:
+        with AssinafyClient(base_url="http://127.0.0.1:8080/v1") as client:
             assert client.documents is not None
 
     @pytest.mark.parametrize(
@@ -293,6 +297,36 @@ class TestAssinafyClient:
                 wait_timeout=1.0,
                 wait_poll_interval=0.01,
             )
+        client.close()
+
+    def test_upload_and_request_signatures_reports_orphans_on_failure(self) -> None:
+        """A mid-workflow failure must hand back the IDs already created, or the
+        caller has no way to delete the orphaned document and signers."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if request.method == "POST" and path.endswith("/documents"):
+                return httpx.Response(200, json={"status": 200, "data": {"id": "doc-1"}})
+            if request.method == "POST" and path.endswith("/signers"):
+                if b"first@example.com" in request.content:
+                    return httpx.Response(200, json={"status": 200, "data": {"id": "signer-1"}})
+                return httpx.Response(500, json={"status": 500, "message": "boom"})
+            raise AssertionError(f"unexpected call {request.method} {path}")
+
+        client = AssinafyClient(api_key="k", account_id="acc")
+        client._http._transport = httpx.MockTransport(handler)
+
+        with pytest.raises(AssinafyError) as excinfo:
+            client.upload_and_request_signatures(
+                source={"buffer": b"%PDF-1.4", "file_name": "contract.pdf"},
+                signers=[
+                    {"full_name": "First", "email": "first@example.com"},
+                    {"full_name": "Second", "email": "second@example.com"},
+                ],
+                wait_for_ready=False,
+            )
+        assert excinfo.value.context["document_id"] == "doc-1"
+        assert excinfo.value.context["signer_ids"] == ["signer-1"]
         client.close()
 
     def test_upload_and_request_signatures_chains_all_three_calls(self) -> None:

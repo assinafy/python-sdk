@@ -94,11 +94,11 @@ sandbox. `base_url` must carry only scheme, host, port, and path — the
 constructor rejects a URL that embeds credentials (`https://user:pass@host/v1`,
 which would silently replace your API key or token with HTTP Basic auth) or
 that carries a query string or fragment (which would glue the request path into
-the wrong URL component). Plaintext `http://` is rejected while `api_key` or
-`token` is set unless the host is loopback, so a mistyped or misconfigured URL
-cannot put your credentials on the wire in the clear. Credential-free clients
-may use plaintext `http://` anywhere, which keeps local and LAN mock servers
-usable.
+the wrong URL component). Plaintext `http://` is rejected for every non-loopback
+host — `login`, `social_login`, `change_password`, `reset_password` and
+`create_api_key` send secrets in the request body even when the client carries
+no `api_key` or `token`, so the loopback interface is the only place plaintext
+is safe. Point local and mock servers at `localhost`/`127.0.0.1`.
 
 The client is a context manager and holds an HTTP connection pool; use `with`
 or call `close()` when you are finished.

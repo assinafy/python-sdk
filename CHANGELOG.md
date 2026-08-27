@@ -2,6 +2,26 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.6.3] - 2026-08-27
+
+### Fixed
+
+- `AssinafyClient` now rejects a plaintext `http://` `base_url` for every
+  non-loopback host, not only when `api_key` or `token` is set. The previous
+  exemption for credential-free clients was unsound: `authentication.login()`,
+  `social_login()`, `change_password()`, `reset_password()` and
+  `create_api_key()` put passwords and provider tokens in the *request body*,
+  and those are exactly the calls a client makes before it has any credential
+  to configure. A credential-free client pointed at `http://host/v1` sent them
+  in the clear. Loopback hosts still accept `http://`, so local and mock
+  servers keep working at `localhost` / `127.0.0.1`.
+- `upload_and_request_signatures()` now attaches `document_id` and the
+  `signer_ids` created so far to the `context` of any `AssinafyError` raised
+  after the upload succeeds. The docstring already told callers to inspect the
+  error context for cleanup, but nothing populated it, so a failure during
+  signer or assignment creation left orphaned records whose IDs the caller
+  could not recover.
+
 ## [1.6.2] - 2026-08-27
 
 ### Fixed

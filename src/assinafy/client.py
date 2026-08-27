@@ -74,9 +74,10 @@ class AssinafyClient:
             (use ``https://sandbox.assinafy.com.br/v1`` for sandbox). It must
             carry only scheme, host, port, and path: embedded credentials
             (``user:pass@``), a query string, or a fragment are rejected.
-            Plaintext ``http://`` is rejected when ``api_key`` or ``token`` is
-            set unless the host is loopback, so a misconfigured URL cannot send
-            credentials in the clear.
+            Plaintext ``http://`` is rejected for every non-loopback host:
+            ``login``, ``social_login``, ``change_password``, ``reset_password``
+            and ``create_api_key`` put secrets in the request body even when the
+            client itself carries no ``api_key`` or ``token``.
         webhook_secret: Shared secret used by :class:`WebhookVerifier`.
         timeout: Per-request timeout in seconds.
         logger: Optional ``Logger``-shaped object (``debug``/``info``/``warning``
@@ -116,14 +117,11 @@ class AssinafyClient:
             )
         if parsed_base_url.query or parsed_base_url.fragment:
             raise ValidationError("base_url must not contain a query string or fragment")
-        if (
-            parsed_base_url.scheme == "http"
-            and (api_key or token)
-            and not _is_loopback_host(parsed_base_url.host)
-        ):
+        if parsed_base_url.scheme == "http" and not _is_loopback_host(parsed_base_url.host):
             raise ValidationError(
-                "base_url must use https when api_key or token is set; "
-                "plaintext http is allowed only for loopback hosts"
+                "base_url must use https; plaintext http is allowed only for loopback hosts, "
+                "because login, password and API-key calls send secrets in the request body "
+                "even when no api_key or token is configured"
             )
         self._base_path = parsed_base_url.path.rstrip("/")
         self._base_origin = (parsed_base_url.scheme, parsed_base_url.host, parsed_base_url.port)
@@ -179,9 +177,10 @@ class AssinafyClient:
 
         The three calls are not transactional: if signer creation or assignment
         creation fails partway through, the uploaded document and any signers
-        already created are left in place (no automatic rollback). Inspect the
-        raised error's context or call the individual resource methods directly
-        if you need finer-grained control or cleanup.
+        already created are left in place (no automatic rollback). Every
+        :class:`AssinafyError` raised after the upload carries ``document_id``
+        and the ``signer_ids`` created so far in its ``context``, so the caller
+        can delete the orphans or retry the remaining steps.
 
         Args:
             source: Either ``{"file_path": "..."}`` or
@@ -254,23 +253,28 @@ class AssinafyClient:
 
         document = self.documents.upload(source, account_id)
         document_id = _response_id(document, "Document upload")
-        if wait_for_ready:
-            document = self.documents.wait_until_ready(
-                document_id, timeout=wait_timeout, poll_interval=wait_poll_interval
-            )
-            document_id = _response_id(document, "Document readiness")
+        signer_ids: list[str] = []
+        try:
+            if wait_for_ready:
+                document = self.documents.wait_until_ready(
+                    document_id, timeout=wait_timeout, poll_interval=wait_poll_interval
+                )
+                document_id = _response_id(document, "Document readiness")
 
-        signer_ids = [
-            _response_id(self.signers.create(signer, account_id), "Signer creation")
-            for signer in validated_signers
-        ]
+            for signer in validated_signers:
+                signer_ids.append(
+                    _response_id(self.signers.create(signer, account_id), "Signer creation")
+                )
 
-        assignment_payload["signers"] = [
-            {**signer, "id": signer_id}
-            for signer, signer_id in zip(assignment_signers, signer_ids, strict=True)
-        ]
+            assignment_payload["signers"] = [
+                {**signer, "id": signer_id}
+                for signer, signer_id in zip(assignment_signers, signer_ids, strict=True)
+            ]
 
-        assignment = self.assignments.create(document_id, assignment_payload)
+            assignment = self.assignments.create(document_id, assignment_payload)
+        except AssinafyError as exc:
+            exc.context.update({"document_id": document_id, "signer_ids": signer_ids})
+            raise
         self._logger.info("Upload + signature workflow completed", {"document_id": document_id})
         return {"document": document, "assignment": assignment, "signer_ids": signer_ids}
 
