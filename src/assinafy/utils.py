@@ -1,7 +1,8 @@
-"""Internal utilities: response envelope handling, logger, query aliases."""
+"""Internal utilities: response envelope handling, logger, query aliases, uploads."""
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime
 from typing import Any
@@ -104,6 +105,46 @@ def validate_datetime(value: Any, name: str, *, allow_none: bool = False) -> Non
         datetime.fromisoformat(candidate)
     except ValueError as err:
         raise ValidationError(f"{name} must be an RFC 3339 timestamp") from err
+
+
+def load_file_source(source: dict[str, Any]) -> tuple[bytes, str]:
+    """Resolve a ``multipart/form-data`` upload source to ``(bytes, file_name)``.
+
+    Shared by every documented ``file`` upload part — documents and account
+    logos. ``source`` carries exactly one of ``file_path`` or ``buffer``;
+    ``file_name`` is required alongside a buffer and defaults to the path's
+    basename otherwise. Content-specific limits (PDF extension, size caps) are
+    the caller's to enforce.
+    """
+    if not isinstance(source, dict):
+        raise ValidationError("source must be a mapping")
+    unknown = source.keys() - {"buffer", "file_path", "file_name"}
+    if unknown:
+        raise ValidationError(f"Unknown source fields: {', '.join(sorted(unknown))}")
+    if ("buffer" in source) == ("file_path" in source):
+        raise ValidationError("source must contain exactly one of buffer or file_path")
+    if "buffer" in source:
+        file_name = source.get("file_name")
+        if not isinstance(file_name, str) or not file_name:
+            raise ValidationError("file_name is required when uploading a buffer")
+        buffer = source["buffer"]
+        if not isinstance(buffer, (bytes, bytearray, memoryview)):
+            raise ValidationError("buffer must contain bytes")
+        return bytes(buffer), file_name
+    file_path = source.get("file_path")
+    if not isinstance(file_path, (str, os.PathLike)) or not file_path:
+        raise ValidationError("file_path is required")
+    try:
+        with open(file_path, "rb") as handle:
+            buffer = handle.read()
+    except OSError as err:
+        raise ValidationError(
+            "Unable to read upload file", {"file_path": os.fspath(file_path)}
+        ) from err
+    file_name = source.get("file_name") or os.path.basename(file_path)
+    if not isinstance(file_name, str):
+        raise ValidationError("file_name must be a string")
+    return buffer, file_name
 
 
 def validate_email(value: Any, name: str = "Email") -> str:

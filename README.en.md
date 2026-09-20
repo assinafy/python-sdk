@@ -5,18 +5,20 @@
 Python SDK for the [Assinafy API](https://api.assinafy.com.br/v1/docs) — the
 Brazilian electronic-signature platform.
 
-The SDK is synchronous, built on `httpx`, and covers all 89 operations
-currently published by Assinafy: accounts, users, authentication, documents,
-signers, signer documents, assignments, field definitions, templates, tags, and
-webhooks. Every public method names the verb and path it calls and documents
-its request body and unwrapped response; shared resource shapes are documented
-once and referenced by the methods that return them.
+The SDK is synchronous, built on `httpx`, and covers all 93 operations
+currently published by Assinafy: accounts, users, authentication, OAuth,
+documents, signers, signer documents, assignments, field definitions,
+templates, tags, and webhooks. Every public method names the verb and path it
+calls and documents its request body and unwrapped response; shared resource
+shapes are documented once and referenced by the methods that return them.
 
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Authentication](#authentication)
   - [Client configuration](#client-configuration)
 - [Quick start](#quick-start)
+- [Signer verification methods](#signer-verification-methods)
+  - [ICP-Brasil digital certificate (A1/A3)](#icp-brasil-digital-certificate-a1a3)
 - [The signing lifecycle](#the-signing-lifecycle)
   - [1. Prepare the signers](#1-prepare-the-signers)
   - [2. Upload the document](#2-upload-the-document)
@@ -26,6 +28,14 @@ once and referenced by the methods that return them.
   - [6. Track progress](#6-track-progress)
   - [7. Download the signed document](#7-download-the-signed-document)
   - [Starting from a template instead](#starting-from-a-template-instead)
+- [OAuth for marketplace applications](#oauth-for-marketplace-applications)
+  - [1. Register the application](#1-register-the-application)
+  - [2. Send the user to Assinafy](#2-send-the-user-to-assinafy)
+  - [3. Handle the callback and exchange the code](#3-handle-the-callback-and-exchange-the-code)
+  - [4. Call the API](#4-call-the-api)
+  - [5. Refresh and disconnect](#5-refresh-and-disconnect)
+  - [Discovery and OpenID Connect](#discovery-and-openid-connect)
+  - [OAuth checklist](#oauth-checklist)
 - [Resource reference](#resource-reference)
   - [Authentication resource](#authentication-resource)
   - [Accounts](#accounts)
@@ -35,6 +45,7 @@ once and referenced by the methods that return them.
   - [Tags](#tags)
   - [Signers](#signers)
   - [Assignments](#assignments)
+  - [OAuth](#oauth)
   - [Signer documents](#signer-documents)
   - [Field definitions](#field-definitions)
   - [Webhooks](#webhooks)
@@ -78,6 +89,16 @@ endpoints:
 public_client = AssinafyClient()
 session = public_client.authentication.login("user@example.com", "password")
 ```
+
+There are four ways to authenticate, and which one you want depends on whose
+workspace you are acting on:
+
+| Mode | Sent as | Use it when |
+| --- | --- | --- |
+| API key | `X-Api-Key` | you automate **your own** workspace — recommended for back ends |
+| Access token | `Authorization: Bearer` | you hold a user session from `authentication.login()` |
+| Signer access code | `signer-access-code` query parameter | you drive the signer-facing endpoints |
+| OAuth 2.1 + PKCE | `Authorization: Bearer` | you build an app that **other people** connect to their own workspace — see [OAuth for marketplace applications](#oauth-for-marketplace-applications) |
 
 ### Client configuration
 
@@ -141,6 +162,71 @@ sending.
 When you need explicit IDs, cost control, or cleanup, drive the same lifecycle
 through the individual resources instead — that is what the next section walks
 through.
+
+## Signer verification methods
+
+Set per signer through `verification_method` when you create the assignment.
+Verification and notification are **coupled**: send one, both, or neither — the
+missing side is inferred, and sending neither defaults both to `Email`.
+
+| Method | How it works | Cost per signer |
+| --- | --- | --- |
+| `Email` *(default)* | A one-time code (OTP) by email, required before signing | Free |
+| `Whatsapp` | A one-time code (OTP) over WhatsApp | Verification free; the notification it requires costs 0.45 credits, on paid plans only |
+| `DigitalCertificate` | The signer signs with their **own ICP-Brasil certificate (A1/A3)** through the Web PKI browser extension, producing a qualified **PAdES** signature | 2 credits, plus its notification |
+
+Allowed pairings: `Email` → notify by `Email`; `Whatsapp` → notify by
+`Whatsapp`; `DigitalCertificate` → notify by `Email` **or** `Whatsapp`. Only one
+notification method per signer, and an invalid pairing is a `400`.
+
+### ICP-Brasil digital certificate (A1/A3)
+
+Requires the **Digital Certificate** feature on the account (Standard and Pro
+plans), a CPF or CNPJ in the signer's `government_id`, and exactly **one
+certificate signer per signing step**. A CPF requires that person's own
+certificate (an e-CPF, or an e-CNPJ naming them as legal representative); a CNPJ
+requires the company's e-CNPJ.
+
+```python
+signer = client.signers.update(signer["id"], {"government_id": "39053344705"})
+
+estimate = client.assignments.estimate_cost(document["id"], {
+    "method": "virtual",
+    "signers": [{"verification_method": "DigitalCertificate",
+                 "notification_methods": ["Email"]}],
+})
+
+client.assignments.create(document["id"], {
+    "method": "virtual",
+    "signers": [{
+        "id": signer["id"],
+        "step": 1,
+        "verification_method": "DigitalCertificate",
+        "notification_methods": ["Email"],
+    }],
+})
+```
+
+Before the signer can open the assignment they must confirm their identity data
+**and** accept the terms — `confirm_data(..., {"has_accepted_terms": True})`
+covers both in one call, and `accept_terms()` is never gated. Sending
+`has_accepted_terms` to `get_for_signer()` is too late to open that gate.
+
+The ordinary signing endpoint **rejects** certificate signers: their signature
+is produced by a two-step handshake with the Web PKI browser extension.
+
+```
+POST /v1/signers/certificate/start     -> data.token       (Web PKI operation token)
+        v  the browser signs that token with the signer's certificate
+POST /v1/signers/certificate/complete  -> data.signerName
+```
+
+Both routes are deployed on production and sandbox, but they are **not**
+published as operations in the OpenAPI document, so their request and response
+contract is unspecified and this SDK does not call them — drive that step
+through the Assinafy-hosted signing flow. Everything around it is covered:
+creating the assignment, `confirm_data`, cost estimation, and downloading the
+resulting `pades` artifact once the flow completes.
 
 ## The signing lifecycle
 
@@ -285,12 +371,10 @@ out-of-bounds rectangles, so keep the placement inside the page's reported
 `width`/`height`. `fontFamily` and `backgroundColor` are optional presentation
 metadata.
 
-`DigitalCertificate` is also accepted as a `verification_method`. It requires
-the Digital Certificate feature, requires the signer to have a CPF or CNPJ in
-`government_id`, must be alone in its signing step, and is charged 2 credits
-per signer. The certificate start/complete calls are not part of the published
-API contract, so the SDK leaves that security-sensitive step to the
-Assinafy-hosted signing flow.
+`DigitalCertificate` is also accepted as a `verification_method`; see
+[ICP-Brasil digital certificate (A1/A3)](#icp-brasil-digital-certificate-a1a3)
+for its requirements, its cost, and why the SDK stops short of the signature
+handshake itself.
 
 Once the assignment exists you can adjust or re-drive its notifications:
 
@@ -441,6 +525,280 @@ assignments (copy-receiver roles ignore `step`). `options` may also carry
 into the generated document), and `tags` — tag names that do not exist are
 auto-created and merged with the template's default document tags.
 
+## OAuth for marketplace applications
+
+Everything above assumes you automate **your own** workspace with an API key. If
+you are building a product that **other people connect to their own Assinafy
+workspace**, do not ask them for their API key: run the OAuth 2.1
+authorization-code flow with PKCE and receive a token limited to what they
+approved, for the one workspace they picked, that they can switch off at any
+time.
+
+| | API key | OAuth |
+| --- | --- | --- |
+| Acts on | **your own** workspace | **someone else's** workspace, with their permission |
+| Can do | everything your account can do | only what the user approved |
+| The user can switch it off | no | yes, at any time |
+
+> OAuth is served in **production only** today. `https://sandbox.assinafy.com.br/v1/oauth/*`
+> answers `404`.
+
+The resource is a factory rather than an attribute, because an OAuth application
+has credentials of its own:
+
+```python
+from assinafy import AssinafyClient
+
+# A credential-free client is enough for the whole flow up to the exchange.
+oauth = AssinafyClient().oauth(
+    os.environ["ASSINAFY_OAUTH_CLIENT_ID"],
+    os.environ.get("ASSINAFY_OAUTH_CLIENT_SECRET"),  # confidential apps only
+)
+```
+
+The SDK stores no tokens, holds no refresh locks, and renews nothing on its own.
+Those are your application's decisions, and the sections below say exactly where
+they land.
+
+### 1. Register the application
+
+In the Assinafy app (<https://app.assinafy.com.br>) open **Settings → OAuth
+applications → New application**. You must own the workspace that will own the
+application, and its plan must include OAuth applications.
+
+| Field | What to put |
+| --- | --- |
+| Name, Description, Logo URL | what users read on the approval screen |
+| Redirect URIs | where users return, e.g. `https://myapp.example/oauth/callback`. Must be `https://`, carry no `#`, and is matched **exactly** — `…/callback` and `…/callback/` are different. Register one per environment; for local development use an HTTPS tunnel, because `http://localhost` is not accepted |
+| Permissions | the **most** your app will ever request; you can ask for less at connect time, never more |
+| Type | **Confidential** if your code runs on a server you control, **Public** if it runs on the user's device. This cannot be changed later |
+
+You receive a `client_id` and, for confidential applications, a `client_secret`
+shown once. Store the secret in your server's secret storage; never ship it in
+browser code, a mobile app, or a repository.
+
+The scopes:
+
+| Scope | Lets your app |
+| --- | --- |
+| `documents:read` | read documents, their signers, assignments and activity |
+| `documents:write` | create documents and send them for signature |
+| `templates:read` / `templates:write` | read / change templates |
+| `account:read` | read the workspace's profile, theme and logo |
+| `openid`, `profile`, `email` | identify the user, and read their name and email |
+| `offline_access` | receive a refresh token, to keep working while the user is away |
+
+Request the minimum: every permission is another line the user reads before
+deciding, and they approve everything or nothing. Billing, workspace membership,
+credential management and administration are **never** reachable with an OAuth
+token, whatever its scopes.
+
+### 2. Send the user to Assinafy
+
+`start_authorization()` mints a fresh PKCE verifier and `state` (and a `nonce`
+when you request `openid`), and returns the URL plus the transaction those later
+steps need. It makes no HTTP request.
+
+```python
+start = oauth.start_authorization(
+    "https://myapp.example/oauth/callback",
+    ["documents:read", "documents:write", "offline_access"],
+)
+
+session["assinafy_oauth"] = start        # the user's server-side session
+return redirect(start["authorization_url"])   # a full page navigation, not AJAX
+```
+
+```python
+{
+  "authorization_url": "https://auth.assinafy.com.br/oauth/authorize?response_type=code&...",
+  "state": "<random per attempt>",
+  "code_verifier": "<random per attempt>",
+  "code_challenge": "<base64url sha256 of the verifier>",
+  "redirect_uri": "https://myapp.example/oauth/callback",
+  "issuer": "https://auth.assinafy.com.br",
+  "resource": "https://api.assinafy.com.br",
+}
+```
+
+Call it **once per connection attempt**: a fresh verifier and `state` every time
+is the whole protection against one attempt's material being replayed against
+another. Keep the return value in the user's authenticated session, not in a
+cookie or a URL.
+
+If the `client_id` or `redirect_uri` is wrong the user is not sent back to you at
+all — the authorization server shows an error on its own page, because
+redirecting to an unverified address would be unsafe. Users stuck on an Assinafy
+error page usually means one of those two values is wrong.
+
+### 3. Handle the callback and exchange the code
+
+`handle_callback()` is the security-critical step. It compares `state` and `iss`
+in constant time **before** the code is used anywhere, and raises the RFC error
+code when the user declined.
+
+```python
+from assinafy import ApiError, ValidationError
+
+transaction = session.pop("assinafy_oauth")
+
+try:
+    code = oauth.handle_callback(request.args, transaction)
+except ValidationError:
+    return "This response is not ours", 400     # state or iss mismatch
+except ApiError as err:
+    if str(err) == "access_denied":
+        return "You declined the connection", 200
+    raise
+
+tokens = oauth.exchange_code(code, transaction)
+```
+
+```python
+{
+  "access_token": "<access-token>",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scope": "documents:read documents:write",
+  "refresh_token": "<refresh-token>",   # only with offline_access
+  "id_token": "<signed-id-token>",      # only with openid
+}
+```
+
+The code is single-use and expires **60 seconds** after approval, so exchange it
+server-side and immediately. Read the returned `scope` instead of assuming every
+requested permission was granted; `offline_access` is a request-time signal and
+never appears there.
+
+OAuth responses are flat JSON — they are the only calls in this API that are not
+wrapped in the `{status, message, data}` envelope. On failure, `str(err)` is the
+RFC error code (`invalid_grant`, `invalid_client`, `invalid_target`,
+`unsupported_grant_type`) and `err.response_data` carries `error_description`, so
+branch on the message.
+
+### 4. Call the API
+
+A token belongs to the **one** workspace the user picked. With an OAuth token the
+workspace list returns exactly that workspace, so store its ID next to the
+tokens:
+
+```python
+api = AssinafyClient(token=tokens["access_token"])
+workspace_id = api.accounts.list()[0]["id"]
+
+documents = api.documents.list({"per_page": 20}, account_id=workspace_id)
+```
+
+Always send the token in `Authorization: Bearer`; as `X-Api-Key` or in the query
+string it is refused. Calling any other workspace returns `403`, even one the
+same user belongs to — this is the integration mistake we see most often. If your
+customer uses several workspaces, connect each one separately and keep tokens per
+workspace.
+
+A missing permission answers `403` with a challenge naming it:
+
+```
+WWW-Authenticate: Bearer error="insufficient_scope", scope="documents:write", ...
+```
+
+Treat that as a prompt to reconnect with that scope added, not as something to
+retry. A `403` without that header has another cause: a different workspace, the
+user's own role, or an area OAuth tokens can never reach.
+
+### 5. Refresh and disconnect
+
+Access tokens last **1 hour**. With `offline_access` you renew them without the
+user; the connection itself lasts **30 days from the approval** and refreshing
+does not extend it, so plan for users to reconnect monthly.
+
+```python
+tokens = oauth.refresh(stored_refresh_token)
+save(tokens["refresh_token"])    # before doing anything else with the response
+```
+
+> **Every refresh retires the token it used.** A replayed refresh token cannot be
+> told apart from a stolen one, so the server ends the whole connection when it
+> sees one: every token stops working and the user must connect again. Persist the
+> new refresh token before you use the access token, hold one refresh at a time
+> per connection, and treat a timeout as "maybe it worked" — re-read what you
+> stored instead of retrying with the old token.
+
+When a user disconnects in your product, revoke instead of only deleting your
+copy. Revoking the refresh token ends the whole connection:
+
+```python
+oauth.revoke(stored_refresh_token, "refresh_token")
+```
+
+The endpoint answers `200` for every token outcome — revoked, already revoked,
+unknown, malformed — so it can never be used to probe whether a token exists, and
+success is not evidence the token was real. Only failed client authentication
+answers `401`. Users can also revoke your app themselves under **Connected apps**;
+handle the resulting `401` by asking them to connect again.
+
+### Discovery and OpenID Connect
+
+Rather than hardcoding endpoints, read them. `protected_resource_metadata()`
+(RFC 9728) describes this API and names its authorization server;
+`authorization_server_metadata()` (RFC 8414) describes that server. Both live at
+their host's origin root, above `/v1`, and are fetched without your workspace
+credentials.
+
+```python
+resource = oauth.protected_resource_metadata()
+server = oauth.authorization_server_metadata(resource["authorization_servers"][0])
+
+start = oauth.start_authorization(
+    "https://myapp.example/oauth/callback",
+    ["documents:read", "openid", "email"],
+    issuer=server["issuer"],
+    authorization_endpoint=server["authorization_endpoint"],
+)
+```
+
+Request `openid` (plus `profile` and/or `email`) to sign users in. Validate the
+`id_token` with a maintained OpenID Connect library — RS256, keys at the
+server's `jwks_uri`, `iss` equal to the issuer, `aud` equal to your `client_id`,
+`exp` in the future, and `nonce` matching the one in your transaction. For the
+user's name and email, read the claims rather than the token:
+
+```python
+claims = oauth.userinfo(tokens["access_token"])
+# {"sub": "...", "name": "Example User", "email": "person@example.com",
+#  "email_verified": True}
+```
+
+`sub` is the user's stable identifier. `userinfo()` authenticates like any other
+API route, so unlike the token endpoints its `401`/`403` arrive in the ordinary
+envelope; the SDK drops the client's `X-Api-Key` for this call so a workspace key
+can never answer for the wrong identity.
+
+If your framework owns the session material, the PKCE primitives are available
+directly:
+
+```python
+verifier = OAuthResource.create_code_verifier()   # 43 chars, RFC 7636 grammar
+challenge = OAuthResource.code_challenge(verifier)
+state = OAuthResource.create_state()
+```
+
+### OAuth checklist
+
+- A new PKCE verifier and `state` for every connection attempt
+- `state` and `iss` checked on your redirect URI — `handle_callback()` does both
+- `client_secret` on your server only, never in browser code, a mobile app, or a repository
+- The new refresh token saved before use, and one refresh at a time per connection
+- `401` handled: refresh, and if that fails, ask the user to reconnect
+- The workspace ID stored per connection, and the returned `scope` read
+- Every production redirect URI registered, `https://`, and exact
+- Only the permissions you need
+- Tokens revoked when a user disconnects
+
+New applications are unverified: the approval screen says Assinafy has not
+reviewed the app, and it can connect to at most **25 workspaces**. The authorize
+and token endpoints accept **50 requests per minute per IP** — hitting that
+normally means a refresh loop.
+
 ## Resource reference
 
 Every method below is covered above in context; this section is the flat index.
@@ -510,7 +868,7 @@ doc = client.documents.upload({"file_path": "./contract.pdf"})
 doc = client.documents.upload({"buffer": pdf_bytes, "file_name": "contract.pdf"})
 
 client.documents.statuses()
-client.documents.list({"page": 1, "per_page": 20, "tags": "tag-id", "sort": "-updated_at"})
+client.documents.list({"page": 1, "per_page": 20, "tags": "tag-id", "sort": "updated_at"})
 client.documents.search({"search": "nda", "status": "metadata_ready"})  # lightweight, compact
 client.documents.get(doc["id"])
 client.documents.rename(doc["id"], "Service agreement.pdf")  # before signing starts
@@ -592,6 +950,10 @@ client.signers.find_by_email("john@example.com")
 client.signers.delete(signer["id"])
 ```
 
+`create()` takes `full_name`, `email` and `whatsapp_phone_number`.
+`government_id` — the CPF or CNPJ the digital certificate requires — exists only
+on `update()`, so create the signer and then complete their record.
+
 Signer-access-code endpoints:
 
 ```python
@@ -633,6 +995,34 @@ client.assignments.decline(document_id, assignment_id, "I do not agree.", signer
 account. The SDK forwards an `accountId` context parameter, but passing a
 different `account_id` does not re-scope this endpoint — use a credential
 belonging to that workspace instead.
+
+### OAuth
+
+```python
+oauth = client.oauth("client-id", "client-secret")
+
+start = oauth.start_authorization(
+    "https://myapp.example/oauth/callback",
+    ["documents:read", "documents:write", "offline_access"],
+)
+code = oauth.handle_callback(callback_query, start)
+tokens = oauth.exchange_code(code, start)
+tokens = oauth.refresh(tokens["refresh_token"])
+claims = oauth.userinfo(tokens["access_token"])
+oauth.revoke(tokens["refresh_token"], "refresh_token")
+
+oauth.protected_resource_metadata()
+oauth.authorization_server_metadata()
+
+# Static PKCE primitives, for frameworks that own the session material.
+OAuthResource.create_code_verifier()
+OAuthResource.create_state()
+OAuthResource.code_challenge(verifier)
+```
+
+`start_authorization()` and `handle_callback()` make no HTTP request. See
+[OAuth for marketplace applications](#oauth-for-marketplace-applications) for
+the whole flow.
 
 ### Signer documents
 
@@ -735,7 +1125,10 @@ parameters.
 ## Response payloads
 
 JSON endpoints normally return `{"status": 200, "message": "", "data": ...}`;
-the SDK returns `data`. No-data operations return `None` or preserve their
+the SDK returns `data`. The five OAuth calls are the documented exception: RFC
+6749, RFC 8414 and OpenID Connect all mandate a flat body, so `exchange_code`,
+`refresh`, `userinfo` and the two discovery methods return top-level JSON, and
+`revoke` returns `None`. No-data operations return `None` or preserve their
 small `{"status", "message"}` envelope for backward compatibility, as stated
 in each method's docstring. Binary methods return `bytes`; paginated methods
 return `{"data": [...], "meta": {"current_page", "per_page", "total",

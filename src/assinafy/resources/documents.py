@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import builtins
 import math
-import os
 import time
 from typing import Any
 
 from ..errors import ApiError, AssinafyError, NetworkError, ValidationError
-from ..types import DOCUMENT_ARTIFACT_NAMES, DocumentArtifactName
-from ..utils import QUERY_PARAM_ALIASES, clean_params, validate_datetime, validate_email
+from ..types import (
+    DOCUMENT_ARTIFACT_NAMES,
+    NOTIFICATION_METHODS,
+    VERIFICATION_METHODS,
+    DocumentArtifactName,
+)
+from ..utils import (
+    QUERY_PARAM_ALIASES,
+    clean_params,
+    load_file_source,
+    validate_datetime,
+    validate_email,
+)
 from .base import BaseResource
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -23,8 +33,6 @@ _TEMPLATE_SIGNER_FIELDS = frozenset(
 _TEMPLATE_ESTIMATE_SIGNER_FIELDS = frozenset(
     {"role_id", "verification_method", "notification_methods"}
 )
-_VERIFICATION_METHODS = frozenset({"Email", "Whatsapp", "DigitalCertificate"})
-_NOTIFICATION_METHODS = frozenset({"Email", "Whatsapp"})
 
 
 class DocumentResource(BaseResource):
@@ -69,7 +77,7 @@ class DocumentResource(BaseResource):
              "created_at": "2026-06-05T20:50:43Z",
              "updated_at": "2026-06-05T20:50:44Z", "pages": []}
         """
-        buffer, file_name = _load_source(source)
+        buffer, file_name = load_file_source(source)
         _validate_upload(buffer, file_name)
 
         acc_id = self._account_id(account_id)
@@ -98,7 +106,7 @@ class DocumentResource(BaseResource):
         """``GET /accounts/{account_id}/documents`` — list workspace documents.
 
         ``params`` accepts ``page``, ``per_page`` (sent as ``per-page``),
-        ``search``, ``sort`` (e.g. ``-updated_at``), ``status``, ``method``,
+        ``search``, ``sort`` (``name`` or ``updated_at``), ``status``, ``method``,
         and ``tags`` (comma-separated tag IDs). Returns
         ``{"data": [...], "meta": {...}}`` where ``meta`` is built from the
         documented ``x-pagination-*`` response headers.
@@ -644,38 +652,6 @@ class DocumentResource(BaseResource):
         )
 
 
-def _load_source(source: dict[str, Any]) -> tuple[bytes, str]:
-    if not isinstance(source, dict):
-        raise ValidationError("source must be a mapping")
-    unknown = source.keys() - {"buffer", "file_path", "file_name"}
-    if unknown:
-        raise ValidationError(f"Unknown source fields: {', '.join(sorted(unknown))}")
-    if ("buffer" in source) == ("file_path" in source):
-        raise ValidationError("source must contain exactly one of buffer or file_path")
-    if "buffer" in source:
-        file_name = source.get("file_name")
-        if not isinstance(file_name, str) or not file_name:
-            raise ValidationError("file_name is required when uploading a buffer")
-        buffer = source["buffer"]
-        if not isinstance(buffer, (bytes, bytearray, memoryview)):
-            raise ValidationError("buffer must contain bytes")
-        return bytes(buffer), file_name
-    file_path = source.get("file_path")
-    if not isinstance(file_path, (str, os.PathLike)) or not file_path:
-        raise ValidationError("file_path is required")
-    try:
-        with open(file_path, "rb") as f:
-            buffer = f.read()
-    except OSError as err:
-        raise ValidationError(
-            "Unable to read upload file", {"file_path": os.fspath(file_path)}
-        ) from err
-    file_name = source.get("file_name") or os.path.basename(file_path)
-    if not isinstance(file_name, str):
-        raise ValidationError("file_name must be a string")
-    return buffer, file_name
-
-
 def _validate_wait_options(timeout: float, poll_interval: float) -> None:
     for name, value in (("timeout", timeout), ("poll_interval", poll_interval)):
         if (
@@ -725,7 +701,7 @@ def _validate_template_signers(
             raise ValidationError("Template signer id is required")
         verification = signer.get("verification_method")
         if verification is not None and (
-            not isinstance(verification, str) or verification not in _VERIFICATION_METHODS
+            not isinstance(verification, str) or verification not in VERIFICATION_METHODS
         ):
             raise ValidationError("Invalid template signer verification_method")
         notifications = signer.get("notification_methods")
@@ -733,7 +709,7 @@ def _validate_template_signers(
             not isinstance(notifications, list)
             or len(notifications) != 1
             or any(
-                not isinstance(method, str) or method not in _NOTIFICATION_METHODS
+                not isinstance(method, str) or method not in NOTIFICATION_METHODS
                 for method in notifications
             )
         ):

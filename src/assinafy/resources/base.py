@@ -7,7 +7,13 @@ import httpx
 
 from ..errors import ApiError, AssinafyError, ValidationError
 from ..types import Logger
-from ..utils import create_noop_logger, handle_assinafy_response, to_sdk_error
+from ..utils import (
+    QUERY_PARAM_ALIASES,
+    clean_params,
+    create_noop_logger,
+    handle_assinafy_response,
+    to_sdk_error,
+)
 
 _T = TypeVar("_T")
 
@@ -47,6 +53,27 @@ class BaseResource:
         if not isinstance(value, str) or not value.strip():
             raise ValidationError(f"{name} is required")
         return value
+
+    def _signer_query(self, signer_access_code: str, **extra: Any) -> dict[str, Any]:
+        """Build the query string for a signer-facing endpoint.
+
+        Every endpoint under the documented ``signerAccessCode`` security scheme
+        reads the code from the ``signer-access-code`` query parameter, so the
+        required-code case lives here rather than in each method. ``extra`` adds
+        that endpoint's own parameters and follows the same alias/``None``-drop
+        rules as :func:`~assinafy.utils.clean_params`.
+
+        The handful of endpoints where the code is *optional* build their params
+        with :func:`~assinafy.utils.clean_params` directly, so that passing
+        ``None`` stays a way to omit it rather than an error.
+        """
+        return clean_params(
+            {
+                "signer_access_code": self._require_id(signer_access_code, "Signer access code"),
+                **extra,
+            },
+            QUERY_PARAM_ALIASES,
+        )
 
     def _path_id(self, value: str | None, name: str) -> str:
         """Validate an opaque API ID before interpolating it into a URL path."""

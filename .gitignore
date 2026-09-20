@@ -20,3 +20,7 @@ htmlcov/
 coverage.xml
 *.DS_Store
 .claude/settings.local.json
+
+# Agent guides are local working notes, not part of the published package.
+AGENTS.md
+CLAUDE.md

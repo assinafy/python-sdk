@@ -14,6 +14,7 @@ from .resources.assignments import AssignmentResource
 from .resources.authentication import AuthenticationResource
 from .resources.documents import DocumentResource
 from .resources.fields import FieldResource
+from .resources.oauth import OAuthResource
 from .resources.signer_documents import SignerDocumentResource
 from .resources.signers import SignerResource
 from .resources.tags import TagResource
@@ -26,8 +27,13 @@ from .types import (
     DocumentArtifactName,
     DocumentStatus,
     Logger,
+    NotificationMethod,
     NotificationPreferenceCode,
+    OAuthGrantType,
+    OAuthScope,
+    OAuthTokenTypeHint,
     SignerReference,
+    VerificationMethod,
     WebhookEventType,
 )
 
@@ -45,14 +51,20 @@ __all__ = [
     "FieldResource",
     "Logger",
     "NetworkError",
+    "NotificationMethod",
     "NotificationPreferenceCode",
+    "OAuthGrantType",
+    "OAuthResource",
+    "OAuthScope",
+    "OAuthTokenTypeHint",
     "SignerDocumentResource",
     "SignerReference",
     "SignerResource",
     "TagResource",
     "TemplateResource",
-    "ValidationError",
     "UserResource",
+    "ValidationError",
+    "VerificationMethod",
     "WebhookEventType",
     "WebhookResource",
     "WebhookVerifier",

@@ -14,6 +14,7 @@ from .resources.assignments import AssignmentResource, build_assignment_payload
 from .resources.authentication import AuthenticationResource
 from .resources.documents import DocumentResource, _validate_wait_options
 from .resources.fields import FieldResource
+from .resources.oauth import OAuthResource
 from .resources.signer_documents import SignerDocumentResource
 from .resources.signers import SignerResource, _build_signer_payload
 from .resources.tags import TagResource
@@ -32,6 +33,8 @@ _NO_CLIENT_AUTH_OPERATIONS = frozenset(
         ("GET", "signers/self"),
         ("POST", "authentication/social-login"),
         ("POST", "login"),
+        ("POST", "oauth/revoke"),
+        ("POST", "oauth/token"),
         ("POST", "signature"),
         ("POST", "verify"),
         ("PUT", "authentication/request-password-reset"),
@@ -55,6 +58,10 @@ _NO_CLIENT_AUTH_OPERATION_PATTERNS = tuple(
         ("PUT", r"public/documents/[^/]+/send-token"),
     )
 )
+# Operations whose only accepted credential is a caller-supplied bearer token: the
+# client's workspace API key would answer for the wrong identity, so it is dropped
+# while the per-request ``Authorization`` header is left in place.
+_BEARER_ONLY_OPERATIONS = frozenset({("GET", "oauth/userinfo")})
 
 
 class AssinafyClient:
@@ -62,7 +69,8 @@ class AssinafyClient:
 
     All resources hang off this client (``client.documents``, ``client.signers``,
     etc.). The client is synchronous, backed by ``httpx.Client``, and is safe to
-    use as a context manager.
+    use as a context manager. The one exception is :meth:`oauth`, a factory
+    rather than an attribute because it needs OAuth application credentials.
 
     Args:
         api_key: API key sent as the ``X-Api-Key`` header. Preferred.
@@ -278,6 +286,34 @@ class AssinafyClient:
         self._logger.info("Upload + signature workflow completed", {"document_id": document_id})
         return {"document": document, "assignment": assignment, "signer_ids": signer_ids}
 
+    def oauth(self, client_id: str, client_secret: str | None = None) -> OAuthResource:
+        """Build the marketplace :class:`OAuthResource` for an OAuth application.
+
+        OAuth is for applications acting on **someone else's** workspace with
+        that person's permission. Automating your own workspace needs none of it:
+        keep using ``api_key``.
+
+        Unlike the other resources this is a method rather than an attribute,
+        because it needs the application credentials issued in the Assinafy app
+        under **Settings → OAuth applications**. A client configured with no
+        credentials at all is enough for the whole flow up to the token
+        exchange.
+
+        Args:
+            client_id: The application's public ``client_id``.
+            client_secret: Confidential applications only; public applications
+                authenticate with PKCE alone and are never issued a secret.
+
+        Example::
+
+            oauth = AssinafyClient().oauth("client-id", "client-secret")
+            start = oauth.start_authorization(
+                "https://myapp.example/oauth/callback",
+                ["documents:read", "documents:write", "offline_access"],
+            )
+        """
+        return OAuthResource(self._http, client_id, client_secret, self._logger)
+
     def get_http_client(self) -> httpx.Client:
         """Return the underlying ``httpx.Client``. Useful for advanced use only."""
         return self._http
@@ -294,10 +330,16 @@ class AssinafyClient:
         else:
             path = path.lstrip("/")
         operation = (request.method, path)
-        request_origin = (request.url.scheme, request.url.host, request.url.port)
+        in_api = (
+            request.url.scheme,
+            request.url.host,
+            request.url.port,
+        ) == self._base_origin and in_base_path
+        if in_api and operation in _BEARER_ONLY_OPERATIONS:
+            request.headers.pop("X-Api-Key", None)
+            return
         if (
-            request_origin != self._base_origin
-            or not in_base_path
+            not in_api
             or operation in _NO_CLIENT_AUTH_OPERATIONS
             or any(
                 method == request.method and pattern.fullmatch(path)

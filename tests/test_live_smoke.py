@@ -100,11 +100,17 @@ class FakeClient:
             return {"id": "PRIVATE_ACCOUNT_ID"}
         if name == "users.notification_preferences":
             return {"DocumentCompleted": True}
+        if name == "oauth.start_authorization":
+            return {"authorization_url": "https://auth.example.test/oauth/authorize?x=1"}
         if method in {"list", "list_dispatches", "search"}:
             return {"data": []}
         if method in {"activities", "list_event_types", "list_tags", "list_types", "statuses"}:
             return []
         return {}
+
+    def oauth(self, client_id: str, client_secret: str | None = None) -> FakeResource:
+        self.calls.append(("client.oauth", (client_id, client_secret), {}))
+        return FakeResource(self, "oauth")
 
     def close(self) -> None:
         self.closed = True

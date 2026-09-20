@@ -4,13 +4,11 @@ import builtins
 from typing import Any
 
 from ..errors import ValidationError
-from ..types import SignerReference
+from ..types import NOTIFICATION_METHODS, VERIFICATION_METHODS, SignerReference
 from ..utils import QUERY_PARAM_ALIASES, clean_params, validate_datetime
 from .base import BaseResource
 
 _ASSIGNMENT_METHODS = frozenset({"virtual", "collect"})
-_VERIFICATION_METHODS = frozenset({"Email", "Whatsapp", "DigitalCertificate"})
-_NOTIFICATION_METHODS = frozenset({"Email", "Whatsapp"})
 _SIGNER_REFERENCE_FIELDS = frozenset(
     {"id", "signer_id", "verification_method", "notification_methods", "step"}
 )
@@ -114,14 +112,14 @@ def _normalise_signer_ref(ref: SignerReference, allow_without_id: bool) -> dict[
         verification_method = ref.get("verification_method")
         if verification_method is not None and (
             not isinstance(verification_method, str)
-            or verification_method not in _VERIFICATION_METHODS
+            or verification_method not in VERIFICATION_METHODS
         ):
             raise ValidationError("Invalid signer verification_method")
         notification_methods = ref.get("notification_methods")
         if notification_methods is not None and (
             not isinstance(notification_methods, list)
             or any(
-                not isinstance(item, str) or item not in _NOTIFICATION_METHODS
+                not isinstance(item, str) or item not in NOTIFICATION_METHODS
                 for item in notification_methods
             )
         ):
@@ -238,10 +236,15 @@ class AssignmentResource(BaseResource):
     define fields for those objects. Virtual/legacy items may return an empty
     or non-object ``display_settings`` value; collect items use the object shown.
 
-    ``DigitalCertificate`` is a published assignment verification method, but
-    the API prose points certificate signers to unlisted ``certificate/start``
-    and ``certificate/complete`` operations. Their auth/body/response contract
-    is not published, so this SDK does not guess those calls.
+    ``DigitalCertificate`` is a published assignment verification method, and
+    :meth:`sign` rejects those signers by design: the API routes them to
+    ``POST /signers/certificate/start`` + ``/complete``, a two-step handshake
+    with the signer's Web PKI browser extension. Those two routes are deployed
+    on both production and sandbox but are **not** listed as operations in the
+    OpenAPI document, so their body and response contract is unpublished and
+    this SDK does not guess them. Everything around the certificate signature —
+    creating the assignment, ``confirm_data``, cost estimation, and downloading
+    the resulting ``pades`` artifact — is covered here.
     """
 
     def list(
@@ -461,25 +464,23 @@ class AssignmentResource(BaseResource):
         The unwrapped response uses the complete
         :class:`~assinafy.resources.documents.DocumentResource` payload, with
         its ``assignment`` and ``pages`` fields expanded for the signer view.
-        ``has_accepted_terms`` must be boolean when provided. Digital-certificate
-        signers must confirm their identity data and accept the terms before the
-        certificate flow can begin.
+        ``has_accepted_terms`` must be boolean when provided.
+
+        A ``DigitalCertificate`` signer must have confirmed their data **and**
+        accepted the terms before this returns the document; otherwise it is a
+        400. The ``has_accepted_terms`` query parameter is too late to open that
+        gate — call
+        :meth:`~assinafy.resources.signers.SignerResource.confirm_data` with
+        ``has_accepted_terms=True`` (or
+        :meth:`~assinafy.resources.signers.SignerResource.accept_terms`, which is
+        never gated) first.
         """
-        access_code = self._require_id(signer_access_code, "Signer access code")
         if has_accepted_terms is not None and not isinstance(has_accepted_terms, bool):
             raise ValidationError("has_accepted_terms must be boolean")
+        query = self._signer_query(signer_access_code, has_accepted_terms=has_accepted_terms)
         return self._call_dict(
             "Failed to fetch signer assignment",
-            lambda: self._http.get(
-                "sign",
-                params=clean_params(
-                    {
-                        "signer_access_code": access_code,
-                        "has_accepted_terms": has_accepted_terms,
-                    },
-                    QUERY_PARAM_ALIASES,
-                ),
-            ),
+            lambda: self._http.get("sign", params=query),
         )
 
     def sign(
@@ -505,7 +506,7 @@ class AssignmentResource(BaseResource):
         """
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")
-        access_code = self._require_id(signer_access_code, "Signer access code")
+        query = self._signer_query(signer_access_code)
         if not isinstance(entries, list) or any(
             not isinstance(entry, dict)
             or any(
@@ -519,12 +520,7 @@ class AssignmentResource(BaseResource):
         return self._call_dict(
             "Failed to sign assignment",
             lambda: self._http.post(
-                f"documents/{doc_id}/assignments/{asg_id}",
-                params=clean_params(
-                    {"signer_access_code": access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
-                json=entries,
+                f"documents/{doc_id}/assignments/{asg_id}", params=query, json=entries
             ),
         )
 
@@ -548,16 +544,13 @@ class AssignmentResource(BaseResource):
         """
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")
-        access_code = self._require_id(signer_access_code, "Signer access code")
+        query = self._signer_query(signer_access_code)
         reason = self._require_id(decline_reason, "Decline reason")
         self._call_void(
             "Failed to decline assignment",
             lambda: self._http.put(
                 f"documents/{doc_id}/assignments/{asg_id}/reject",
-                params=clean_params(
-                    {"signer_access_code": access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
+                params=query,
                 json={"decline_reason": reason},
             ),
         )

@@ -259,6 +259,28 @@ def main() -> int:
         step("documents.statuses()", lambda: client.documents.statuses(), failures)
         step("fields.list_types()", lambda: client.fields.list_types(), failures)
         step("webhooks.list_event_types()", lambda: client.webhooks.list_event_types(), failures)
+
+        # Discovery needs no application identity, only an origin; the client_id is
+        # supplied because OAuthResource models a registered application. Both
+        # documents are served in production only, so the sandbox run reports SKIP.
+        oauth = client.oauth("live-smoke-discovery-only")
+        optional_404_step(
+            "oauth.protected_resource_metadata()",
+            lambda: oauth.protected_resource_metadata(),
+            failures,
+        )
+        optional_404_step(
+            "oauth.authorization_server_metadata()",
+            lambda: oauth.authorization_server_metadata(),
+            failures,
+        )
+        step(
+            "oauth.start_authorization() [no request]",
+            lambda: oauth.start_authorization(
+                "https://example.com/oauth/callback", ["documents:read"]
+            ),
+            failures,
+        )
         step(
             "documents.list(per_page=5)",
             lambda: client.documents.list({"per_page": 5}),

@@ -54,3 +54,17 @@ def test_object_and_list_response_helpers_reject_wrong_shapes() -> None:
             resource.statuses()
     finally:
         client.close()
+
+
+def test_signer_query_aliases_the_access_code_and_drops_unset_extras() -> None:
+    client = httpx.Client(base_url="https://example.test/v1/")
+    try:
+        resource = DocumentResource(client, "acc")
+        assert resource._signer_query("code-1", search="nda", has_accepted_terms=None) == {
+            "signer-access-code": "code-1",
+            "search": "nda",
+        }
+        with pytest.raises(ValidationError, match="Signer access code is required"):
+            resource._signer_query("  ")
+    finally:
+        client.close()

@@ -6,8 +6,8 @@ import re
 from typing import Any
 
 from ..errors import ValidationError
+from ..utils import load_file_source
 from .base import BaseResource
-from .documents import _load_source
 
 _NOTIFICATION_SENDERS = frozenset({"User", "Account"})
 
@@ -174,7 +174,7 @@ class AccountResource(BaseResource):
         part is named ``file``. Success is ``None``; the API envelope contains
         only ``status`` and ``message``.
         """
-        buffer, file_name = _load_source(source)
+        buffer, file_name = load_file_source(source)
         if not buffer:
             raise ValidationError("Logo buffer is empty")
         content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"

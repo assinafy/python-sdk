@@ -6,6 +6,7 @@ import pytest
 from assinafy import __version__
 from assinafy.client import AssinafyClient
 from assinafy.errors import AssinafyError, ValidationError
+from assinafy.resources.oauth import OAuthResource
 
 
 class TestAssinafyClient:
@@ -131,6 +132,8 @@ class TestAssinafyClient:
             ("GET", "signers/signer/documents"),
             ("GET", "signers/signer/documents/search"),
             ("GET", "signers/signer/documents/doc/download/original"),
+            ("POST", "oauth/token"),
+            ("POST", "oauth/revoke"),
         ]
         for method, path in public_routes:
             http.request(method, path)
@@ -147,6 +150,32 @@ class TestAssinafyClient:
         assert credential_header not in requests[len(public_routes) + 1].headers
         assert credential_header in requests[-2].headers
         assert credential_header in requests[-1].headers
+        client.close()
+
+    def test_userinfo_drops_the_api_key_but_keeps_a_supplied_bearer_token(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"sub": "user"})
+
+        client = AssinafyClient(api_key="workspace-key", account_id="acc")
+        client._http._transport = httpx.MockTransport(handler)
+        client.get_http_client().get(
+            "oauth/userinfo", headers={"Authorization": "Bearer oauth-access-token"}
+        )
+
+        assert "X-Api-Key" not in requests[0].headers
+        assert requests[0].headers["Authorization"] == "Bearer oauth-access-token"
+        client.close()
+
+    def test_oauth_factory_returns_a_resource_bound_to_the_shared_transport(self) -> None:
+        client = AssinafyClient(api_key="k", account_id="acc")
+
+        oauth = client.oauth("client-id", "client-secret")
+
+        assert isinstance(oauth, OAuthResource)
+        assert oauth._http is client.get_http_client()
         client.close()
 
     def test_strips_trailing_slash_from_base_url(self) -> None:

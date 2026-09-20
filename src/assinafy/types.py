@@ -28,6 +28,29 @@ DOCUMENT_ARTIFACT_NAMES = frozenset(get_args(DocumentArtifactName))
 
 AssignmentMethod = Literal["virtual", "collect"]
 
+VerificationMethod = Literal["Email", "Whatsapp", "DigitalCertificate"]
+VERIFICATION_METHODS = frozenset(get_args(VerificationMethod))
+
+NotificationMethod = Literal["Email", "Whatsapp"]
+NOTIFICATION_METHODS = frozenset(get_args(NotificationMethod))
+
+OAuthScope = Literal[
+    "documents:read",
+    "documents:write",
+    "templates:read",
+    "templates:write",
+    "account:read",
+    "openid",
+    "profile",
+    "email",
+    "offline_access",
+]
+OAUTH_SCOPES = frozenset(get_args(OAuthScope))
+
+OAuthGrantType = Literal["authorization_code", "refresh_token"]
+
+OAuthTokenTypeHint = Literal["access_token", "refresh_token"]
+
 WebhookEventType = Literal[
     "document_uploaded",
     "document_metadata_ready",

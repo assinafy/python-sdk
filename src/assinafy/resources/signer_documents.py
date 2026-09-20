@@ -29,16 +29,10 @@ class SignerDocumentResource(BaseResource):
         document the signer is currently expected to act on.
         """
         sid = self._path_id(signer_id, "Signer ID")
-        access_code = self._require_id(signer_access_code, "Signer access code")
+        query = self._signer_query(signer_access_code)
         return self._call_dict(
             "Failed to fetch current signer document",
-            lambda: self._http.get(
-                f"signers/{sid}/document",
-                params=clean_params(
-                    {"signer_access_code": access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
-            ),
+            lambda: self._http.get(f"signers/{sid}/document", params=query),
         )
 
     def list(
@@ -84,14 +78,10 @@ class SignerDocumentResource(BaseResource):
         :class:`~assinafy.resources.documents.DocumentResource` shape.
         """
         sid = self._path_id(signer_id, "Signer ID")
-        access_code = self._require_id(signer_access_code, "Signer access code")
-        cleaned = clean_params(
-            {"search": search, "signer_access_code": access_code},
-            QUERY_PARAM_ALIASES,
-        )
+        query = self._signer_query(signer_access_code, search=search)
         return self._call_list(
             "Failed to search signer documents",
-            lambda: self._http.get(f"signers/{sid}/documents/search", params=cleaned),
+            lambda: self._http.get(f"signers/{sid}/documents/search", params=query),
         )
 
     def sign_multiple(
@@ -110,16 +100,13 @@ class SignerDocumentResource(BaseResource):
         OpenAPI returns ``data: []`` on success; the SDK maps that empty result
         to ``None``.
         """
-        access_code = self._require_id(signer_access_code, "Signer access code")
+        query = self._signer_query(signer_access_code)
         _assert_document_ids(document_ids)
         self._call_void(
             "Failed to sign multiple documents",
             lambda: self._http.put(
                 "signers/documents/sign-multiple",
-                params=clean_params(
-                    {"signer_access_code": access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
+                params=query,
                 json={"document_ids": document_ids},
             ),
         )
@@ -142,17 +129,14 @@ class SignerDocumentResource(BaseResource):
         OpenAPI returns ``data: []`` on success; the SDK maps that empty result
         to ``None``.
         """
-        access_code = self._require_id(signer_access_code, "Signer access code")
+        query = self._signer_query(signer_access_code)
         reason = self._require_id(decline_reason, "Decline reason")
         _assert_document_ids(document_ids)
         self._call_void(
             "Failed to decline multiple documents",
             lambda: self._http.put(
                 "signers/documents/decline-multiple",
-                params=clean_params(
-                    {"signer_access_code": access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
+                params=query,
                 json={"document_ids": document_ids, "decline_reason": reason},
             ),
         )

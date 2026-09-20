@@ -194,16 +194,10 @@ class SignerResource(BaseResource):
              "has_accepted_terms": true, "has_signature": true,
              "has_initial": false, "is_signature_reusable": false}
         """
-        access_code = self._require_id(signer_access_code, "Signer access code")
+        query = self._signer_query(signer_access_code)
         return self._call_dict(
             "Failed to fetch signer self",
-            lambda: self._http.get(
-                "signers/self",
-                params=clean_params(
-                    {"signer_access_code": access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
-            ),
+            lambda: self._http.get("signers/self", params=query),
         )
 
     def accept_terms(self, signer_access_code: str) -> dict[str, Any]:
@@ -213,16 +207,10 @@ class SignerResource(BaseResource):
         parameter. The request has no body. Success returns the no-data envelope
         ``{"status": 200, "message": ""}``.
         """
-        access_code = self._require_id(signer_access_code, "Signer access code")
+        query = self._signer_query(signer_access_code)
         return self._call_dict(
             "Failed to accept signer terms",
-            lambda: self._http.put(
-                "signers/accept-terms",
-                params=clean_params(
-                    {"signer_access_code": access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
-            ),
+            lambda: self._http.put("signers/accept-terms", params=query),
         )
 
     def verify_email(
@@ -254,18 +242,11 @@ class SignerResource(BaseResource):
 
         Success returns the no-data envelope ``{"status": 200, "message": ""}``.
         """
-        access_code = self._require_id(signer_access_code, "Signer access code")
+        query = self._signer_query(signer_access_code)
         code = self._require_id(verification_code, "Verification code")
         return self._call_dict(
             "Failed to verify signer code",
-            lambda: self._http.post(
-                "verify",
-                params=clean_params(
-                    {"signer_access_code": access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
-                json={"verification-code": code},
-            ),
+            lambda: self._http.post("verify", params=query, json={"verification-code": code}),
         )
 
     def confirm_data(
@@ -290,7 +271,7 @@ class SignerResource(BaseResource):
         Returns the complete signer payload documented on :class:`SignerResource`.
         """
         doc_id = self._path_id(document_id, "Document ID")
-        access_code = self._require_id(signer_access_code, "Signer access code")
+        query = self._signer_query(signer_access_code)
         if not isinstance(payload, dict):
             raise ValidationError("Signer data must be a mapping")
         unknown = payload.keys() - _CONFIRM_DATA_FIELDS
@@ -319,12 +300,7 @@ class SignerResource(BaseResource):
         return self._call_dict(
             "Failed to confirm signer data",
             lambda: self._http.put(
-                f"documents/{doc_id}/signers/confirm-data",
-                params=clean_params(
-                    {"signer_access_code": access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
-                json=body,
+                f"documents/{doc_id}/signers/confirm-data", params=query, json=body
             ),
         )
 
@@ -346,7 +322,6 @@ class SignerResource(BaseResource):
         unchanged. Success is ``None``; the API envelope contains only
         ``status`` and ``message``.
         """
-        access_code = self._require_id(signer_access_code, "Signer access code")
         _assert_signature_type(signature_type)
         if not isinstance(content, (bytes, bytearray, memoryview)) or not content:
             raise ValidationError("Signature content is required")
@@ -354,18 +329,12 @@ class SignerResource(BaseResource):
             raise ValidationError("Signature content type must be image/png or image/jpeg")
         if reuse is not None and not isinstance(reuse, bool):
             raise ValidationError("reuse must be boolean")
+        query = self._signer_query(signer_access_code, type=signature_type, reuse=reuse)
         self._call_void(
             "Failed to upload signer signature",
             lambda: self._http.post(
                 "signature",
-                params=clean_params(
-                    {
-                        "signer_access_code": access_code,
-                        "type": signature_type,
-                        "reuse": reuse,
-                    },
-                    QUERY_PARAM_ALIASES,
-                ),
+                params=query,
                 content=bytes(content),
                 headers={"Content-Type": content_type},
             ),
@@ -381,17 +350,11 @@ class SignerResource(BaseResource):
         ``signature_type`` is ``signature`` or ``initial``. Returns the raw
         image bytes.
         """
-        access_code = self._require_id(signer_access_code, "Signer access code")
         _assert_signature_type(signature_type)
+        query = self._signer_query(signer_access_code)
         return self._call_binary(
             "Failed to download signer signature",
-            lambda: self._http.get(
-                f"signature/{signature_type}",
-                params=clean_params(
-                    {"signer_access_code": access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
-            ),
+            lambda: self._http.get(f"signature/{signature_type}", params=query),
         )
 
 

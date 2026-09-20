@@ -2,6 +2,63 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.7.0] - 2026-09-20
+
+### Added
+
+- `client.oauth(client_id, client_secret=None)` returns an `OAuthResource`
+  covering the marketplace OAuth 2.1 + OpenID Connect surface, for applications
+  that act on **another** workspace with that person's permission. It completes
+  the SDK's coverage of the published API:
+  - `start_authorization()` mints a fresh PKCE verifier, `state` and (with the
+    `openid` scope) a `nonce`, and returns the authorization URL together with
+    the transaction to keep in the user's session. Pure string construction; no
+    request is made.
+  - `handle_callback()` validates the callback's `state` and `iss` in constant
+    time before the code is sent anywhere, and raises the RFC error code
+    (`access_denied`, `invalid_scope`, ...) when the user declined.
+  - `exchange_code()` and `refresh()` call `POST /oauth/token` with the
+    form-encoded body RFC 6749 §4.1.3 specifies.
+  - `revoke()` calls `POST /oauth/revoke`.
+  - `userinfo()` calls `GET /oauth/userinfo`.
+  - `protected_resource_metadata()` and `authorization_server_metadata()` read
+    the RFC 9728 and RFC 8414 discovery documents, which live at each host's
+    origin above the `/v1` prefix.
+  - `create_code_verifier()`, `create_state()` and `code_challenge()` are
+    exposed as static methods for frameworks that own the session material.
+- `assinafy.types` publishes `VerificationMethod`, `NotificationMethod`,
+  `OAuthScope`, `OAuthGrantType` and `OAuthTokenTypeHint`, alongside the
+  `VERIFICATION_METHODS`, `NOTIFICATION_METHODS` and `OAUTH_SCOPES` frozensets
+  the resources validate against.
+
+### Changed
+
+- OAuth responses are returned flat, as RFC 6749 §5.1/§5.2, RFC 8414 and OIDC
+  Core §5.3.2 require; they are the only calls in the API that are not wrapped
+  in the `{status, data, message}` envelope. On the token and revocation
+  endpoints `str(error)` is the RFC error code and `error.response_data` carries
+  `error_description`, so callers branch on the message.
+- `POST /oauth/token`, `POST /oauth/revoke` and the two discovery documents are
+  sent without the client's `api_key` / `token`; `GET /oauth/userinfo` drops
+  `X-Api-Key` but keeps the access token the caller passes, so a workspace key
+  can never answer for the wrong identity.
+- `AssignmentResource` documents that `DigitalCertificate` signers sign through
+  the deployed-but-unpublished `POST /signers/certificate/start` + `/complete`
+  handshake with the Web PKI browser extension, and that everything around that
+  signature — assignment creation, `confirm_data`, cost estimation and the
+  `pades` artifact — is covered by the SDK.
+- `assignments.get_for_signer()` records that the `has_accepted_terms` query
+  parameter is too late to open the digital-certificate gate: a certificate
+  signer must be sent through `signers.confirm_data(..., has_accepted_terms=True)`
+  or `signers.accept_terms()` first.
+- Signer-facing endpoints now build their `signer-access-code` query string
+  through one shared helper instead of repeating the alias mapping in twelve
+  methods, and the `verification_method` / `notification_methods` enumerations
+  live in `assinafy.types` instead of being duplicated in two resources.
+- The `multipart/form-data` upload loader moved to `assinafy.utils` as
+  `load_file_source()`, so the account-logo upload no longer reaches into the
+  documents module for a private helper.
+
 ## [1.6.3] - 2026-08-27
 
 ### Fixed

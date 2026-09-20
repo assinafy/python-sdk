@@ -63,6 +63,8 @@ packages = ["src/assinafy"]
 exclude = [
     "/.claude",
     "/.github",
+    "/AGENTS.md",
+    "/CLAUDE.md",
     "/dist",
     "/scripts",
     "/tests",
