@@ -54,13 +54,24 @@ def step(label: str, fn: Callable[[], Any], failures: list[str]) -> Any:
     return result
 
 
-def optional_404_step(label: str, fn: Callable[[], Any], failures: list[str]) -> Any:
-    """Run a published operation that the sandbox may not have deployed yet."""
+def optional_404_step(
+    label: str,
+    fn: Callable[[], Any],
+    failures: list[str],
+    skip_statuses: frozenset[int] = frozenset({404}),
+) -> Any:
+    """Run a published operation that the sandbox may not have deployed yet.
+
+    ``skip_statuses`` is the set of answers that mean "not served here" rather
+    than "broken". The API itself answers ``404`` for a route it does not
+    expose, but paths above the ``/v1`` prefix are fronted by nginx on the
+    sandbox host and answer ``403``, so that step opts into both.
+    """
     print(f"\n=== {label} ===")
     try:
         result = fn()
     except ApiError as err:
-        if err.status_code == 404:
+        if err.status_code in skip_statuses:
             print("  SKIP [published route not deployed in sandbox]")
             return None
         print(f"  FAIL [{type(err).__name__}]")
@@ -268,6 +279,9 @@ def main() -> int:
             "oauth.protected_resource_metadata()",
             lambda: oauth.protected_resource_metadata(),
             failures,
+            # The sandbox host serves this path through nginx, which answers 403
+            # rather than letting the API answer 404.
+            skip_statuses=frozenset({403, 404}),
         )
         optional_404_step(
             "oauth.authorization_server_metadata()",

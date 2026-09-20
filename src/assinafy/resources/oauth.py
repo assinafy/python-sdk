@@ -542,8 +542,10 @@ class OAuthResource(BaseResource):
         protected by.
 
         Raises:
-            ApiError: When the deployment does not serve OAuth — the sandbox
-                host answers ``404``.
+            ApiError: When the deployment does not serve OAuth. The sandbox host
+                answers ``403`` here, because this path sits above the ``/v1``
+                prefix and is refused by its front-end proxy rather than reaching
+                the API; ``/v1/oauth/*`` answers ``404`` there.
         """
         return self._metadata(self._api_origin(), PROTECTED_RESOURCE_METADATA_PATH)
 

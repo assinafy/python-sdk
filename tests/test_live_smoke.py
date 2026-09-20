@@ -235,6 +235,28 @@ def test_optional_404_step_skips_only_not_found(
     assert "private" not in capsys.readouterr().out
 
 
+def test_optional_404_step_honours_extra_skip_statuses(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The sandbox proxy answers 403 above the /v1 prefix; that is not a failure."""
+    failures: list[str] = []
+
+    def forbidden() -> None:
+        raise ApiError("private", 403)
+
+    assert (
+        live_smoke.optional_404_step(
+            "not served here", forbidden, failures, skip_statuses=frozenset({403, 404})
+        )
+        is None
+    )
+    assert failures == []
+
+    assert live_smoke.optional_404_step("forbidden", forbidden, failures) is None
+    assert failures == ["forbidden"]
+    assert "private" not in capsys.readouterr().out
+
+
 def test_read_preflight_failure_aborts_all_mutations(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_safe_env(monkeypatch)
     client = FakeClient(fail_methods={"accounts.get"})
