@@ -168,6 +168,14 @@ def _build_estimate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if unknown:
         raise ValidationError(f"Unknown assignment estimate fields: {', '.join(sorted(unknown))}")
     raw_signers = payload.get("signers") or payload.get("signer_ids") or []
+    # The contract marks ``signers`` required only for ``virtual``, but the API prices per
+    # signer in both modes and answers a signer-less estimate with
+    # ``400 "Pelo menos um signatários precisa ser informado."``
+    if not raw_signers:
+        raise ValidationError(
+            "At least one signer is required for a cost estimate",
+            {"signers": payload.get("signers") or payload.get("signer_ids")},
+        )
     if isinstance(raw_signers, (list, tuple)):
         for signer in raw_signers:
             if isinstance(signer, dict):

@@ -2,6 +2,16 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.8.0] - 2026-09-21
+
+### Fixed
+
+- `assignments.estimate_cost()` now requires at least one signer. The published contract marks
+  `signers` as required only for `virtual`, but the API prices per signer in both modes and answers
+  a signer-less estimate with `400 "Pelo menos um signatários precisa ser informado."` The builder
+  dropped the `signers` key entirely when the list was empty, so such a call could never succeed —
+  it now raises `ValidationError` locally instead of failing upstream.
+
 ## [1.7.0] - 2026-09-20
 
 ### Added

@@ -256,7 +256,7 @@ class TestAssignmentResource:
         )
         assert captured_body[0] == {"method": "virtual", "signers": [{}]}
 
-    def test_estimate_cost_accepts_contract_valid_empty_payload(self) -> None:
+    def test_estimate_cost_sends_signers_for_collect_too(self) -> None:
         captured_body: list[object] = []
 
         class MockHttp:
@@ -264,8 +264,27 @@ class TestAssignmentResource:
                 captured_body.append(kwargs.get("json"))
                 return make_response(make_envelope({}))
 
-        AssignmentResource(MockHttp(), "acc").estimate_cost("doc", {})
-        assert captured_body[0] == {"method": "virtual"}
+        AssignmentResource(MockHttp(), "acc").estimate_cost(
+            "doc",
+            {
+                "method": "collect",
+                "signers": [{"verification_method": "DigitalCertificate"}],
+                "entries": [{"page_id": "page-1", "fields": []}],
+            },
+        )
+        # collect is priced per signer as well, so the channels must reach the API.
+        assert captured_body[0] == {
+            "method": "collect",
+            "entries": [{"page_id": "page-1", "fields": []}],
+            "signers": [{"verification_method": "DigitalCertificate"}],
+        }
+
+    @pytest.mark.parametrize("payload", [{}, {"method": "virtual"}, {"method": "collect"}])
+    def test_estimate_cost_requires_at_least_one_signer(self, payload: dict[str, object]) -> None:
+        # The API refuses a signer-less estimate in either mode; fail locally instead.
+        resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError, match="At least one signer"):
+            resource.estimate_cost("doc", payload)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
         "payload",
