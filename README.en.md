@@ -585,6 +585,7 @@ The scopes:
 | `documents:write` | create documents and send them for signature |
 | `templates:read` / `templates:write` | read / change templates |
 | `account:read` | read the workspace's profile, theme and logo |
+| `webhooks:write` | configure and deactivate the workspace's webhook subscription |
 | `openid`, `profile`, `email` | identify the user, and read their name and email |
 | `offline_access` | receive a refresh token, to keep working while the user is away |
 

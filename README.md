@@ -586,6 +586,7 @@ Os escopos:
 | `documents:write` | criar documentos e enviá-los para assinatura |
 | `templates:read` / `templates:write` | ler / alterar templates |
 | `account:read` | ler o perfil, o tema e o logo do workspace |
+| `webhooks:write` | configurar e desativar a assinatura de webhooks do workspace |
 | `openid`, `profile`, `email` | identificar o usuário e ler nome e e-mail |
 | `offline_access` | receber um refresh token, para continuar funcionando com o usuário ausente |
 

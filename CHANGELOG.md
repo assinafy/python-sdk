@@ -2,6 +2,12 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.9.0] - 2026-09-23
+
+### Added
+
+- The OAuth scope catalog includes `webhooks:write` for configuring and deactivating a workspace webhook subscription.
+
 ## [1.8.0] - 2026-09-21
 
 ### Fixed

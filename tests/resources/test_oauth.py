@@ -28,7 +28,7 @@ def _oauth(handler: Any = None, secret: str | None = "client-secret") -> OAuthRe
 
 class TestStartAuthorization:
     def test_builds_the_documented_authorization_url(self) -> None:
-        start = _oauth().start_authorization(CALLBACK, ["documents:read", "documents:write"])
+        start = _oauth().start_authorization(CALLBACK, ["documents:read", "webhooks:write"])
 
         parsed = urlsplit(start["authorization_url"])
         query = {key: value[0] for key, value in parse_qs(parsed.query).items()}
@@ -39,7 +39,7 @@ class TestStartAuthorization:
             "response_type": "code",
             "client_id": "client-id",
             "redirect_uri": CALLBACK,
-            "scope": "documents:read documents:write",
+            "scope": "documents:read webhooks:write",
             "state": start["state"],
             "code_challenge": start["code_challenge"],
             "code_challenge_method": "S256",
