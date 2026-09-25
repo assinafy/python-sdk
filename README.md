@@ -60,6 +60,7 @@ recurso compartilhados são documentados uma vez e referenciados pelos métodos 
 
 - Python 3.10+
 - `httpx` (instalado automaticamente)
+- TLS 1.2 ou superior: o cliente recusa TLS 1.0 e 1.1
 
 ## Instalação
 

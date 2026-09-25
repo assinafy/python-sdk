@@ -1,4 +1,5 @@
 import json
+import ssl
 
 import httpx
 import pytest
@@ -27,6 +28,13 @@ class TestAssinafyClient:
         assert client.tags is not None
         assert client.signer_documents is not None
         assert client.webhook_verifier is not None
+        client.close()
+
+    def test_requires_tls_1_2_or_newer_with_certificate_verification(self) -> None:
+        client = AssinafyClient(api_key="k")
+        context = client.get_http_client()._transport._pool._ssl_context  # type: ignore[attr-defined]
+        assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+        assert context.verify_mode == ssl.CERT_REQUIRED
         client.close()
 
     def test_accepts_legacy_token_credentials(self) -> None:

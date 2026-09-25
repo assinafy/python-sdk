@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import ssl
 from types import TracebackType
 from typing import Any
 
@@ -143,9 +144,13 @@ class AssinafyClient:
         elif token:
             headers["Authorization"] = f"Bearer {token}"
 
+        # httpx's default context (certifi, SSL_CERT_FILE/DIR), refusing TLS 1.0 and 1.1.
+        tls = httpx.create_ssl_context()
+        tls.minimum_version = ssl.TLSVersion.TLSv1_2
         self._http = httpx.Client(
             base_url=resolved_base_url.rstrip("/") + "/",
             timeout=timeout,
+            verify=tls,
             headers=headers,
             event_hooks={"request": [self._prepare_request]},
         )

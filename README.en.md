@@ -59,6 +59,7 @@ shapes are documented once and referenced by the methods that return them.
 
 - Python 3.10+
 - `httpx` (installed automatically)
+- TLS 1.2 or newer: the client refuses TLS 1.0 and 1.1
 
 ## Installation
 

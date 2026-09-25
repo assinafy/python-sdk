@@ -2,6 +2,12 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.9.1] - 2026-09-25
+
+### Changed
+
+- The SDK's own HTTPS client now requires TLS 1.2 or newer; TLS 1.0 and 1.1 connections are refused. Caller-supplied clients are unchanged.
+
 ## [1.9.0] - 2026-09-23
 
 ### Added
