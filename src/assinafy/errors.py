@@ -67,7 +67,11 @@ class ValidationError(AssinafyError):
 
 
 class NetworkError(AssinafyError):
-    """Raised when the request never reached the API (DNS, timeout, refused)."""
+    """Raised when no HTTP response arrived (DNS, refused connection, TLS handshake, timeout).
+
+    After a timeout or a dropped connection the API may still have processed the
+    request; for an OAuth refresh, the old refresh token may already be retired.
+    """
 
     def __init__(self, message: str) -> None:
         super().__init__(message)

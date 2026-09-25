@@ -475,15 +475,21 @@ class DocumentResource(BaseResource):
         Complete unwrapped response for a valid document::
 
             {"hash": "0000000000000000000000000000000000000000",
-             "id": "document-id", "status": "certificated", "page_count": "1",
+             "id": "document-id",
+             "agreement_code": "550E8400-E29B-41D4-A716-446655440000",
+             "status": "certificated", "page_count": "1",
              "signer_count": "1", "completed_count": 1,
              "completed_at": "2026-06-03T03:54:16Z",
              "verified_at": "2026-06-03T03:55:00Z", "is_valid": true,
              "message": ""}
 
-        An unknown or invalid hash is also a successful verification response,
-        with ``is_valid: false``, a diagnostic ``message``, and nullable
-        document-specific fields rather than an HTTP error.
+        ``agreement_code`` is the agreement code printed on the document
+        certificate. It is nullable: it can be ``None`` (or absent, as on the
+        sandbox today) even when ``is_valid`` is true, so never assume a
+        string. An unknown or invalid hash is also a successful
+        verification response, with ``is_valid: false``, a diagnostic
+        ``message``, and nullable document-specific fields rather than an HTTP
+        error.
         """
         h = self._path_id(signature_hash, "Signature hash")
         return self._call_dict(

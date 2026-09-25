@@ -704,9 +704,10 @@ tokens OAuth nunca alcançam.
 
 ### 5. Renove e desconecte
 
-Tokens de acesso duram **1 hora**. Com `offline_access` você os renova sem o usuário; a conexão em
-si dura **30 dias a partir da aprovação** e renovar não estende esse prazo, então planeje
-reconexões mensais.
+Tokens de acesso duram **1 hora**. Com `offline_access` você os renova sem o usuário. Um refresh
+token vale por **30 dias**, e cada renovação devolve um novo, válido por outros 30 dias: a conexão
+só expira se a sua aplicação passar 30 dias sem renovar, e depois disso o usuário precisa
+reconectar.
 
 ```python
 tokens = oauth.refresh(refresh_token_guardado)
@@ -723,7 +724,8 @@ Quando um usuário desconecta no seu produto, revogue em vez de apenas apagar a 
 refresh token encerra a conexão inteira:
 
 ```python
-oauth.revoke(refresh_token_guardado, "refresh_token")
+oauth.revoke(carregar_refresh_token_salvo(), "refresh_token")  # o último token salvo, nunca uma cópia antiga
+apagar_tokens_salvos()
 ```
 
 O endpoint responde `200` para qualquer desfecho do token — revogado, já revogado, desconhecido,
@@ -1235,7 +1237,7 @@ except ValidationError as err:      # rejeitado antes de a requisição ser envi
     print("Validação falhou:", err.errors)
 except ApiError as err:             # a API devolveu uma resposta não-2xx
     print(f"Erro da API {err.status_code}:", err.response_data)
-except NetworkError as err:         # a requisição nunca chegou à API
+except NetworkError as err:         # nenhuma resposta chegou (DNS, TLS, timeout)
     print("Erro de rede:", err)
 except AssinafyError as err:        # formato de resposta inesperado, etc.
     print("Erro do SDK:", err, err.context)

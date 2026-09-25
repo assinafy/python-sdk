@@ -2,6 +2,15 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.9.2] - 2026-09-25
+
+### Changed
+
+- OAuth docs now describe the current refresh-token lifetime: every refresh returns a new refresh token valid for a fresh 30 days, and a connection only expires after 30 days without a refresh.
+- `NetworkError` is documented as "no response arrived" (including TLS handshake failures): the request may still have been processed, so a failed `refresh()` or `exchange_code()` must never be resent with the old token. Tests pin that token calls are sent exactly once.
+- The `documents.verify()` docstring lists `agreement_code`, which is nullable.
+- The README disconnect example revokes the most recently saved refresh token.
+
 ## [1.9.1] - 2026-09-25
 
 ### Changed

@@ -392,16 +392,20 @@ class OAuthResource(BaseResource):
     def refresh(self, refresh_token: str) -> dict[str, Any]:
         """``POST /oauth/token`` with ``grant_type=refresh_token`` — renew without the user.
 
-        Access tokens last **1 hour**; a connection lasts **30 days from the
-        user's approval** and refreshing does not extend it, so plan for users
-        to reconnect monthly.
+        Access tokens last **1 hour**. A refresh token is valid for **30 days**,
+        and every refresh returns a new one valid for another 30 days: a
+        connection only expires after 30 days without a refresh, and then the
+        user has to reconnect.
 
         **Every refresh retires the token it used and returns a new one.** A
         replayed refresh token cannot be told apart from a stolen one being
         replayed, so the server ends the whole connection when it sees one.
         Hold a per-connection lock, persist the returned ``refresh_token``
-        before doing anything else with the response, and never retry after an
-        ambiguous timeout without first re-reading what you stored.
+        before doing anything else with the response, and treat a
+        :class:`~assinafy.errors.NetworkError` (a timeout or a dropped
+        connection) as "maybe it worked": re-read what you stored before
+        retrying, never retry with the old token. The SDK never retries this
+        call.
 
         Request body (``application/x-www-form-urlencoded``)::
 

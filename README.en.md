@@ -710,8 +710,9 @@ user's own role, or an area OAuth tokens can never reach.
 ### 5. Refresh and disconnect
 
 Access tokens last **1 hour**. With `offline_access` you renew them without the
-user; the connection itself lasts **30 days from the approval** and refreshing
-does not extend it, so plan for users to reconnect monthly.
+user. A refresh token is valid for **30 days**, and every refresh returns a new
+one valid for another 30 days: the connection only expires if your app goes 30
+days without refreshing, and after that the user has to reconnect.
 
 ```python
 tokens = oauth.refresh(stored_refresh_token)
@@ -729,7 +730,8 @@ When a user disconnects in your product, revoke instead of only deleting your
 copy. Revoking the refresh token ends the whole connection:
 
 ```python
-oauth.revoke(stored_refresh_token, "refresh_token")
+oauth.revoke(load_saved_refresh_token(), "refresh_token")  # the latest saved token, never a stale copy
+delete_saved_tokens()
 ```
 
 The endpoint answers `200` for every token outcome — revoked, already revoked,
@@ -1251,7 +1253,7 @@ except ValidationError as err:      # rejected before the request was sent
     print("Validation failed:", err.errors)
 except ApiError as err:             # the API returned a non-2xx response
     print(f"API error {err.status_code}:", err.response_data)
-except NetworkError as err:         # the request never reached the API
+except NetworkError as err:         # no response arrived (DNS, TLS, timeout)
     print("Network error:", err)
 except AssinafyError as err:        # unexpected response shape, etc.
     print("SDK error:", err, err.context)

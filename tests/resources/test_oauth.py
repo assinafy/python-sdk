@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from assinafy.client import AssinafyClient
-from assinafy.errors import ApiError, ValidationError
+from assinafy.errors import ApiError, NetworkError, ValidationError
 from assinafy.resources.oauth import DEFAULT_ISSUER, OAuthResource
 
 CALLBACK = "https://myapp.example/oauth/callback"
@@ -227,6 +227,17 @@ class TestHandleCallback:
             "error_description": "The user declined.",
         }
 
+    @pytest.mark.parametrize("forged", [{"state": "other"}, {"iss": "https://evil.example"}])
+    def test_checks_state_and_issuer_before_surfacing_an_error(
+        self, forged: dict[str, str]
+    ) -> None:
+        oauth = _oauth()
+        start = oauth.start_authorization(CALLBACK, ["documents:read"])
+        query = {"error": "access_denied", "state": start["state"], "iss": DEFAULT_ISSUER}
+
+        with pytest.raises(ValidationError, match="does not match"):
+            oauth.handle_callback({**query, **forged}, start)
+
     def test_rejects_a_callback_without_a_code(self) -> None:
         oauth = _oauth()
         start = oauth.start_authorization(CALLBACK, ["documents:read"])
@@ -347,6 +358,29 @@ class TestTokenEndpoints:
         assert excinfo.value.response_data["error_description"] == (
             "The authorization code has expired."
         )
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda oauth: oauth.refresh("rt"),
+            lambda oauth: oauth.exchange_code(
+                "code", {"code_verifier": "a" * 43, "redirect_uri": CALLBACK}
+            ),
+        ],
+        ids=["refresh", "exchange_code"],
+    )
+    def test_a_timed_out_token_request_is_not_retried(self, call: Any) -> None:
+        # A retried refresh would replay a token the server may already have retired.
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            raise httpx.ReadTimeout("timed out", request=request)
+
+        with pytest.raises(NetworkError):
+            call(_oauth(handler))
+
+        assert len(seen) == 1
 
     @pytest.mark.parametrize("token", ["", "   "])
     def test_rejects_an_empty_refresh_token(self, token: str) -> None:
