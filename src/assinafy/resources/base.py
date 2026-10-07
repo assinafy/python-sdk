@@ -97,7 +97,7 @@ class BaseResource:
         except AssinafyError:
             raise
         except Exception as err:
-            raise to_sdk_error(err, label) from err
+            raise to_sdk_error(err, label) from None
 
     def _call(self, label: str, request_fn: Callable[[], httpx.Response]) -> Any:
         def run() -> Any:

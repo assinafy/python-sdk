@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import builtins
-import math
 import time
 from typing import Any
 
 from ..errors import ApiError, AssinafyError, NetworkError, ValidationError
 from ..types import (
     DOCUMENT_ARTIFACT_NAMES,
-    NOTIFICATION_METHODS,
-    VERIFICATION_METHODS,
     DocumentArtifactName,
 )
 from ..utils import (
@@ -18,6 +15,8 @@ from ..utils import (
     load_file_source,
     validate_datetime,
     validate_email,
+    validate_signer_methods,
+    validate_wait_options,
 )
 from .base import BaseResource
 
@@ -128,6 +127,8 @@ class DocumentResource(BaseResource):
                  "updated_at": "2026-06-05T20:50:41Z"}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
@@ -152,6 +153,8 @@ class DocumentResource(BaseResource):
              {"code": "pending_signature", "deletable": true},
              {"code": "rejected_by_user", "deletable": true},
              {"code": "failed", "deletable": true}]
+
+        Request body: none.
         """
         return self._call_plain_list(
             "Failed to list document statuses",
@@ -177,6 +180,8 @@ class DocumentResource(BaseResource):
                         "download_url": "https://.../pages/1031ff87.../download"}],
              "created_at": "2026-06-05T20:50:43Z",
              "updated_at": "2026-06-05T20:50:49Z"}
+
+        Request body: none.
         """
         doc_id = self._path_id(document_id, "Document ID")
         return self._call_dict(
@@ -249,6 +254,8 @@ class DocumentResource(BaseResource):
                  "created_at": "2026-06-05T20:50:43Z",
                  "updated_at": "2026-06-05T20:50:49Z"}
              ]}
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
@@ -272,9 +279,20 @@ class DocumentResource(BaseResource):
         ``rejected_by_user``, ``expired``) or if the timeout elapses.
         Re-raises immediately (no retry) if the document can't be found at all
         (``404``), since that will never resolve by waiting.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "document", "id": "document-id", "account_id": "account-id",
+             "template_id": null, "name": "contract.pdf", "status": "metadata_ready",
+             "artifacts": {"original": "https://api.example/document/original"},
+             "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+             "decline_reason": null, "declined_by": null, "tags": [],
+             "assignment": null, "pages": [],
+             "created_at": "2026-06-03T03:54:16Z",
+             "updated_at": "2026-06-03T03:54:17Z"}
         """
         doc_id = self._path_id(document_id, "Document ID")
-        _validate_wait_options(timeout, poll_interval)
+        validate_wait_options(timeout, poll_interval)
         deadline = time.monotonic() + timeout
         attempts = 0
         self._logger.info(
@@ -323,6 +341,8 @@ class DocumentResource(BaseResource):
         Valid artifacts: ``original``, ``certificated``, ``certificate-page``,
         ``pades``, and ``bundle``. ``pades`` exists only for documents signed
         with ICP-Brasil certificates. Returns the raw PDF/ZIP bytes.
+
+        Request body: none.
         """
         doc_id = self._path_id(document_id, "Document ID")
         artifact = self._require_id(artifact_name, "Artifact name")
@@ -334,7 +354,10 @@ class DocumentResource(BaseResource):
         )
 
     def thumbnail(self, document_id: str) -> bytes:
-        """``GET /documents/{document_id}/thumbnail`` — first-page thumbnail (JPEG bytes)."""
+        """``GET /documents/{document_id}/thumbnail`` — first-page thumbnail (JPEG bytes).
+
+        Request body: none.
+        """
         doc_id = self._path_id(document_id, "Document ID")
         return self._call_binary(
             "Failed to download document thumbnail",
@@ -346,6 +369,8 @@ class DocumentResource(BaseResource):
 
         ``page_id`` comes from the ``pages[].id`` of :meth:`get` once metadata
         processing has produced page renders.
+
+        Request body: none.
         """
         doc_id = self._path_id(document_id, "Document ID")
         pid = self._path_id(page_id, "Page ID")
@@ -364,6 +389,8 @@ class DocumentResource(BaseResource):
               "origin": {"ip": "192.0.2.1",
                          "user-agent": "Assinafy-Python-SDK/v<package-version>"},
               "created_at": "2026-06-05T20:50:44Z"}]
+
+        Request body: none.
         """
         doc_id = self._path_id(document_id, "Document ID")
         return self._call_plain_list(
@@ -415,6 +442,17 @@ class DocumentResource(BaseResource):
              "name": "NDA - John Doe", "message": "Please sign."}
 
         Returns the created document object (``data`` envelope unwrapped).
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "document", "id": "document-id", "account_id": "account-id",
+             "template_id": "template-id", "name": "contract.pdf", "status": "metadata_ready",
+             "artifacts": {"original": "https://api.example/document/original"},
+             "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+             "decline_reason": null, "declined_by": null, "tags": [],
+             "assignment": null, "pages": [],
+             "created_at": "2026-06-03T03:54:16Z",
+             "updated_at": "2026-06-03T03:54:17Z"}
         """
         tmpl_id = self._path_id(template_id, "Template ID")
         acc_id = self._account_id(account_id)
@@ -455,6 +493,17 @@ class DocumentResource(BaseResource):
 
         Returns a cost-estimate object (``data`` envelope unwrapped) with the
         same shape as :meth:`assinafy.resources.assignments.AssignmentResource.estimate_cost`.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"documents": 1, "credits": 0.45, "needs_extra_document": false,
+             "extra_document_cost": 0, "total_credits": 0.45,
+             "breakdown": [{"code": "NotificationWhatsapp",
+                            "name": "Whatsapp Notification", "cost": 0.45,
+                            "quantity": 1, "unit_cost": 0.45}],
+             "document_balance": 66, "credit_balance": 0,
+             "has_sufficient_resources": true, "blocking_reason": null,
+             "message": null}
         """
         tmpl_id = self._path_id(template_id, "Template ID")
         acc_id = self._account_id(account_id)
@@ -490,6 +539,8 @@ class DocumentResource(BaseResource):
         verification response, with ``is_valid: false``, a diagnostic
         ``message``, and nullable document-specific fields rather than an HTTP
         error.
+
+        Request body: none.
         """
         h = self._path_id(signature_hash, "Signature hash")
         return self._call_dict(
@@ -506,6 +557,8 @@ class DocumentResource(BaseResource):
 
             {"resource": "document", "id": "1031ff86...", "name": "sdk.pdf",
              "page_count": "1", "created_by": "Acme Inc."}
+
+        Request body: none.
         """
         doc_id = self._path_id(document_id, "Document ID")
         return self._call_dict(
@@ -571,6 +624,8 @@ class DocumentResource(BaseResource):
             [{"id": "1031ff86...", "name": "Contracts", "color": null,
               "created_at": "2026-06-05T20:50:43Z",
               "updated_at": "2026-06-05T20:50:43Z"}]
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         doc_id = self._path_id(document_id, "Document ID")
@@ -595,6 +650,12 @@ class DocumentResource(BaseResource):
             {"tags": ["tag-id-1", "tag-id-2"]}
 
         Returns the resulting tag list (``data`` envelope unwrapped).
+
+        Example response (``data`` envelope unwrapped)::
+
+            [{"id": "1031ff86...", "name": "Contracts", "color": null,
+              "created_at": "2026-06-05T20:50:43Z",
+              "updated_at": "2026-06-05T20:50:43Z"}]
         """
         acc_id = self._account_id(account_id)
         doc_id = self._path_id(document_id, "Document ID")
@@ -623,6 +684,12 @@ class DocumentResource(BaseResource):
             {"tags": ["tag-id"]}
 
         Returns the resulting tag list (``data`` envelope unwrapped).
+
+        Example response (``data`` envelope unwrapped)::
+
+            [{"id": "1031ff86...", "name": "Contracts", "color": null,
+              "created_at": "2026-06-05T20:50:43Z",
+              "updated_at": "2026-06-05T20:50:43Z"}]
         """
         acc_id = self._account_id(account_id)
         doc_id = self._path_id(document_id, "Document ID")
@@ -656,17 +723,6 @@ class DocumentResource(BaseResource):
             "Failed to detach document tag",
             lambda: self._http.delete(f"accounts/{acc_id}/documents/{doc_id}/tags/{tid}"),
         )
-
-
-def _validate_wait_options(timeout: float, poll_interval: float) -> None:
-    for name, value in (("timeout", timeout), ("poll_interval", poll_interval)):
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-            or value <= 0
-        ):
-            raise ValidationError(f"{name} must be greater than zero")
 
 
 def _validate_upload(buffer: bytes, file_name: str) -> None:
@@ -706,20 +762,8 @@ def _validate_template_signers(
         if require_id and (not isinstance(signer.get("id"), str) or not signer["id"]):
             raise ValidationError("Template signer id is required")
         verification = signer.get("verification_method")
-        if verification is not None and (
-            not isinstance(verification, str) or verification not in VERIFICATION_METHODS
-        ):
-            raise ValidationError("Invalid template signer verification_method")
         notifications = signer.get("notification_methods")
-        if notifications is not None and (
-            not isinstance(notifications, list)
-            or len(notifications) != 1
-            or any(
-                not isinstance(method, str) or method not in NOTIFICATION_METHODS
-                for method in notifications
-            )
-        ):
-            raise ValidationError("Invalid template signer notification_methods")
+        validate_signer_methods(verification, notifications)
         step = signer.get("step")
         if step is not None and (not isinstance(step, int) or isinstance(step, bool) or step < 1):
             raise ValidationError("Template signer step must be a positive integer")

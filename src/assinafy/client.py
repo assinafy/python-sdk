@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 import re
 import ssl
 from types import TracebackType
@@ -13,18 +14,18 @@ from .errors import AssinafyError, ValidationError
 from .resources.accounts import AccountResource
 from .resources.assignments import AssignmentResource, build_assignment_payload
 from .resources.authentication import AuthenticationResource
-from .resources.documents import DocumentResource, _validate_wait_options
+from .resources.documents import DocumentResource
 from .resources.fields import FieldResource
 from .resources.oauth import OAuthResource
 from .resources.signer_documents import SignerDocumentResource
-from .resources.signers import SignerResource, _build_signer_payload
+from .resources.signers import SignerResource
 from .resources.tags import TagResource
 from .resources.templates import TemplateResource
 from .resources.users import UserResource
 from .resources.webhooks import WebhookResource
 from .support.webhook_verifier import WebhookVerifier
 from .types import Logger
-from .utils import create_noop_logger
+from .utils import build_signer_payload, create_noop_logger, validate_wait_options
 
 _DEFAULT_BASE_URL = "https://api.assinafy.com.br/v1"
 _USER_AGENT = f"Assinafy-Python-SDK/v{__version__}"
@@ -32,6 +33,7 @@ _NO_CLIENT_AUTH_OPERATIONS = frozenset(
     {
         ("GET", "sign"),
         ("GET", "signers/self"),
+        ("POST", "authentication/mfa/verify"),
         ("POST", "authentication/social-login"),
         ("POST", "login"),
         ("POST", "oauth/revoke"),
@@ -84,10 +86,11 @@ class AssinafyClient:
             carry only scheme, host, port, and path: embedded credentials
             (``user:pass@``), a query string, or a fragment are rejected.
             Plaintext ``http://`` is rejected for every non-loopback host:
-            ``login``, ``social_login``, ``change_password``, ``reset_password``
-            and ``create_api_key`` put secrets in the request body even when the
-            client itself carries no ``api_key`` or ``token``.
-        webhook_secret: Shared secret used by :class:`WebhookVerifier`.
+            ``login``, ``verify_mfa``, ``social_login``, ``change_password``,
+            ``reset_password`` and ``create_api_key`` put secrets in the request
+            body even when the client itself carries no ``api_key`` or ``token``.
+        webhook_secret: Webhook endpoint signing secret (``whsec_...``) used by
+            :attr:`webhook_verifier`; see :meth:`WebhookVerifier.verify_delivery`.
         timeout: Per-request timeout in seconds.
         logger: Optional ``Logger``-shaped object (``debug``/``info``/``warning``
             /``error`` methods). Defaults to a no-op logger.
@@ -108,7 +111,12 @@ class AssinafyClient:
         for name, value in (("api_key", api_key), ("token", token), ("account_id", account_id)):
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValidationError(f"{name} must be a non-empty string")
-        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not timeout > 0:
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
             raise ValidationError("timeout must be a positive number")
 
         resolved_base_url = _DEFAULT_BASE_URL if base_url is None else base_url
@@ -233,7 +241,7 @@ class AssinafyClient:
             raise ValidationError("wait_for_ready must be boolean")
 
         validated_signers = [
-            _build_signer_payload(signer, require_full_name=True) for signer in signers
+            build_signer_payload(signer, require_full_name=True) for signer in signers
         ]
         assignment_signers: list[dict[str, Any]] = []
         for signer in validated_signers:
@@ -260,7 +268,7 @@ class AssinafyClient:
             }
         )
         if wait_for_ready:
-            _validate_wait_options(wait_timeout, wait_poll_interval)
+            validate_wait_options(wait_timeout, wait_poll_interval)
 
         self._logger.info("Starting upload + signature workflow", {"signer_count": len(signers)})
 

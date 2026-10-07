@@ -66,8 +66,9 @@ class OAuthResource(BaseResource):
     message. :meth:`userinfo` is the exception: it authenticates like any other
     API route, so its ``401``/``403`` arrive in the ordinary envelope.
 
-    **OAuth is production-only today.** The sandbox host does not serve
-    ``/v1/oauth/*``; it answers ``404``.
+    **Environments.** Use the production authorization server for browser
+    consent. OAuth metadata and token routes are also deployed on sandbox;
+    application registration and workspace consent belong to production.
 
     The SDK stores no tokens, holds no refresh locks and renews nothing
     automatically. Those are application concerns.
@@ -75,7 +76,7 @@ class OAuthResource(BaseResource):
     Args:
         http: The shared ``httpx.Client`` from the owning client.
         client_id: The application's ``client_id`` from the Assinafy app
-            (**Settings → OAuth applications**).
+            (**Integrations → OAuth Apps**).
         client_secret: Confidential applications only. Public applications
             authenticate with PKCE alone and are never issued a secret.
         logger: Optional :class:`~assinafy.types.Logger`-shaped object.
@@ -207,7 +208,7 @@ class OAuthResource(BaseResource):
         endpoint = (
             f"{resolved_issuer}/oauth/authorize"
             if authorization_endpoint is None
-            else self._require_id(authorization_endpoint, "Authorization endpoint")
+            else _https_url(authorization_endpoint, "Authorization endpoint")
         )
         resolved_state = self.create_state() if state is None else self._require_id(state, "State")
         resolved_resource = (
@@ -242,7 +243,10 @@ class OAuthResource(BaseResource):
 
         # RFC 3986 percent-encoding (space as %20, not +), matching the published guide
         # and what every other Assinafy SDK sends.
-        transaction["authorization_url"] = f"{endpoint}?{urlencode(query, quote_via=quote)}"
+        separator = "&" if urlsplit(endpoint).query else "?"
+        transaction["authorization_url"] = (
+            f"{endpoint}{separator}{urlencode(query, quote_via=quote)}"
+        )
         self._logger.info("Starting OAuth authorization", {"scopes": requested})
         return transaction
 
@@ -295,7 +299,9 @@ class OAuthResource(BaseResource):
         if expected_state is None:
             raise ValidationError("Stored OAuth transaction is missing its state")
         received_state = _string_option(query, "state")
-        if received_state is None or not hmac.compare_digest(expected_state, received_state):
+        if received_state is None or not hmac.compare_digest(
+            expected_state.encode("utf-8"), received_state.encode("utf-8")
+        ):
             raise ValidationError("OAuth callback state does not match the stored transaction")
 
         # The authorization server advertises authorization_response_iss_parameter_supported,
@@ -303,7 +309,7 @@ class OAuthResource(BaseResource):
         expected_issuer = (_string_option(transaction, "issuer") or DEFAULT_ISSUER).rstrip("/")
         received_issuer = _string_option(query, "iss")
         if received_issuer is None or not hmac.compare_digest(
-            expected_issuer, received_issuer.rstrip("/")
+            expected_issuer.encode("utf-8"), received_issuer.rstrip("/").encode("utf-8")
         ):
             raise ValidationError(
                 "OAuth callback issuer does not match the expected authorization server"
@@ -379,6 +385,8 @@ class OAuthResource(BaseResource):
         redirect_uri = _string_option(transaction, "redirect_uri")
         if redirect_uri is None:
             raise ValidationError("Stored OAuth transaction is missing its redirect URI")
+        _assert_code_verifier(verifier)
+        _assert_redirect_uri(redirect_uri)
         return self._token(
             {
                 "grant_type": "authorization_code",
@@ -430,6 +438,70 @@ class OAuthResource(BaseResource):
         self._require_id(refresh_token, "Refresh token")
         return self._token({"grant_type": "refresh_token", "refresh_token": refresh_token})
 
+    def exchange_token(
+        self,
+        subject_token: str,
+        *,
+        resource: str | None = None,
+        scopes: list[OAuthScope] | list[str] | None = None,
+    ) -> dict[str, Any]:
+        """``POST /oauth/token`` — RFC 8693 token exchange for internal services.
+
+        Requires a confidential internal-service client provisioned by Assinafy.
+        Ordinary marketplace applications receive ``invalid_client``; use
+        :meth:`exchange_code` and :meth:`refresh` for those applications.
+        The subject must be a live original access token for another Assinafy
+        resource (such as its MCP server), never an already exchanged token.
+        Requested scopes must be a subset of the subject's scopes; the server
+        enforces that restriction and the destination audience.
+
+        Request body (``application/x-www-form-urlencoded``)::
+
+            grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+            subject_token=<original-access-token>
+            subject_token_type=urn:ietf:params:oauth:token-type:access_token
+            resource=https://api.assinafy.com.br
+            scope=documents:read
+            client_id=<internal-service-client-id>
+            client_secret=<internal-service-client-secret>
+
+        ``scope`` is omitted when ``scopes`` is ``None``. The destination
+        ``resource`` defaults to the configured API origin.
+
+        Example response (flat JSON)::
+
+            {"access_token": "<exchanged-access-token>",
+             "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+             "token_type": "Bearer", "expires_in": 300,
+             "scope": "documents:read"}
+
+        No refresh token is issued. Lifetime cannot exceed the subject's
+        remaining lifetime or the server's exchanged-token TTL. A derived token
+        belongs to the original client: this service client's :meth:`revoke`
+        cannot revoke it, even though revocation always returns ``200``.
+        The SDK sends this request once and never retries automatically.
+
+        Raises:
+            ValidationError: Missing subject token or confidential secret,
+                malformed resource or scope list.
+            ApiError: ``invalid_client``, ``invalid_grant``, ``invalid_target``,
+                ``invalid_scope`` or ``invalid_request``.
+        """
+        self._require_id(subject_token, "Subject token")
+        if self._client_secret is None:
+            raise ValidationError("Token exchange requires a confidential internal-service client")
+        body = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "subject_token": subject_token,
+            "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+            "resource": _https_origin(
+                self._api_origin() if resource is None else resource, "Resource"
+            ),
+        }
+        if scopes is not None:
+            body["scope"] = " ".join(_validate_scopes(scopes))
+        return self._token(body)
+
     def revoke(
         self,
         token: str,
@@ -466,7 +538,9 @@ class OAuthResource(BaseResource):
             ApiError: ``invalid_client`` on failed client authentication.
         """
         self._require_id(token, "Token")
-        if token_type_hint is not None and token_type_hint not in _TOKEN_TYPE_HINTS:
+        if token_type_hint is not None and (
+            not isinstance(token_type_hint, str) or token_type_hint not in _TOKEN_TYPE_HINTS
+        ):
             raise ValidationError(
                 'token_type_hint must be "access_token" or "refresh_token"',
                 {"token_type_hint": token_type_hint},
@@ -546,10 +620,7 @@ class OAuthResource(BaseResource):
         protected by.
 
         Raises:
-            ApiError: When the deployment does not serve OAuth. The sandbox host
-                answers ``403`` here, because this path sits above the ``/v1``
-                prefix and is refused by its front-end proxy rather than reaching
-                the API; ``/v1/oauth/*`` answers ``404`` there.
+            ApiError: When the deployment does not serve OAuth metadata.
         """
         return self._metadata(self._api_origin(), PROTECTED_RESOURCE_METADATA_PATH)
 
@@ -642,9 +713,7 @@ class OAuthResource(BaseResource):
 
     def _api_origin(self) -> str:
         """This API's origin — the configured base URL without its path."""
-        base = self._http.base_url
-        port = "" if base.port is None else f":{base.port}"
-        return f"{base.scheme}://{base.host}{port}"
+        return str(self._http.base_url.copy_with(path="/", query=None, fragment=None)).rstrip("/")
 
 
 def _b64url(raw: bytes) -> str:
@@ -669,18 +738,16 @@ def _assert_redirect_uri(redirect_uri: Any) -> None:
         raise ValidationError("Redirect URI must be an absolute https:// URL")
     try:
         parsed = urlsplit(redirect_uri)
-    except ValueError as err:
-        raise ValidationError("Redirect URI must be an absolute https:// URL") from err
+    except ValueError:
+        raise ValidationError("Redirect URI must be an absolute https:// URL") from None
     if parsed.scheme != "https" or not parsed.hostname:
         raise ValidationError(
             "Redirect URI must use https — plain http://localhost is not accepted, "
             "use an HTTPS tunnel",
-            {"redirect_uri": redirect_uri},
         )
     if parsed.fragment or "#" in redirect_uri:
-        raise ValidationError(
-            "Redirect URI cannot contain a fragment", {"redirect_uri": redirect_uri}
-        )
+        raise ValidationError("Redirect URI cannot contain a fragment")
+    _https_url(redirect_uri, "Redirect URI")
 
 
 def _validate_scopes(scopes: Any) -> list[str]:
@@ -688,18 +755,43 @@ def _validate_scopes(scopes: Any) -> list[str]:
         raise ValidationError("At least one OAuth scope is required")
     requested: list[str] = []
     for scope in scopes:
-        if not isinstance(scope, str) or not scope.strip() or " " in scope:
+        if (
+            not isinstance(scope, str)
+            or not scope
+            or any(ord(char) < 0x21 or ord(char) > 0x7E or char in '"\\' for char in scope)
+        ):
             raise ValidationError(
-                "OAuth scopes must be non-empty strings without spaces", {"scope": scope}
+                "OAuth scopes must be non-empty ASCII strings "
+                "without spaces, quotes or backslashes",
+                {"scope": scope},
             )
         requested.append(scope)
     return requested
 
 
-def _https_origin(value: Any, name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
+def _https_url(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value or any(char.isspace() for char in value):
         raise ValidationError(f"{name} must be an absolute https:// URL")
-    parsed = urlsplit(value)
-    if parsed.scheme != "https" or not parsed.hostname:
-        raise ValidationError(f"{name} must use https", {name.lower(): value})
-    return value.rstrip("/")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        raise ValidationError(f"{name} must be an absolute https:// URL") from None
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "#" in value
+        or port == 0
+    ):
+        raise ValidationError(f"{name} must use https without credentials or a fragment")
+    return value
+
+
+def _https_origin(value: Any, name: str) -> str:
+    url = _https_url(value, name)
+    parsed = urlsplit(url)
+    if parsed.path not in {"", "/"} or parsed.query or "?" in url:
+        raise ValidationError(f"{name} must be an origin without a path or query")
+    return url.rstrip("/")

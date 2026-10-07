@@ -41,7 +41,8 @@ class TestToSdkError:
         result = to_sdk_error(Exception("boom"), "failed")
         assert isinstance(result, AssinafyError)
         assert "failed" in str(result)
-        assert "boom" in str(result)
+        assert str(result) == "failed: Exception"
+        assert "boom" not in str(result)
 
     def test_returns_network_error_for_httpx_request_errors(self) -> None:
         fake = httpx.ConnectError("connect ECONNREFUSED")

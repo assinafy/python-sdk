@@ -43,7 +43,8 @@ def step(label: str, fn: Callable[[], Any], failures: list[str]) -> Any:
     try:
         result = fn()
     except AssinafyError as err:
-        print(f"  FAIL [{type(err).__name__}]")
+        status = f" HTTP {err.status_code}" if isinstance(err, ApiError) else ""
+        print(f"  FAIL [{type(err).__name__}{status}]")
         failures.append(label)
         return None
     except Exception as err:  # noqa: BLE001
@@ -52,6 +53,22 @@ def step(label: str, fn: Callable[[], Any], failures: list[str]) -> Any:
         return None
     print("  OK")
     return result
+
+
+def cleanup_step(label: str, fn: Callable[[], Any], failures: list[str]) -> Any:
+    """Restore/delete test resources, retrying only explicit HTTP 429 responses."""
+
+    def run() -> Any:
+        for attempt in range(4):
+            try:
+                return fn()
+            except ApiError as error:
+                if error.status_code != 429 or attempt == 3:
+                    raise
+                time.sleep(20)
+        return None
+
+    return step(label, run, failures)
 
 
 def optional_404_step(
@@ -63,9 +80,9 @@ def optional_404_step(
     """Run a published operation that the sandbox may not have deployed yet.
 
     ``skip_statuses`` is the set of answers that mean "not served here" rather
-    than "broken". The API itself answers ``404`` for a route it does not
-    expose, but paths above the ``/v1`` prefix are fronted by nginx on the
-    sandbox host and answer ``403``, so that step opts into both.
+    than "broken". Missing operations may return ``404``; older sandbox
+    proxies can return ``403`` for origin-root discovery documents. Only the
+    discovery call opts into both statuses.
     """
     print(f"\n=== {label} ===")
     try:
@@ -190,14 +207,6 @@ def _tagged_email(email: str, tag: str) -> str:
     return f"{local}+{tag}@{domain}"
 
 
-def _first_template_role_id(templates: Any) -> str | None:
-    data = templates.get("data") if isinstance(templates, dict) else None
-    template = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else None
-    roles = template.get("roles") if template else None
-    role = roles[0] if isinstance(roles, list) and roles and isinstance(roles[0], dict) else None
-    return _resource_id(role)
-
-
 def _template_role_ids(template: Any) -> list[str]:
     roles = template.get("roles") if isinstance(template, dict) else None
     if not isinstance(roles, list):
@@ -271,9 +280,8 @@ def main() -> int:
         step("fields.list_types()", lambda: client.fields.list_types(), failures)
         step("webhooks.list_event_types()", lambda: client.webhooks.list_event_types(), failures)
 
-        # Discovery needs no application identity, only an origin; the client_id is
-        # supplied because OAuthResource models a registered application. Both
-        # documents are served in production only, so the sandbox run reports SKIP.
+        # Discovery is credential-free and available on both environments.
+        # Older sandbox deployments may still refuse root metadata paths.
         oauth = client.oauth("live-smoke-discovery-only")
         optional_404_step(
             "oauth.protected_resource_metadata()",
@@ -346,6 +354,14 @@ def main() -> int:
         step(
             "webhooks.list_dispatches(per_page=5)",
             lambda: client.webhooks.list_dispatches({"per_page": 5}),
+            failures,
+        )
+        optional_404_step(
+            "webhooks.list_endpoints()", lambda: client.webhooks.list_endpoints(), failures
+        )
+        optional_404_step(
+            "authentication.list_mfa_methods()",
+            lambda: client.authentication.list_mfa_methods(),
             failures,
         )
 
@@ -553,6 +569,11 @@ def main() -> int:
         )
         document_id = _required_resource_id(document, "documents.upload()")
         if document_id:
+            ready_document = step(
+                "documents.wait_until_ready()",
+                lambda: client.documents.wait_until_ready(document_id, timeout=60),
+                failures,
+            )
             step("documents.get()", lambda: client.documents.get(document_id), failures)
             step(
                 "documents.activities()",
@@ -594,11 +615,6 @@ def main() -> int:
                     ),
                     failures,
                 )
-            ready_document = step(
-                "documents.wait_until_ready()",
-                lambda: client.documents.wait_until_ready(document_id, timeout=60),
-                failures,
-            )
             step(
                 "documents.public_info()",
                 lambda: client.documents.public_info(document_id),
@@ -688,16 +704,15 @@ def main() -> int:
                 print("\n=== assignment notifications ===\n  SKIP [explicit opt-in not configured]")
 
         if template_id:
-            role_id = _first_template_role_id(templates)
-            if role_id:
+            role_ids = _template_role_ids(template)
+            if role_ids:
                 step(
                     "documents.estimate_cost_from_template()",
                     lambda: client.documents.estimate_cost_from_template(
-                        template_id, [{"role_id": role_id}]
+                        template_id, [{"role_id": role_id} for role_id in role_ids]
                     ),
                     failures,
                 )
-            role_ids = _template_role_ids(template)
             if role_ids and signer_ids and send_test_notifications:
                 template_document = step(
                     "documents.create_from_template() sends test notifications",
@@ -734,41 +749,45 @@ def main() -> int:
         failures.append("smoke execution")
     finally:
         if webhook_mutation_attempted and webhook_restore is not None:
-            step(
+            cleanup_step(
                 "webhooks.register() restores original subscription",
                 lambda: client.webhooks.register(webhook_restore),
                 failures,
             )
         if preference_mutation_attempted and preference_restore is not None:
-            step(
+            cleanup_step(
                 "users.update_notification_preferences() restores original",
                 lambda: client.users.update_notification_preferences(preference_restore),
                 failures,
             )
         if template_document_id:
-            step(
+            cleanup_step(
                 "documents.delete() template cleanup",
                 lambda: client.documents.delete(template_document_id),
                 failures,
             )
         if document_id:
-            step(
+            cleanup_step(
                 "documents.delete() cleanup",
                 lambda: client.documents.delete(document_id),
                 failures,
             )
         if field_id:
-            step("fields.delete() cleanup", lambda: client.fields.delete(field_id), failures)
+            cleanup_step(
+                "fields.delete() cleanup", lambda: client.fields.delete(field_id), failures
+            )
         if tag_id:
-            step("tags.delete() cleanup", lambda: client.tags.delete(tag_id, force=True), failures)
+            cleanup_step(
+                "tags.delete() cleanup", lambda: client.tags.delete(tag_id, force=True), failures
+            )
         for signer_id in reversed(signer_ids):
-            step(
+            cleanup_step(
                 "signers.delete() cleanup",
                 lambda: client.signers.delete(signer_id),
                 failures,
             )
         if temporary_account_id:
-            step(
+            cleanup_step(
                 "accounts.delete() disposable account cleanup",
                 lambda: client.accounts.delete(temporary_account_id),
                 failures,

@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import json
 
+import pytest
+
 from assinafy.support.webhook_verifier import WebhookVerifier
 
 
@@ -112,3 +114,62 @@ class TestWebhookVerifier:
         verifier = WebhookVerifier(self.secret)
         assert verifier.get_event_object(None) == {}
         assert verifier.get_event_subject(None) == {}
+
+
+# Reference vector from the Standard Webhooks specification test suite.
+_SW_SECRET = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
+_SW_BODY = b'{"test": 2432232314}'
+_SW_HEADERS = {
+    "webhook-id": "msg_p5jXN8AQM9LWM0D4loKWxJek",
+    "webhook-timestamp": "1614265330",
+    "webhook-signature": "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=",
+}
+
+
+class TestVerifyDelivery:
+    @pytest.fixture(autouse=True)
+    def _frozen_clock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("assinafy.support.webhook_verifier.time.time", lambda: 1614265330 + 10)
+
+    def test_accepts_reference_signature(self) -> None:
+        assert WebhookVerifier(_SW_SECRET).verify_delivery(_SW_BODY, _SW_HEADERS)
+        assert WebhookVerifier(_SW_SECRET).verify_delivery(_SW_BODY.decode(), _SW_HEADERS)
+
+    def test_header_names_are_case_insensitive_and_any_v1_entry_matches(self) -> None:
+        headers = {k.title(): v for k, v in _SW_HEADERS.items()}
+        headers["Webhook-Signature"] = "v1,bm90LWl0 v2,ignored " + _SW_HEADERS["webhook-signature"]
+        assert WebhookVerifier(_SW_SECRET).verify_delivery(_SW_BODY, headers)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"webhook-signature": "v1,bm90LWl0"},
+            {"webhook-signature": "v2," + _SW_HEADERS["webhook-signature"][3:]},
+            {"webhook-signature": "v1,ção"},
+            {"webhook-id": "msg_other"},
+            {"webhook-timestamp": "1614265331"},
+            {"webhook-timestamp": "not-a-number"},
+            {"webhook-id": ""},
+        ],
+    )
+    def test_rejects_altered_or_malformed_headers(self, change: dict[str, str]) -> None:
+        assert not WebhookVerifier(_SW_SECRET).verify_delivery(_SW_BODY, {**_SW_HEADERS, **change})
+
+    def test_rejects_altered_body_missing_header_and_bad_secret(self) -> None:
+        assert not WebhookVerifier(_SW_SECRET).verify_delivery(b'{"test": 1}', _SW_HEADERS)
+        missing = {k: v for k, v in _SW_HEADERS.items() if k != "webhook-signature"}
+        assert not WebhookVerifier(_SW_SECRET).verify_delivery(_SW_BODY, missing)
+        assert not WebhookVerifier("whsec_***").verify_delivery(_SW_BODY, _SW_HEADERS)
+        assert not WebhookVerifier("whsec_").verify_delivery(_SW_BODY, _SW_HEADERS)
+        assert not WebhookVerifier().verify_delivery(_SW_BODY, _SW_HEADERS)
+
+    def test_rejects_timestamps_outside_tolerance(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        verifier = WebhookVerifier(_SW_SECRET)
+        monkeypatch.setattr("assinafy.support.webhook_verifier.time.time", lambda: 1614265330 + 301)
+        assert not verifier.verify_delivery(_SW_BODY, _SW_HEADERS)
+        assert verifier.verify_delivery(_SW_BODY, _SW_HEADERS, tolerance=600)
+
+    @pytest.mark.parametrize("tolerance", [0, -1, float("inf"), float("nan")])
+    def test_rejects_invalid_tolerance(self, tolerance: float) -> None:
+        with pytest.raises(ValueError):
+            WebhookVerifier(_SW_SECRET).verify_delivery(_SW_BODY, _SW_HEADERS, tolerance=tolerance)

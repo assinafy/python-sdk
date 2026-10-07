@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import builtins
 import mimetypes
-import re
 from typing import Any
 
 from ..errors import ValidationError
-from ..utils import load_file_source
+from ..utils import load_file_source, stats_params
 from .base import BaseResource
 
 _NOTIFICATION_SENDERS = frozenset({"User", "Account"})
@@ -33,6 +32,8 @@ class AccountResource(BaseResource):
               "notification_sender_type": "User", "roles": ["owner"],
               "is_delete_allowed": true,
               "created_at": "2026-06-03T03:54:16Z"}]
+
+        Request body: none.
         """
         return self._call_plain_list("Failed to list accounts", lambda: self._http.get("accounts"))
 
@@ -44,6 +45,13 @@ class AccountResource(BaseResource):
         optional; setting it later with :meth:`update` provides broad deployment
         compatibility. Returns the complete account payload
         documented on :class:`AccountResource`.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "account", "id": "account-id", "name": "Acme Inc.",
+             "primary_color": "aabbcc", "secondary_color": "112233",
+             "notification_sender_type": "User", "roles": ["owner"],
+             "is_delete_allowed": true, "created_at": "2026-06-03T03:54:16Z"}
         """
         body: dict[str, Any] = {"name": self._require_id(name, "Account name")}
         if notification_sender_type is not None:
@@ -58,6 +66,15 @@ class AccountResource(BaseResource):
 
         Returns the complete account payload documented on
         :class:`AccountResource`.
+
+        Request body: none.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "account", "id": "account-id", "name": "Acme Inc.",
+             "primary_color": "aabbcc", "secondary_color": "112233",
+             "notification_sender_type": "User", "roles": ["owner"],
+             "is_delete_allowed": true, "created_at": "2026-06-03T03:54:16Z"}
         """
         acc_id = self._account_id(account_id)
         return self._call_dict(
@@ -74,6 +91,13 @@ class AccountResource(BaseResource):
         Example JSON: ``{"name": "Acme 2", "notification_sender_type": "User"}``.
         Returns the complete account payload documented on
         :class:`AccountResource`.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "account", "id": "account-id", "name": "Acme Inc.",
+             "primary_color": "aabbcc", "secondary_color": "112233",
+             "notification_sender_type": "User", "roles": ["owner"],
+             "is_delete_allowed": true, "created_at": "2026-06-03T03:54:16Z"}
         """
         if not isinstance(body, dict):
             raise ValidationError("Account update must be a mapping")
@@ -117,6 +141,8 @@ class AccountResource(BaseResource):
 
         Example: ``{"account_name": "Acme", "primary_color": "2072b9",
         "secondary_color": "ffffff", "logo": null}``.
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         return self._call_dict(
@@ -146,16 +172,24 @@ class AccountResource(BaseResource):
               "signature_requests_viewed": 44,
               "signature_requests_completed": 52,
               "documents_certified": 30}]
+
+        Request body: none.
+
+        Query: ``granularity=monthly`` (default), or
+        ``granularity=daily&month=2026-06``; daily queries require ``month``.
         """
         acc_id = self._account_id(account_id)
-        params = _stats_params(granularity, month)
+        params = stats_params(granularity, month)
         return self._call_plain_list(
             "Failed to fetch account stats",
             lambda: self._http.get(f"accounts/{acc_id}/stats", params=params),
         )
 
     def download_logo(self, account_id: str | None = None) -> bytes:
-        """``GET /accounts/{account_id}/logo`` — return raw image bytes."""
+        """``GET /accounts/{account_id}/logo`` — return raw image bytes.
+
+        Request body: none.
+        """
         acc_id = self._account_id(account_id)
         return self._call_binary(
             "Failed to download account logo",
@@ -203,15 +237,3 @@ class AccountResource(BaseResource):
 def _validate_notification_sender(value: Any) -> None:
     if not isinstance(value, str) or value not in _NOTIFICATION_SENDERS:
         raise ValidationError('notification_sender_type must be "User" or "Account"')
-
-
-def _stats_params(granularity: str, month: str | None) -> dict[str, str]:
-    if not isinstance(granularity, str) or granularity not in {"monthly", "daily"}:
-        raise ValidationError('granularity must be "monthly" or "daily"')
-    if month is not None and (
-        not isinstance(month, str) or re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month) is None
-    ):
-        raise ValidationError("month must use YYYY-MM format")
-    if granularity == "daily" and month is None:
-        raise ValidationError("month is required for daily granularity")
-    return {k: v for k, v in {"granularity": granularity, "month": month}.items() if v}

@@ -249,3 +249,115 @@ class TestWebhookResource:
         resource = WebhookResource(object(), "acc")  # type: ignore[arg-type]
         with pytest.raises(ValidationError):
             resource.register(payload)  # type: ignore[arg-type]
+
+
+class _RecordingHttp:
+    def __init__(self, data: object) -> None:
+        self.data = data
+        self.calls: list[tuple[str, str, object]] = []
+
+    def _record(self, method: str, url: str, kwargs: dict[str, object]) -> MockResponse:
+        self.calls.append((method, url, kwargs.get("json")))
+        return make_response(make_envelope(self.data))
+
+    def get(self, url: str, **kwargs: object) -> MockResponse:
+        return self._record("GET", url, kwargs)
+
+    def post(self, url: str, **kwargs: object) -> MockResponse:
+        return self._record("POST", url, kwargs)
+
+    def put(self, url: str, **kwargs: object) -> MockResponse:
+        return self._record("PUT", url, kwargs)
+
+    def delete(self, url: str, **kwargs: object) -> MockResponse:
+        return self._record("DELETE", url, kwargs)
+
+
+_ENDPOINT = {
+    "id": "ep1",
+    "url": "https://example.com/hook",
+    "email": "ops@example.com",
+    "events": ["document_ready"],
+    "is_active": True,
+    "signing_enabled": True,
+}
+
+
+class TestWebhookEndpoints:
+    def test_list_endpoints(self) -> None:
+        http = _RecordingHttp([_ENDPOINT])
+        assert WebhookResource(http, "acc").list_endpoints() == [_ENDPOINT]
+        assert http.calls == [("GET", "accounts/acc/webhooks/endpoints", None)]
+
+    def test_create_endpoint_sends_documented_body(self) -> None:
+        http = _RecordingHttp(_ENDPOINT)
+        body = {
+            "url": "https://example.com/hook",
+            "email": "ops@example.com",
+            "events": ["document_ready"],
+            "name": "ERP",
+            "signing_enabled": True,
+        }
+        assert WebhookResource(http, "acc").create_endpoint(body) == _ENDPOINT
+        assert http.calls == [("POST", "accounts/acc/webhooks/endpoints", body)]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"url": "https://example.com/hook", "email": "ops@example.com"},
+            {"url": "ftp://example.com", "email": "ops@example.com", "events": []},
+            {"url": "https://example.com", "email": "ops@example.com", "events": [], "x": 1},
+            {
+                "url": "https://example.com",
+                "email": "ops@example.com",
+                "events": [],
+                "signing_enabled": "yes",
+            },
+            {"url": "https://example.com", "email": "ops@example.com", "events": [], "name": " "},
+        ],
+    )
+    def test_create_endpoint_rejects_invalid_bodies_before_sending(
+        self, body: dict[str, object]
+    ) -> None:
+        http = _RecordingHttp(_ENDPOINT)
+        with pytest.raises(ValidationError):
+            WebhookResource(http, "acc").create_endpoint(body)
+        assert http.calls == []
+
+    def test_get_update_delete_endpoint_paths(self) -> None:
+        http = _RecordingHttp(_ENDPOINT)
+        resource = WebhookResource(http, "acc")
+        resource.get_endpoint("ep1")
+        resource.update_endpoint("ep1", {"is_active": False})
+        http.data = []
+        assert resource.delete_endpoint("ep1") is None
+        assert http.calls == [
+            ("GET", "accounts/acc/webhooks/endpoints/ep1", None),
+            ("PUT", "accounts/acc/webhooks/endpoints/ep1", {"is_active": False}),
+            ("DELETE", "accounts/acc/webhooks/endpoints/ep1", None),
+        ]
+
+    def test_update_endpoint_requires_a_field_and_a_safe_id(self) -> None:
+        http = _RecordingHttp(_ENDPOINT)
+        resource = WebhookResource(http, "acc")
+        with pytest.raises(ValidationError):
+            resource.update_endpoint("ep1", {})
+        with pytest.raises(ValidationError):
+            resource.update_endpoint("../x", {"is_active": True})
+        assert http.calls == []
+
+    def test_secret_get_and_rotate_return_the_secret(self) -> None:
+        http = _RecordingHttp({"secret": "whsec_c2VjcmV0"})
+        resource = WebhookResource(http, "acc")
+        assert resource.get_endpoint_secret("ep1") == "whsec_c2VjcmV0"
+        assert resource.rotate_endpoint_secret("ep1") == "whsec_c2VjcmV0"
+        assert http.calls == [
+            ("GET", "accounts/acc/webhooks/endpoints/ep1/secret", None),
+            ("POST", "accounts/acc/webhooks/endpoints/ep1/secret/rotate", None),
+        ]
+
+    def test_secret_missing_from_response_raises(self) -> None:
+        from assinafy.errors import AssinafyError
+
+        with pytest.raises(AssinafyError):
+            WebhookResource(_RecordingHttp({}), "acc").get_endpoint_secret("ep1")

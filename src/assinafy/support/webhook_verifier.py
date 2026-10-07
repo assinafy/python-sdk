@@ -1,19 +1,49 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
+import math
+import time
+from collections.abc import Mapping
 from typing import Any
+
+#: Default replay window, in seconds, for :meth:`WebhookVerifier.verify_delivery`.
+DEFAULT_TOLERANCE_SECONDS = 300
 
 
 class WebhookVerifier:
-    """Webhook payload parsing and (optional) HMAC-SHA256 verification.
+    """Webhook signature verification and payload parsing.
 
-    **Envelope.** Per the documented Payload Reference, every webhook body has
-    this top-level shape::
+    **Signatures.** An endpoint created or updated with
+    ``signing_enabled: true`` signs every delivery following the
+    `Standard Webhooks <https://www.standardwebhooks.com>`_ specification. Each
+    request carries three headers:
+
+    ``webhook-id``
+        Message ID, identical on every attempt of the same event to the same
+        endpoint. Use it to deduplicate.
+    ``webhook-timestamp``
+        Unix timestamp (seconds) of the attempt.
+    ``webhook-signature``
+        One or more space-separated ``v1,<base64 signature>`` entries.
+
+    Construct the verifier with the endpoint's ``whsec_...`` secret (from
+    ``client.webhooks.get_endpoint_secret()``) and call :meth:`verify_delivery`
+    with the **raw** request body and the request headers::
+
+        verifier = WebhookVerifier("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw")
+        if not verifier.verify_delivery(raw_body, request.headers):
+            return 401
+
+    Each endpoint has its own secret; use one verifier per endpoint.
+
+    **Envelope.** Every webhook body has this top-level shape::
 
         {
-          "id": 987,                # internal activity id (use to dedup)
+          "id": 987,                # internal activity id
           "event": "document_ready",
           "message": null,          # human-readable, may contain placeholders
           "payload": null,          # event-specific params (object|null)
@@ -26,28 +56,65 @@ class WebhookVerifier:
 
     Use :meth:`get_event_type`, :meth:`get_event_payload`,
     :meth:`get_event_subject`, and :meth:`get_event_object` to read these fields.
-
-    **Signatures.** The documented Delivery Contract specifies the HTTP method,
-    ``Content-Type``, retry, and circuit-breaker behavior, but it does **not**
-    define any signature header or shared-secret scheme. :meth:`verify` is
-    therefore provided only for accounts that have separately arranged an
-    HMAC-SHA256 scheme with Assinafy; it assumes the common pattern
-    ``hex(hmac_sha256(secret, body))`` sent in a request header that you pass in.
-    If your account uses a different scheme, subclass and override
-    :meth:`verify`. With no shared secret configured, :meth:`verify` always
-    returns ``False``.
     """
 
     def __init__(self, webhook_secret: str | None = None) -> None:
         self._webhook_secret = webhook_secret
 
-    def verify(self, payload: bytes | str, signature: str) -> bool:
-        """Constant-time compare ``HMAC-SHA256(secret, payload)`` against ``signature``.
+    def verify_delivery(
+        self,
+        payload: bytes | str,
+        headers: Mapping[str, str],
+        *,
+        tolerance: float = DEFAULT_TOLERANCE_SECONDS,
+    ) -> bool:
+        """Verify a Standard Webhooks signature and reject replayed deliveries.
 
-        Returns ``False`` when no secret is configured or ``signature`` is empty.
-        See the class docstring: the public API does not document a signature
-        mechanism, so this is only meaningful for accounts with a negotiated
-        HMAC scheme.
+        Computes ``base64(HMAC-SHA256(key, "{webhook-id}.{webhook-timestamp}.{body}"))``
+        where ``key`` is the base64-decoded part of the secret after
+        ``whsec_``, and accepts the request when any ``v1`` entry of
+        ``webhook-signature`` matches in constant time and
+        ``webhook-timestamp`` is within ``tolerance`` seconds of the local
+        clock. Header names are matched case-insensitively.
+
+        ``payload`` must be the body exactly as received; re-serialized JSON
+        does not verify. Returns ``False`` when no secret is configured, the
+        secret is not valid base64, or any header is missing or malformed.
+        """
+        if not isinstance(tolerance, int | float) or not math.isfinite(tolerance) or tolerance <= 0:
+            raise ValueError("tolerance must be a finite positive number of seconds")
+        if not self._webhook_secret:
+            return False
+        lowered = {str(name).lower(): value for name, value in headers.items()}
+        message_id = lowered.get("webhook-id")
+        timestamp = lowered.get("webhook-timestamp")
+        signatures = lowered.get("webhook-signature")
+        if not message_id or not timestamp or not signatures:
+            return False
+        try:
+            sent_at = int(timestamp)
+            key = base64.b64decode(self._webhook_secret.removeprefix("whsec_"), validate=True)
+        except (ValueError, binascii.Error):
+            return False
+        if not key or abs(time.time() - sent_at) > tolerance:
+            return False
+
+        raw = payload.encode("utf-8") if isinstance(payload, str) else payload
+        signed = f"{message_id}.{timestamp}.".encode() + raw
+        expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest())
+        return any(
+            version == "v1" and hmac.compare_digest(expected, candidate.encode("utf-8"))
+            for version, _, candidate in (entry.partition(",") for entry in signatures.split())
+        )
+
+    def verify(self, payload: bytes | str, signature: str) -> bool:
+        """Legacy check: constant-time compare ``hex(HMAC-SHA256(secret, payload))``.
+
+        Kept for receivers written against earlier SDK releases, which
+        expected a hex digest of the body alone. Deliveries from endpoints with
+        ``signing_enabled`` use the Standard Webhooks scheme instead; verify
+        those with :meth:`verify_delivery`. Returns ``False`` when no secret is
+        configured or ``signature`` is empty.
         """
         if not self._webhook_secret or not signature:
             return False
@@ -59,7 +126,7 @@ class WebhookVerifier:
             hashlib.sha256,
         ).hexdigest()
         provided = signature.strip()
-        return hmac.compare_digest(expected, provided)
+        return provided.isascii() and hmac.compare_digest(expected, provided)
 
     def extract_event(self, payload: bytes | str) -> dict[str, Any] | None:
         """Parse the JSON envelope and return the top-level event dict, or ``None``."""

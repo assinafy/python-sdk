@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from datetime import datetime
@@ -10,7 +11,7 @@ from typing import Any
 import httpx
 
 from .errors import ApiError, AssinafyError, NetworkError, ValidationError
-from .types import Logger
+from .types import NOTIFICATION_METHODS, VERIFICATION_METHODS, Logger
 
 # Pythonic keyword -> documented hyphenated query/body key mapping.
 QUERY_PARAM_ALIASES = {
@@ -50,9 +51,9 @@ def to_sdk_error(error: Exception, fallback_message: str) -> AssinafyError:
         return ApiError.from_response(error.response.status_code, data)
 
     if isinstance(error, httpx.RequestError):
-        return NetworkError(f"{fallback_message}: {error}")
+        return NetworkError(f"{fallback_message}: {type(error).__name__}")
 
-    return AssinafyError(f"{fallback_message}: {error}")
+    return AssinafyError(f"{fallback_message}: {type(error).__name__}")
 
 
 class _NoopLogger:
@@ -151,4 +152,86 @@ def validate_email(value: Any, name: str = "Email") -> str:
     """Return a syntactically valid email address."""
     if not isinstance(value, str) or not _EMAIL_RE.fullmatch(value):
         raise ValidationError(f"Invalid {name.lower()}", {name.lower(): value})
+    return value
+
+
+def stats_params(granularity: str, month: str | None) -> dict[str, str]:
+    """Build monthly/daily KPI query parameters; daily queries require YYYY-MM."""
+    if not isinstance(granularity, str) or granularity not in {"monthly", "daily"}:
+        raise ValidationError('granularity must be "monthly" or "daily"')
+    if month is not None and (
+        not isinstance(month, str) or re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month) is None
+    ):
+        raise ValidationError("month must use YYYY-MM format")
+    if granularity == "daily" and month is None:
+        raise ValidationError("month is required for daily granularity")
+    return {k: v for k, v in {"granularity": granularity, "month": month}.items() if v}
+
+
+def validate_wait_options(timeout: float, poll_interval: float) -> None:
+    """Require finite positive polling durations; raises ValidationError before I/O."""
+    for name, value in (("timeout", timeout), ("poll_interval", poll_interval)):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValidationError(f"{name} must be greater than zero")
+
+
+def build_signer_payload(payload: dict[str, Any], require_full_name: bool) -> dict[str, Any]:
+    """Build shared signer contact fields, omitting None; update callers add government_id."""
+    if not isinstance(payload, dict):
+        raise ValidationError("Signer payload must be a mapping")
+    allowed = {"full_name", "email", "whatsapp_phone_number"}
+    if not require_full_name:
+        allowed.add("government_id")
+    unknown = payload.keys() - allowed
+    if unknown:
+        raise ValidationError(f"Unknown signer fields: {', '.join(sorted(unknown))}")
+    full_name = payload.get("full_name")
+    if require_full_name and (not isinstance(full_name, str) or not full_name.strip()):
+        raise ValidationError("full_name is required")
+    if full_name is not None and (not isinstance(full_name, str) or not full_name.strip()):
+        raise ValidationError("full_name must be a non-empty string")
+    email = payload.get("email")
+    if email is not None:
+        validate_email(email)
+    phone = payload.get("whatsapp_phone_number")
+    if phone is not None and (not isinstance(phone, str) or not phone.strip()):
+        raise ValidationError("whatsapp_phone_number must be a non-empty string")
+    return clean_params(
+        {
+            "full_name": full_name,
+            "email": email,
+            "whatsapp_phone_number": phone,
+        }
+    )
+
+
+def validate_signer_methods(verification: Any, notifications: Any) -> None:
+    """Validate the coupled verification and single notification channel."""
+    if verification is not None and (
+        not isinstance(verification, str) or verification not in VERIFICATION_METHODS
+    ):
+        raise ValidationError("Invalid signer verification_method")
+    if notifications is not None:
+        if (
+            not isinstance(notifications, list)
+            or len(notifications) != 1
+            or not isinstance(notifications[0], str)
+            or notifications[0] not in NOTIFICATION_METHODS
+        ):
+            raise ValidationError("notification_methods must contain exactly one Email or Whatsapp")
+        if verification in {"Email", "Whatsapp"} and notifications != [verification]:
+            raise ValidationError("notification_methods must match the verification_method")
+
+
+def validate_decline_reason(value: Any) -> str:
+    """Validate the required decline reason shared by single and bulk declines."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("Decline reason is required")
+    if len(value) > 2000:
+        raise ValidationError("Decline reason must be 2000 characters or fewer")
     return value

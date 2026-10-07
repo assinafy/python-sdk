@@ -2,12 +2,39 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.10.0] - 2026-10-07
+
+### Added
+
+- `oauth.exchange_token()` supports RFC 8693 token exchange for Assinafy internal-service applications, including explicit resource and scope selection.
+- Multiple webhook endpoints (1 per account, up to 3 on paid plans): `webhooks.list_endpoints()`, `create_endpoint()`, `get_endpoint()`, `update_endpoint()` and `delete_endpoint()`.
+- Webhook signing secrets: `webhooks.get_endpoint_secret()` and `rotate_endpoint_secret()`.
+- `WebhookVerifier.verify_delivery()` verifies Standard Webhooks signatures (`webhook-id`, `webhook-timestamp`, `webhook-signature`) and rejects deliveries outside a replay window, 300 seconds by default.
+- Two-factor authentication: `authentication.verify_mfa()` completes a login that returned an `mfa_token`, and `list_mfa_methods()`, `start_totp_enrollment()`, `confirm_totp_enrollment()`, `regenerate_recovery_codes()` and `delete_mfa_method()` manage authenticator enrollment. `verify_mfa()` is sent without client credentials.
+
+### Fixed
+
+- Signer verification and notification methods are validated consistently for assignments, estimates and template documents.
+- Collect assignments reject malformed field placement and non-finite dimensions before sending requests; decline reasons are limited to 2000 characters.
+- OAuth URL, callback, PKCE and scope validation handles malformed and non-ASCII input safely.
+- Transport failures omit raw exception text and chained exceptions that could contain credentials.
+- Template smoke requests include every template role and document operations wait for metadata readiness; disposable cleanup retries explicit HTTP 429 responses.
+- Invalid Unicode webhook signatures return `False`; hex colors reject trailing newlines and timeouts reject non-finite values.
+
+### Changed
+
+- `webhooks.get()`, `register()` and `inactivate()` act on the account's oldest webhook endpoint.
+- `WebhookVerifier.verify()` is documented as the legacy hex HMAC check; signed endpoints use `verify_delivery()`.
+- Digital-certificate signatures are documented at 0.5 credits per signer, plus the notification.
+- Shared signer, statistics and polling validation uses common helpers.
+- Both READMEs describe sandbox OAuth availability, application registration, internal-service token exchange and the complete signing flow.
+
 ## [1.9.2] - 2026-09-25
 
 ### Changed
 
 - OAuth docs now describe the current refresh-token lifetime: every refresh returns a new refresh token valid for a fresh 30 days, and a connection only expires after 30 days without a refresh.
-- `NetworkError` is documented as "no response arrived" (including TLS handshake failures): the request may still have been processed, so a failed `refresh()` or `exchange_code()` must never be resent with the old token. Tests pin that token calls are sent exactly once.
+- `NetworkError` is documented as "no response arrived" (including TLS handshake failures): the request may still have been processed, so a failed `refresh()` or `exchange_code()` must never be resent with the old token. Token requests are never automatically retried.
 - The `documents.verify()` docstring lists `agreement_code`, which is nullable.
 - The README disconnect example revokes the most recently saved refresh token.
 
@@ -39,8 +66,7 @@ All notable changes to `assinafy` are documented in this file.
 
 - `client.oauth(client_id, client_secret=None)` returns an `OAuthResource`
   covering the marketplace OAuth 2.1 + OpenID Connect surface, for applications
-  that act on **another** workspace with that person's permission. It completes
-  the SDK's coverage of the published API:
+  that act on **another** workspace with that person's permission. It provides:
   - `start_authorization()` mints a fresh PKCE verifier, `state` and (with the
     `openid` scope) a `nonce`, and returns the authorization URL together with
     the transaction to keep in the user's session. Pure string construction; no
@@ -361,7 +387,6 @@ Adds documented signing-workflow endpoints. No breaking changes.
 - `client.tags` resource covering `GET/POST/PUT/DELETE /accounts/{account_id}/tags`.
 - Document tag helpers covering list, replace, append, and detach endpoints under
   `/accounts/{account_id}/documents/{document_id}/tags`.
-- Unit and live-smoke coverage for tag CRUD and document tag attachment flows.
 
 ## [1.2.0] - 2026-05-11
 

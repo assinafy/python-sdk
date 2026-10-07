@@ -5,7 +5,7 @@ from typing import Any
 
 from ..errors import ValidationError
 from ..types import DOCUMENT_ARTIFACT_NAMES, DocumentArtifactName
-from ..utils import QUERY_PARAM_ALIASES, clean_params
+from ..utils import QUERY_PARAM_ALIASES, clean_params, validate_decline_reason
 from .base import BaseResource
 
 
@@ -27,6 +27,19 @@ class SignerDocumentResource(BaseResource):
         Returns the complete unwrapped
         :class:`~assinafy.resources.documents.DocumentResource` payload for the
         document the signer is currently expected to act on.
+
+        Request body: none.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "document", "id": "document-id", "account_id": "account-id",
+             "template_id": null, "name": "contract.pdf", "status": "metadata_ready",
+             "artifacts": {"original": "https://api.example/document/original"},
+             "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+             "decline_reason": null, "declined_by": null, "tags": [],
+             "assignment": null, "pages": [],
+             "created_at": "2026-06-03T03:54:16Z",
+             "updated_at": "2026-06-03T03:54:17Z"}
         """
         sid = self._path_id(signer_id, "Signer ID")
         query = self._signer_query(signer_access_code)
@@ -51,6 +64,20 @@ class SignerDocumentResource(BaseResource):
         Returns ``{"data": [Document, ...], "meta": {...}}`` where each item
         has the complete :class:`~assinafy.resources.documents.DocumentResource`
         shape and ``meta`` contains the four documented pagination integers.
+
+        Request body: none.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"data": [{"resource": "document", "id": "document-id", "account_id": "account-id",
+             "template_id": null, "name": "contract.pdf", "status": "metadata_ready",
+             "artifacts": {"original": "https://api.example/document/original"},
+             "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+             "decline_reason": null, "declined_by": null, "tags": [],
+             "assignment": null, "pages": [],
+             "created_at": "2026-06-03T03:54:16Z",
+             "updated_at": "2026-06-03T03:54:17Z"}],
+             "meta": {"total_count": 1, "page_count": 1, "current_page": 1, "per_page": 20}}
         """
         sid = self._path_id(signer_id, "Signer ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
@@ -76,6 +103,19 @@ class SignerDocumentResource(BaseResource):
         partial-match term. Returns ``{"data": [Document, ...]}`` where every
         item has the complete
         :class:`~assinafy.resources.documents.DocumentResource` shape.
+
+        Request body: none.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"data": [{"resource": "document", "id": "document-id", "account_id": "account-id",
+             "template_id": null, "name": "contract.pdf", "status": "metadata_ready",
+             "artifacts": {"original": "https://api.example/document/original"},
+             "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+             "decline_reason": null, "declined_by": null, "tags": [],
+             "assignment": null, "pages": [],
+             "created_at": "2026-06-03T03:54:16Z",
+             "updated_at": "2026-06-03T03:54:17Z"}]}
         """
         sid = self._path_id(signer_id, "Signer ID")
         query = self._signer_query(signer_access_code, search=search)
@@ -119,7 +159,7 @@ class SignerDocumentResource(BaseResource):
     ) -> None:
         """``PUT /signers/documents/decline-multiple?signer-access-code=...``.
 
-        Declines several documents in one call with a shared reason.
+        Declines several documents in one call with a shared reason (maximum 2000 characters).
 
         Example request body (JSON)::
 
@@ -130,7 +170,7 @@ class SignerDocumentResource(BaseResource):
         to ``None``.
         """
         query = self._signer_query(signer_access_code)
-        reason = self._require_id(decline_reason, "Decline reason")
+        reason = validate_decline_reason(decline_reason)
         _assert_document_ids(document_ids)
         self._call_void(
             "Failed to decline multiple documents",
@@ -155,6 +195,8 @@ class SignerDocumentResource(BaseResource):
         Returns raw artifact bytes. Valid artifacts: ``original``,
         ``certificated``, ``certificate-page``, ``pades``, and ``bundle``.
         ``pades`` exists only for documents signed with an ICP-Brasil certificate.
+
+        Request body: none.
         """
         sid = self._path_id(signer_id, "Signer ID")
         doc_id = self._path_id(document_id, "Document ID")

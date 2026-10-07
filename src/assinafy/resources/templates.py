@@ -51,6 +51,8 @@ class TemplateResource(BaseResource):
                  "updated_at": "2024-07-19T15:23:03Z"}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
@@ -85,6 +87,8 @@ class TemplateResource(BaseResource):
              "default_document_tags": [{"id": "tag-id", "name": "Signed"}],
              "created_at": "2024-07-19T15:23:03Z",
              "updated_at": "2024-07-19T15:23:03Z"}
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         tmpl_id = self._path_id(template_id, "Template ID")

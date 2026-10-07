@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import builtins
+import math
 from typing import Any
 
 from ..errors import ValidationError
-from ..types import NOTIFICATION_METHODS, VERIFICATION_METHODS, SignerReference
-from ..utils import QUERY_PARAM_ALIASES, clean_params, validate_datetime
+from ..types import SignerReference
+from ..utils import (
+    QUERY_PARAM_ALIASES,
+    clean_params,
+    validate_datetime,
+    validate_decline_reason,
+    validate_signer_methods,
+)
 from .base import BaseResource
 
 _ASSIGNMENT_METHODS = frozenset({"virtual", "collect"})
@@ -89,9 +96,56 @@ def build_assignment_payload(
     )
     if signers:
         normalised = [_normalise_signer_ref(ref, allow_signers_without_id) for ref in signers]
-        _validate_signer_steps(normalised)
+        if not allow_signers_without_id:
+            _validate_signer_steps(normalised)
         body["signers"] = normalised
+    if entries is not None and not allow_signers_without_id:
+        _validate_collect_entries(entries)
     return body
+
+
+def _validate_collect_entries(entries: list[dict[str, Any]]) -> None:
+    for entry in entries:
+        if entry.keys() - {"page_id", "fields"}:
+            raise ValidationError("Unknown collect entry fields")
+        if not isinstance(entry.get("page_id"), str) or not entry["page_id"].strip():
+            raise ValidationError("Collect entry page_id is required")
+        fields = entry.get("fields")
+        if not isinstance(fields, list):
+            raise ValidationError("Collect entry fields must be a list")
+        for field in fields:
+            if not isinstance(field, dict) or field.keys() - {
+                "signer_id",
+                "field_id",
+                "display_settings",
+            }:
+                raise ValidationError("Invalid collect field attributes")
+            for key in ("signer_id", "field_id"):
+                if not isinstance(field.get(key), str) or not field[key].strip():
+                    raise ValidationError(f"Collect field {key} is required")
+            settings = field.get("display_settings")
+            if not isinstance(settings, dict) or settings.keys() - {
+                "left",
+                "top",
+                "width",
+                "height",
+                "fontSize",
+                "fontFamily",
+                "backgroundColor",
+            }:
+                raise ValidationError("Invalid collect display_settings")
+            for key in ("left", "top", "width", "height", "fontSize"):
+                value = settings.get(key)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or (value < 0 if key in {"left", "top"} else value <= 0)
+                ):
+                    raise ValidationError(f"Invalid collect display_settings {key}")
+            for key in ("fontFamily", "backgroundColor"):
+                if key in settings and not isinstance(settings[key], str):
+                    raise ValidationError(f"Collect display_settings {key} must be a string")
 
 
 def _normalise_signer_ref(ref: SignerReference, allow_without_id: bool) -> dict[str, Any]:
@@ -110,20 +164,8 @@ def _normalise_signer_ref(ref: SignerReference, allow_without_id: bool) -> dict[
         if signer_id is not None and (not isinstance(signer_id, str) or not signer_id):
             raise ValidationError("Signer ID must be a non-empty string")
         verification_method = ref.get("verification_method")
-        if verification_method is not None and (
-            not isinstance(verification_method, str)
-            or verification_method not in VERIFICATION_METHODS
-        ):
-            raise ValidationError("Invalid signer verification_method")
         notification_methods = ref.get("notification_methods")
-        if notification_methods is not None and (
-            not isinstance(notification_methods, list)
-            or any(
-                not isinstance(item, str) or item not in NOTIFICATION_METHODS
-                for item in notification_methods
-            )
-        ):
-            raise ValidationError("Invalid signer notification_methods")
+        validate_signer_methods(verification_method, notification_methods)
         step = ref.get("step")
         if step is not None and (not isinstance(step, int) or isinstance(step, bool) or step < 1):
             raise ValidationError("Signer step must be a positive integer")
@@ -151,7 +193,8 @@ def _validate_signer_steps(signers: list[dict[str, Any]]) -> None:
         ]
         if len(numbered_steps) != len(steps):
             raise ValidationError("Signer steps must be positive integers")
-        if set(numbered_steps) != set(range(1, max(numbered_steps) + 1)):
+        unique_steps = sorted(set(numbered_steps))
+        if unique_steps != list(range(1, len(unique_steps) + 1)):
             raise ValidationError("Signer steps must be contiguous starting at 1")
     for signer, step in zip(signers, steps, strict=True):
         if (
@@ -288,6 +331,8 @@ class AssignmentResource(BaseResource):
                  ]}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
+
+        Request body: none.
         """
         query = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
         scoped_account_id = self._default_account_id if account_id is None else account_id
@@ -347,7 +392,9 @@ class AssignmentResource(BaseResource):
         ``left``, ``top``, ``width``, ``height``, and ``fontSize`` are required
         150-DPI page-image pixel values; width/height/font size must be positive,
         coordinates non-negative, and the rectangle must stay within the page.
-        ``fontFamily`` and ``backgroundColor`` are optional.
+        ``fontFamily`` and ``backgroundColor`` are optional. Local validation
+        checks geometry and field keys; page bounds require the dimensions from
+        ``documents.get()`` and must be checked by the caller.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -398,7 +445,9 @@ class AssignmentResource(BaseResource):
         pricing descriptors containing only ``verification_method`` and
         ``notification_methods``. Legacy signer IDs are accepted as input but
         are omitted from the wire body because they are not part of the current
-        estimate contract.
+        estimate contract. Collect estimate ``entries`` are objects with no
+        published member schema, so their keys are forwarded; the placement
+        validation used by :meth:`create` does not apply to pricing descriptors.
 
         Example request body (JSON)::
 
@@ -445,6 +494,41 @@ class AssignmentResource(BaseResource):
 
         Returns the complete assignment payload documented on
         :class:`AssignmentResource`, with ``expires_at`` updated.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "assignment", "id": "assignment-id",
+             "sender_email": "sender@example.com", "method": "virtual",
+             "expires_at": "2030-08-03T21:00:00Z", "message": null,
+             "signers": [{"resource": "signer", "id": "signer-id",
+                           "full_name": "Example Signer", "email": "signer@example.com",
+                           "whatsapp_phone_number": null, "has_accepted_terms": false,
+                           "verification_method": "Email",
+                           "notification_methods": ["Email"], "step": 1,
+                           "notified": true, "completed": false,
+                           "notification_history": [
+                               {"event": "signature_request", "status": "sent",
+                                "error_code": null, "error_message": null,
+                                "sent_at": "2026-08-26T12:00:00Z", "failed_at": null}
+                           ]}],
+             "copy_receivers": [],
+             "items": [{"id": "item-id",
+                        "page": {"id": "page-id", "number": 1, "height": 2100,
+                                 "width": 1275, "download_url": "https://api.example/page"},
+                        "signer": {"id": "signer-id", "full_name": "Example Signer",
+                                   "email": "signer@example.com"},
+                        "field": {"id": "field-id", "name": "Signature",
+                                  "type": "signature"},
+                        "display_settings": {"left": 69, "top": 282, "width": 421,
+                                             "height": 45.86, "fontFamily": "Arial",
+                                             "fontSize": 18,
+                                             "backgroundColor": "#D5EBFF"},
+                        "value": null, "completed": false}],
+             "summary": {"signer_count": 1, "completed_count": 0,
+                         "signers": [{"id": "signer-id", "full_name": "Example Signer",
+                                      "email": "signer@example.com", "completed": false}]},
+             "signing_urls": [{"signer_id": "signer-id",
+                               "url": "https://api.example/sign/document-id"}]}
         """
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")
@@ -482,6 +566,19 @@ class AssignmentResource(BaseResource):
         ``has_accepted_terms=True`` (or
         :meth:`~assinafy.resources.signers.SignerResource.accept_terms`, which is
         never gated) first.
+
+        Request body: none.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "document", "id": "document-id", "account_id": "account-id",
+             "template_id": null, "name": "contract.pdf", "status": "metadata_ready",
+             "artifacts": {"original": "https://api.example/document/original"},
+             "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+             "decline_reason": null, "declined_by": null, "tags": [],
+             "assignment": null, "pages": [],
+             "created_at": "2026-06-03T03:54:16Z",
+             "updated_at": "2026-06-03T03:54:17Z"}
         """
         if has_accepted_terms is not None and not isinstance(has_accepted_terms, bool):
             raise ValidationError("has_accepted_terms must be boolean")
@@ -521,6 +618,7 @@ class AssignmentResource(BaseResource):
                 not isinstance(entry.get(field), str) or not entry[field]
                 for field in ("itemId", "fieldId", "pageId")
             )
+            or entry.keys() != {"itemId", "fieldId", "pageId", "value"}
             or not isinstance(entry.get("value"), str)
             for entry in entries
         ):
@@ -541,7 +639,8 @@ class AssignmentResource(BaseResource):
     ) -> None:
         """``PUT /documents/{document_id}/assignments/{assignment_id}/reject``.
 
-        Records a signer's refusal to sign. ``decline_reason`` is required.
+        Records a signer's refusal to sign. ``decline_reason`` is required and
+        limited to 2000 characters.
 
         Example request body (JSON)::
 
@@ -553,7 +652,7 @@ class AssignmentResource(BaseResource):
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")
         query = self._signer_query(signer_access_code)
-        reason = self._require_id(decline_reason, "Decline reason")
+        reason = validate_decline_reason(decline_reason)
         self._call_void(
             "Failed to decline assignment",
             lambda: self._http.put(
@@ -581,6 +680,8 @@ class AssignmentResource(BaseResource):
               "buttons": [{"text": "Abrir documento"}],
               "phone_number": "+5511999990001",
               "signer_id": "1031ff86..."}]
+
+        Request body: none.
         """
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")

@@ -121,6 +121,7 @@ class TestAssinafyClient:
             ("POST", "login"),
             ("PUT", "authentication/request-password-reset"),
             ("PUT", "authentication/reset-password"),
+            ("POST", "authentication/mfa/verify"),
             ("POST", "authentication/social-login"),
             ("GET", "documents/hash/verify"),
             ("GET", "public/documents/doc"),

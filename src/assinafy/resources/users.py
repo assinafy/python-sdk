@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from ..errors import ValidationError
 from ..types import NOTIFICATION_PREFERENCE_CODES, NotificationPreferenceCode
-from .accounts import _stats_params
+from ..utils import stats_params
 from .base import BaseResource
 
 
@@ -27,6 +27,15 @@ class UserResource(BaseResource):
         terms flags, ``created_at``, and nullable ``to_be_deleted_at``. The live
         API may wrap that user beside ``accounts``; this method preserves the
         returned data shape without discarding either representation.
+
+        Request body: none.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"id": "user-id", "name": "Example User", "email": "user@example.com",
+             "telephone": null, "government_id": null, "is_email_verified": true,
+             "has_accepted_terms": true, "created_at": "2026-06-03T03:54:16Z",
+             "to_be_deleted_at": null}
         """
         return self._call_dict("Failed to fetch current user", lambda: self._http.get("users/self"))
 
@@ -39,8 +48,28 @@ class UserResource(BaseResource):
 
         The response uses the complete KPI-row shape documented by
         :meth:`~assinafy.resources.accounts.AccountResource.stats`.
+
+        Request body: none.
+
+        Example response (``data`` envelope unwrapped)::
+
+            [{"period": "2026-06", "documents_uploaded": 42,
+              "documents_sent": 37, "signature_requests": 61,
+              "signature_requests_notification_email": 55,
+              "signature_requests_notification_whatsapp": 18,
+              "signature_requests_notification_bypass": 3,
+              "signature_requests_verification_email": 48,
+              "signature_requests_verification_whatsapp": 6,
+              "signature_requests_verification_bypass": 3,
+              "signature_requests_verification_digital_certificate": 4,
+              "signature_requests_viewed": 44,
+              "signature_requests_completed": 52,
+              "documents_certified": 30}]
+
+        Query: ``granularity=monthly`` (default), or
+        ``granularity=daily&month=2026-06``; ``month`` uses ``YYYY-MM``.
         """
-        params = _stats_params(granularity, month)
+        params = stats_params(granularity, month)
         return self._call_plain_list(
             "Failed to fetch user stats",
             lambda: self._http.get("users/self/stats", params=params),
@@ -56,6 +85,8 @@ class UserResource(BaseResource):
              "DocumentExpired": true, "DocumentExpirationReset": true,
              "DocumentProcessingFailed": true,
              "TemplateProcessingFailed": true, "SignerWhatsappFailed": true}
+
+        Request body: none.
         """
         return cast(
             dict[NotificationPreferenceCode, bool],
@@ -76,6 +107,16 @@ class UserResource(BaseResource):
         keep their values. The request is the supplied partial map; the
         response is the complete nine-key map shown by
         :meth:`notification_preferences`.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"DocumentCompleted": true, "SignerDeclined": true,
+             "DocumentCancelled": true, "DocumentAboutToExpire": true,
+             "DocumentExpired": true, "DocumentExpirationReset": true,
+             "DocumentProcessingFailed": true,
+             "TemplateProcessingFailed": true, "SignerWhatsappFailed": true}
+
+        Example JSON request: ``{"DocumentCompleted": false}``.
         """
         if not isinstance(preferences, dict):
             raise ValidationError("Notification preferences must be a mapping")

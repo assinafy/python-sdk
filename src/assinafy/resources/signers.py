@@ -3,12 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from ..errors import AssinafyError, ValidationError
-from ..utils import QUERY_PARAM_ALIASES, clean_params, validate_email
+from ..utils import QUERY_PARAM_ALIASES, build_signer_payload, clean_params, validate_email
 from .base import BaseResource
 
 _SIGNATURE_TYPES = frozenset({"signature", "initial"})
 _SIGNATURE_CONTENT_TYPES = frozenset({"image/png", "image/jpeg"})
-_SIGNER_FIELDS = frozenset({"full_name", "email", "whatsapp_phone_number"})
 _CONFIRM_DATA_FIELDS = frozenset(
     {"full_name", "email", "government_id", "whatsapp_phone_number", "has_accepted_terms"}
 )
@@ -47,7 +46,7 @@ class SignerResource(BaseResource):
              "email": "john@example.com", "whatsapp_phone_number": null,
              "has_accepted_terms": false}
         """
-        body = _build_signer_payload(payload, require_full_name=True)
+        body = build_signer_payload(payload, require_full_name=True)
         acc_id = self._account_id(account_id)
         self._logger.info("Creating signer", {"has_email": bool(body.get("email"))})
         signer = self._call_dict(
@@ -66,6 +65,8 @@ class SignerResource(BaseResource):
             {"resource": "signer", "id": "1031ff86...", "full_name": "John Doe",
              "email": "john@example.com", "whatsapp_phone_number": null,
              "has_accepted_terms": false}
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         sid = self._path_id(signer_id, "Signer ID")
@@ -93,6 +94,8 @@ class SignerResource(BaseResource):
                  "has_accepted_terms": false}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 3, "last_page": 1}}
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
@@ -120,10 +123,16 @@ class SignerResource(BaseResource):
             {"full_name": "Johnny Doe", "government_id": "00000000000"}
 
         Returns the updated signer object (``data`` envelope unwrapped).
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "signer", "id": "signer-id", "full_name": "Example Signer",
+             "email": "signer@example.com", "whatsapp_phone_number": null,
+             "has_accepted_terms": false}
         """
         acc_id = self._account_id(account_id)
         sid = self._path_id(signer_id, "Signer ID")
-        body = _build_signer_payload(payload, require_full_name=False)
+        body = build_signer_payload(payload, require_full_name=False)
         if payload.get("government_id") is not None:
             government_id = payload["government_id"]
             if not isinstance(government_id, str) or not government_id.strip():
@@ -164,6 +173,12 @@ class SignerResource(BaseResource):
             {"id": "1031ff86...", "full_name": "John Doe",
              "email": "john@example.com", "whatsapp_phone_number": null,
              "has_accepted_terms": false}
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "signer", "id": "signer-id", "full_name": "Example Signer",
+             "email": "signer@example.com", "whatsapp_phone_number": null,
+             "has_accepted_terms": false}
         """
         validate_email(email)
         target = email.lower()
@@ -193,6 +208,8 @@ class SignerResource(BaseResource):
              "email": "john@example.com", "whatsapp_phone_number": null,
              "has_accepted_terms": true, "has_signature": true,
              "has_initial": false, "is_signature_reusable": false}
+
+        Request body: none.
         """
         query = self._signer_query(signer_access_code)
         return self._call_dict(
@@ -218,10 +235,15 @@ class SignerResource(BaseResource):
         signer_access_code: str,
         verification_code: str,
     ) -> dict[str, Any]:
-        """Backward-compatible alias for :meth:`verify_code`.
+        """``POST /verify`` — backward-compatible alias for :meth:`verify_code`.
 
         The API code may arrive through email or WhatsApp; new callers should
-        prefer the channel-neutral method name.
+        prefer the channel-neutral method name. The query is
+        ``signer-access-code=<access-code>``; JSON request body::
+
+            {"verification-code": "123456"}
+
+        Response: ``{"status": 200, "message": ""}`` (no data payload).
         """
         return self.verify_code(signer_access_code, verification_code)
 
@@ -269,6 +291,12 @@ class SignerResource(BaseResource):
              "government_id": "00000000000"}
 
         Returns the complete signer payload documented on :class:`SignerResource`.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "signer", "id": "signer-id", "full_name": "Example Signer",
+             "email": "signer@example.com", "whatsapp_phone_number": null,
+             "has_accepted_terms": false}
         """
         doc_id = self._path_id(document_id, "Document ID")
         query = self._signer_query(signer_access_code)
@@ -349,6 +377,8 @@ class SignerResource(BaseResource):
 
         ``signature_type`` is ``signature`` or ``initial``. Returns the raw
         image bytes.
+
+        Request body: none.
         """
         _assert_signature_type(signature_type)
         query = self._signer_query(signer_access_code)
@@ -356,33 +386,6 @@ class SignerResource(BaseResource):
             "Failed to download signer signature",
             lambda: self._http.get(f"signature/{signature_type}", params=query),
         )
-
-
-def _build_signer_payload(payload: dict[str, Any], require_full_name: bool) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise ValidationError("Signer payload must be a mapping")
-    allowed = _SIGNER_FIELDS if require_full_name else _SIGNER_FIELDS | {"government_id"}
-    unknown = payload.keys() - allowed
-    if unknown:
-        raise ValidationError(f"Unknown signer fields: {', '.join(sorted(unknown))}")
-    full_name = payload.get("full_name")
-    if require_full_name and (not isinstance(full_name, str) or not full_name.strip()):
-        raise ValidationError("full_name is required")
-    if full_name is not None and (not isinstance(full_name, str) or not full_name.strip()):
-        raise ValidationError("full_name must be a non-empty string")
-    email = payload.get("email")
-    if email is not None:
-        validate_email(email)
-    phone = payload.get("whatsapp_phone_number")
-    if phone is not None and (not isinstance(phone, str) or not phone.strip()):
-        raise ValidationError("whatsapp_phone_number must be a non-empty string")
-    return clean_params(
-        {
-            "full_name": full_name,
-            "email": email,
-            "whatsapp_phone_number": phone,
-        }
-    )
 
 
 def _assert_signature_type(signature_type: str) -> None:

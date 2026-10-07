@@ -82,6 +82,8 @@ class FieldResource(BaseResource):
                  "is_read_only": false, "is_visible": true}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 11, "last_page": 1}}
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
@@ -99,6 +101,8 @@ class FieldResource(BaseResource):
              "type": "text", "regex": null, "is_pre_defined": false,
              "is_active": true, "is_required": true, "is_standard": false,
              "is_read_only": false, "is_visible": true}
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         fid = self._path_id(field_id, "Field ID")
@@ -124,6 +128,13 @@ class FieldResource(BaseResource):
             {"name": "CPF updated"}    # or {"regex": null} to clear the regex
 
         Returns the updated field-definition object (``data`` envelope unwrapped).
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"resource": "field", "id": "1031ff86...", "name": "CPF",
+             "type": "text", "regex": null, "is_pre_defined": false,
+             "is_active": true, "is_required": true, "is_standard": false,
+             "is_read_only": false, "is_visible": true}
         """
         acc_id = self._account_id(account_id)
         fid = self._path_id(field_id, "Field ID")
@@ -222,7 +233,7 @@ class FieldResource(BaseResource):
                 not isinstance(item, dict)
                 or not isinstance(item.get("field_id"), str)
                 or not item["field_id"]
-                or "value" not in item
+                or item.keys() != {"field_id", "value"}
                 for item in values
             )
         ):
@@ -249,6 +260,8 @@ class FieldResource(BaseResource):
              {"type": "cpf", "name": "CPF"},
              {"type": "text", "name": "Texto"},
              {"type": "date", "name": "Data"}]
+
+        Request body: none.
         """
         return self._call_plain_list(
             "Failed to list field types",

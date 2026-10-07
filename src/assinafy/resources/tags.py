@@ -33,6 +33,8 @@ class TagResource(BaseResource):
                  "updated_at": "2026-06-05T16:33:35Z"}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
+
+        Request body: none.
         """
         acc_id = self._account_id(account_id)
         return self._call_list(
@@ -154,7 +156,7 @@ def _build_tag_payload(payload: dict[str, Any], require_name: bool) -> dict[str,
     if "color" in payload:
         color = payload["color"]
         if color is not None:
-            if not isinstance(color, str) or not _HEX_COLOR_RE.match(color):
+            if not isinstance(color, str) or not _HEX_COLOR_RE.fullmatch(color):
                 raise ValidationError(
                     "Tag color must be a 6-character hex value",
                     {"color": color},

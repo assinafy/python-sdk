@@ -156,3 +156,70 @@ class TestAuthenticationResource:
         resource = AuthenticationResource(MockHttp())
         with pytest.raises(ValidationError, match="email"):
             call(resource)  # type: ignore[operator]
+
+
+class _MfaHttp(MockHttp):
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_method = ""
+
+    def request(self, method: str, url: str, **kwargs: object) -> object:
+        self.last_method = method
+        self.last_url = url
+        self.last_kwargs = dict(kwargs)
+        return make_response(make_envelope({"is_mfa_enabled": False}))
+
+
+class TestTwoFactor:
+    def test_verify_mfa_sends_token_and_code(self) -> None:
+        http = MockHttp()
+        AuthenticationResource(http).verify_mfa("mfa-token", "123456")
+        assert http.last_url == "authentication/mfa/verify"
+        assert http.last_kwargs["json"] == {"mfa_token": "mfa-token", "code": "123456"}
+
+    @pytest.mark.parametrize("args", [("", "123456"), ("mfa-token", " ")])
+    def test_verify_mfa_requires_both_values(self, args: tuple[str, str]) -> None:
+        with pytest.raises(ValidationError):
+            AuthenticationResource(MockHttp()).verify_mfa(*args)
+
+    def test_list_methods_and_start_enrollment(self) -> None:
+        http = MockHttp()
+        auth = AuthenticationResource(http)
+        auth.list_mfa_methods()
+        assert http.last_url == "users/self/mfa"
+        auth.start_totp_enrollment()
+        assert (http.last_url, http.last_kwargs["json"]) == ("users/self/mfa/totp", {})
+        auth.start_totp_enrollment("My phone")
+        assert http.last_kwargs["json"] == {"label": "My phone"}
+
+    def test_confirm_enrollment_sends_optional_reauthentication(self) -> None:
+        http = MockHttp()
+        auth = AuthenticationResource(http)
+        auth.confirm_totp_enrollment("m1", "123456")
+        assert http.last_url == "users/self/mfa/totp/confirm"
+        assert http.last_kwargs["json"] == {"id": "m1", "code": "123456"}
+        auth.confirm_totp_enrollment("m1", "123456", password="pw", reauth_code="654321")
+        assert http.last_kwargs["json"] == {
+            "id": "m1",
+            "code": "123456",
+            "password": "pw",
+            "reauth_code": "654321",
+        }
+
+    def test_recovery_codes_and_delete_require_reauthentication(self) -> None:
+        http = _MfaHttp()
+        auth = AuthenticationResource(http)
+        with pytest.raises(ValidationError):
+            auth.regenerate_recovery_codes()
+        with pytest.raises(ValidationError):
+            auth.delete_mfa_method("m1")
+        auth.regenerate_recovery_codes(code="ABCD-EFGH-JKMN")
+        assert http.last_url == "users/self/mfa/recovery-codes"
+        assert http.last_kwargs["json"] == {"code": "ABCD-EFGH-JKMN"}
+        assert auth.delete_mfa_method("m1", password="pw") == {"is_mfa_enabled": False}
+        assert (http.last_method, http.last_url) == ("DELETE", "users/self/mfa/m1")
+        assert http.last_kwargs["json"] == {"password": "pw"}
+
+    def test_delete_rejects_unsafe_method_id(self) -> None:
+        with pytest.raises(ValidationError):
+            AuthenticationResource(_MfaHttp()).delete_mfa_method("../x", password="pw")

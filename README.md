@@ -5,7 +5,7 @@
 SDK oficial em Python para a [API Assinafy](https://api.assinafy.com.br/v1/docs) — plataforma
 brasileira de assinatura eletrônica de documentos.
 
-O SDK é síncrono, construído sobre `httpx`, e cobre as 93 operações publicadas hoje pela Assinafy:
+O SDK é síncrono, construído sobre `httpx`, e oferece os recursos da API Assinafy:
 contas, usuários, autenticação, OAuth, documentos, signatários, documentos do signatário,
 assignments, definições de campo, templates, tags e webhooks. Todo método público nomeia o verbo e o
 caminho que chama e documenta o corpo da requisição e a resposta já desembrulhada; os formatos de
@@ -58,7 +58,8 @@ recurso compartilhados são documentados uma vez e referenciados pelos métodos 
 
 ## Requisitos
 
-- Python 3.10+
+- Python 3.10+; para produção, prefira Python 3.14, com manutenção ativa.
+  Python não possui uma edição LTS; 3.10 permanece aceito por compatibilidade.
 - `httpx` (instalado automaticamente)
 - TLS 1.2 ou superior: o cliente recusa TLS 1.0 e 1.1
 
@@ -79,7 +80,7 @@ client = AssinafyClient(api_key="k_xxx", account_id="acc_xxx")
 client = AssinafyClient(token="jwt_xxx", account_id="acc_xxx")
 ```
 
-O SDK **retém** as duas credenciais nas rotas cuja segurança publicada é pública ou apenas por
+O SDK **omite** as duas credenciais nas rotas cuja segurança publicada é pública ou apenas por
 código de acesso do signatário — assim uma chave de API nunca é enviada a um endpoint que não a
 espera. Toda requisição de produção e sandbox usa
 `User-Agent: Assinafy-Python-SDK/v<versão-do-pacote>`.
@@ -89,6 +90,16 @@ Clientes sem autenticação são permitidos, para endpoints públicos e por cód
 ```python
 public_client = AssinafyClient()
 session = public_client.authentication.login("usuario@example.com", "senha")
+```
+
+Quando o usuário tem autenticação em dois fatores ativada, `login()` devolve um `mfa_token` em vez
+de uma sessão. Conclua o login em até 5 minutos com o código do aplicativo autenticador do usuário
+ou com um dos seus códigos de recuperação:
+
+```python
+if "mfa_token" in session:
+    session = public_client.authentication.verify_mfa(session["mfa_token"], "123456")
+token = session["access_token"]
 ```
 
 Há quatro formas de autenticar, e a escolha depende de *qual* workspace você está operando:
@@ -108,7 +119,7 @@ Há quatro formas de autenticar, e a escolha depende de *qual* workspace você e
 | `token` | str | None | Enviado como `Authorization: Bearer <token>`. |
 | `account_id` | str | None | ID padrão da conta / workspace para métodos com escopo de conta. |
 | `base_url` | str | `https://api.assinafy.com.br/v1` | URL base da API. |
-| `webhook_secret` | str | None | Segredo usado pelo `WebhookVerifier`. |
+| `webhook_secret` | str | None | Segredo de assinatura do endpoint de webhook (`whsec_...`) usado por `client.webhook_verifier`. |
 | `timeout` | float | `30.0` | Timeout da requisição, em segundos. |
 | `logger` | object | no-op | Objeto com métodos `debug/info/warning/error`. |
 
@@ -119,7 +130,7 @@ embuta credenciais (`https://usuario:senha@host/v1`, que substituiria silenciosa
 API por autenticação HTTP Basic) ou que carregue query string ou fragmento (que colaria o caminho da
 requisição no componente errado da URL).
 
-`http://` em texto puro é rejeitado para qualquer host que não seja loopback: `login`,
+`http://` em texto puro é rejeitado para qualquer host que não seja loopback: `login`, `verify_mfa`,
 `social_login`, `change_password`, `reset_password` e `create_api_key` enviam segredos no corpo da
 requisição mesmo quando o cliente não tem `api_key` nem `token`, então a interface de loopback é o
 único lugar onde texto puro é seguro. Aponte servidores locais e de mock para
@@ -176,11 +187,11 @@ nenhum dos dois, ambos assumem `Email`.
 | --- | --- | --- |
 | `Email` *(padrão)* | Código de uso único (OTP) por e-mail, exigido antes de assinar | Gratuito |
 | `Whatsapp` | Código de uso único (OTP) por WhatsApp | Verificação gratuita; a notificação que ela exige custa 0,45 crédito, só em planos pagos |
-| `DigitalCertificate` | O signatário assina com o **próprio certificado ICP-Brasil (A1/A3)**, pela extensão de navegador Web PKI, gerando uma assinatura **PAdES qualificada** | 2 créditos, mais a notificação |
+| `DigitalCertificate` | O signatário assina com o **próprio certificado ICP-Brasil (A1/A3)**, pela extensão de navegador Web PKI, gerando uma assinatura **PAdES qualificada** | 0,5 crédito, mais a notificação |
 
 Combinações permitidas: `Email` → notifica por `Email`; `Whatsapp` → notifica por `Whatsapp`;
 `DigitalCertificate` → notifica por `Email` **ou** `Whatsapp`. Apenas um método de notificação por
-signatário, e uma combinação inválida responde `400`.
+signatário, e uma combinação inválida gera `ValidationError` antes da requisição.
 
 ### Certificado digital ICP-Brasil (A1/A3)
 
@@ -217,11 +228,7 @@ demais para abrir essa trava.
 O endpoint comum de assinatura **rejeita** signatários por certificado: a assinatura deles é
 produzida por um handshake de dois passos com a extensão Web PKI.
 
-```
-POST /v1/signers/certificate/start     -> data.token       (token da operação Web PKI)
-        v  o navegador assina o token com o certificado do signatário
-POST /v1/signers/certificate/complete  -> data.signerName
-```
+O navegador conduz a operação Web PKI com o certificado escolhido pelo signatário.
 
 As duas rotas estão implantadas em produção e no sandbox, mas **não** constam como operações no
 documento OpenAPI, então o contrato de requisição e resposta delas não é publicado e este SDK não as
@@ -258,7 +265,7 @@ if signer is None:
     })
 ```
 
-Um signatário precisa de `full_name` mais pelo menos um canal de contato: `email` ou
+O cadastro exige `full_name`. Para solicitar uma assinatura, forneça o canal escolhido: `email` ou
 `whatsapp_phone_number` no formato E.164 (`+5548999990000`). O canal informado determina como aquele
 signatário pode ser verificado e notificado no estágio 4.
 
@@ -424,7 +431,8 @@ client.assignments.sign(
 )
 ```
 
-Recusar é a alternativa mutuamente exclusiva a assinar:
+Recusar é a alternativa mutuamente exclusiva a assinar: o motivo deve conter de 1 a 2000
+caracteres e não pode conter apenas espaços:
 
 ```python
 client.assignments.decline(
@@ -437,24 +445,37 @@ Um signatário com vários documentos pendentes pode agir em todos de uma vez �
 
 ### 6. Acompanhe o progresso
 
-Webhooks são o canal confiável. Registre a assinatura única do workspace e então interprete as
-entregas:
+Webhooks são o canal confiável. Uma conta pode registrar 1 endpoint de webhook, ou até 3 nos
+planos pagos; todo endpoint ativo inscrito num evento o recebe. Crie um endpoint assinado e guarde o
+segredo junto com os demais segredos da sua aplicação:
 
 ```python
-client.webhooks.register({
+endpoint = client.webhooks.create_endpoint({
     "url": "https://example.com/webhooks/assinafy",
     "email": "ops@example.com",
     "events": ["document_ready", "signer_signed_document", "signer_rejected_document"],
-    "is_active": True,
+    "name": "ERP",
+    "signing_enabled": True,
 })
+secret = client.webhooks.get_endpoint_secret(endpoint["id"])  # "whsec_..."
 ```
 
+Entregas assinadas seguem a especificação [Standard Webhooks](https://www.standardwebhooks.com).
+No receptor, verifique o corpo **bruto** e os headers antes de confiar no evento, e deduplique pelo
+header `webhook-id`:
+
 ```python
+from assinafy import WebhookVerifier
+
+verifier = WebhookVerifier(os.environ["ASSINAFY_WEBHOOK_SECRET"])
 raw_body = request.get_data()
 
-event = client.webhook_verifier.extract_event(raw_body)
-event_type = client.webhook_verifier.get_event_type(event)   # ex.: "document_ready"
-target = client.webhook_verifier.get_event_object(event)      # o documento afetado
+if not verifier.verify_delivery(raw_body, request.headers):
+    return "Assinatura inválida", 401
+
+event = verifier.extract_event(raw_body)
+event_type = verifier.get_event_type(event)   # ex.: "document_ready"
+target = verifier.get_event_object(event)     # o documento afetado
 
 if event_type == "document_ready":
     signed_pdf = client.documents.download(target["id"], "certificated")
@@ -509,16 +530,27 @@ posicionamento de campos e os papéis já vivem no template:
 ```python
 templates = client.templates.list({"search": "NDA"})
 template = client.templates.get(templates["data"][0]["id"])
-role_id = template["roles"][0]["id"]
+roles = template["roles"]
 
 client.documents.estimate_cost_from_template(
     template["id"],
-    [{"role_id": role_id, "verification_method": "Email"}],
+    [{"role_id": role["id"], "verification_method": "Email"} for role in roles],
 )
+
+role_signers = []
+for index, role in enumerate(roles, start=1):
+    role_signer = client.signers.create({
+        "full_name": f"Example Signer {index}",
+        "email": f"signer{index}@example.com",
+    })
+    role_signers.append({
+        "role_id": role["id"], "id": role_signer["id"],
+        "verification_method": "Email", "notification_methods": ["Email"],
+    })
 
 document = client.documents.create_from_template(
     template["id"],
-    [{"role_id": role_id, "id": signer["id"], "verification_method": "Email"}],
+    role_signers,
     {"name": "NDA - João Silva", "message": "Por favor, assine."},
 )
 ```
@@ -543,12 +575,14 @@ qualquer momento.
 | Pode fazer | tudo que a sua conta pode | somente o que o usuário aprovou |
 | O usuário pode desligar | não | sim, a qualquer momento |
 
-> OAuth é servido **apenas em produção** hoje. `https://sandbox.assinafy.com.br/v1/oauth/*`
-> responde `404`.
+O registro de aplicações e o consentimento usam a produção. O sandbox também
+publica os endpoints de token e os metadados do recurso protegido; configure
+o cliente com a URL base do ambiente que receberá o token.
 
 O recurso é uma fábrica, e não um atributo, porque uma aplicação OAuth tem credenciais próprias:
 
 ```python
+import os
 import os
 from assinafy import AssinafyClient
 
@@ -564,8 +598,7 @@ são decisões da sua aplicação, e as seções abaixo dizem exatamente onde el
 
 ### 1. Registre a aplicação
 
-No app da Assinafy (<https://app.assinafy.com.br>) abra **Configurações → Aplicações OAuth → Nova
-aplicação**. Você precisa ser proprietário do workspace que será dono da aplicação, e o plano dele
+No app da Assinafy (<https://app.assinafy.com.br>) abra **Integrações → Apps OAuth → Novo aplicativo**. Você precisa ser proprietário do workspace que será dono da aplicação, e o plano dele
 precisa incluir aplicações OAuth.
 
 | Campo | O que colocar |
@@ -583,11 +616,11 @@ Os escopos:
 
 | Escopo | Permite à sua aplicação |
 | --- | --- |
-| `documents:read` | ler documentos, seus signatários, assignments e atividades |
+| `documents:read` | ler documentos, seus signatários, assignments, atividades e histórico de webhooks |
 | `documents:write` | criar documentos e enviá-los para assinatura |
 | `templates:read` / `templates:write` | ler / alterar templates |
-| `account:read` | ler o perfil, o tema e o logo do workspace |
-| `webhooks:write` | configurar e desativar a assinatura de webhooks do workspace |
+| `account:read` | ler o perfil, o tema, o logo e os endpoints de webhook do workspace |
+| `webhooks:write` | criar, alterar, desativar e excluir os endpoints de webhook do workspace |
 | `openid`, `profile`, `email` | identificar o usuário e ler nome e e-mail |
 | `offline_access` | receber um refresh token, para continuar funcionando com o usuário ausente |
 
@@ -778,6 +811,33 @@ challenge = OAuthResource.code_challenge(verifier)
 state = OAuthResource.create_state()
 ```
 
+### Troca de token para serviços internos
+
+`exchange_token()` implementa o grant RFC 8693 para aplicações confidenciais
+cadastradas pela Assinafy como serviços internos. Aplicações públicas e
+confidenciais comuns recebem `invalid_client`; esse grant não substitui o
+consentimento do marketplace.
+
+```python
+service = client.oauth(
+    os.environ["ASSINAFY_SERVICE_CLIENT_ID"],
+    os.environ["ASSINAFY_SERVICE_CLIENT_SECRET"],
+)
+derived = service.exchange_token(
+    subject_access_token,
+    resource="https://api.assinafy.com.br",
+    scopes=["documents:read"],
+)
+```
+
+O corpo form contém `grant_type`, `client_id`, `client_secret`, `subject_token`,
+`subject_token_type`, `resource` e, quando solicitado, `scope`. O recurso é a
+origem HTTPS da API, sem `/v1`; os escopos devem ser um subconjunto dos escopos
+do token original. A resposta plana contém `access_token`, `issued_token_type`,
+`token_type`, `expires_in` e `scope`, sem refresh token. A validade não excede a
+do token original. O token derivado pertence à aplicação original: revogá-lo
+com as credenciais do serviço retorna sucesso sem revogá-lo.
+
 ### Checklist de OAuth
 
 - Um verificador PKCE e um `state` novos em cada tentativa de conexão
@@ -805,6 +865,14 @@ Todo método abaixo aparece em contexto acima; esta seção é o índice plano.
 client.authentication.login("usuario@example.com", "senha")
 client.authentication.social_login("google", "provider-token", True)
 client.authentication.link_social_login("google", "provider-token")
+client.authentication.verify_mfa("mfa-token-do-login", "123456")
+
+# Métodos de dois fatores do usuário autenticado.
+client.authentication.list_mfa_methods()
+enrollment = client.authentication.start_totp_enrollment("Meu celular")  # segredo + URI otpauth
+client.authentication.confirm_totp_enrollment(enrollment["id"], "123456")  # códigos de recuperação
+client.authentication.regenerate_recovery_codes(password="senha")
+client.authentication.delete_mfa_method(enrollment["id"], code="123456")
 client.authentication.create_api_key("senha")
 client.authentication.get_api_key()
 client.authentication.delete_api_key()
@@ -1055,53 +1123,80 @@ entrada de criação.
 ### Webhooks
 
 ```python
-client.webhooks.get()
 client.webhooks.list_event_types()
+client.webhooks.list_endpoints()
+client.webhooks.get_endpoint(endpoint_id)
 client.webhooks.list_dispatches({"delivered": False, "page": 1, "per_page": 20})
 
-# Chamadas mutantes afetam a assinatura única do workspace ou reenviam um evento
-# existente. Guarde e restaure a assinatura ao redor de mudanças de teste.
-# client.webhooks.register({
+# Chamadas mutantes alteram a entrega real. Guarde e restaure ao redor de mudanças de teste.
+# endpoint = client.webhooks.create_endpoint({
 #     "url": "https://example.com/webhooks/assinafy",
-#     "email": "admin@example.com",
+#     "email": "ops@example.com",
 #     "events": ["document_ready", "signer_signed_document"],
-#     "is_active": True,
+#     "signing_enabled": True,
 # })
-# client.webhooks.inactivate()
+# client.webhooks.update_endpoint(endpoint["id"], {"is_active": False})
+# client.webhooks.get_endpoint_secret(endpoint["id"])
+# client.webhooks.rotate_endpoint_secret(endpoint["id"])
+# client.webhooks.delete_endpoint(endpoint["id"])
 # client.webhooks.retry_dispatch(dispatch_id)
+
+# Chamadas do endpoint mais antigo, para integrações anteriores a múltiplos endpoints.
+client.webhooks.get()
+# client.webhooks.register({"url": "https://example.com/webhooks/assinafy",
+#                           "email": "ops@example.com"})
+# client.webhooks.inactivate()
 ```
 
-Um workspace tem uma única assinatura de webhook. Não existe endpoint `DELETE` documentado — chame
-`inactivate()` para parar a entrega (preserva a URL e os eventos configurados) e `register()` de
-novo para reativar. Como a assinatura é única, `register()` preenche um `events` ou `is_active`
-omitido a partir da assinatura *atual*, para que uma chamada parcial (trocar só a `url`, por
-exemplo) não reative silenciosamente uma assinatura inativada nem colapse uma lista de eventos
-customizada. Passe `events=[]` explicitamente para realmente limpar todos os eventos.
+**Endpoints.** Uma conta pode registrar 1 endpoint, ou até 3 nos planos pagos; criar um além do
+limite levanta `ApiError` com status `403`, e cada endpoint precisa de uma `url` diferente.
+`create_endpoint()` exige `url`, `email` e `events`, e aceita `name`, `is_active` (padrão `True`) e
+`signing_enabled` (padrão `False`). `update_endpoint()` altera apenas os campos enviados. Ativar
+`signing_enabled` gera um segredo quando o endpoint não tem um; desativar descarta o segredo.
+`delete_endpoint()` interrompe a entrega e libera a vaga.
+
+**Endpoint mais antigo.** `get()`, `register()` e `inactivate()` atuam sobre o endpoint mais antigo
+da conta (`register()` cria um quando não existe nenhum). `register()` preenche um `events` ou
+`is_active` omitido a partir desse endpoint, para que uma chamada parcial não o reative
+silenciosamente nem colapse sua lista de eventos; passe `events=[]` para limpar todos os eventos.
+
+**Segredos de assinatura.** `get_endpoint_secret()` devolve o segredo `whsec_...` do endpoint e
+`rotate_endpoint_secret()` o substitui. A rotação vale imediatamente, então atualize o receptor na
+hora. Ambos respondem `400` enquanto a assinatura estiver desativada e não estão disponíveis para
+aplicações OAuth.
+
+**Verificando entregas.** Uma entrega assinada traz os headers `webhook-id`, `webhook-timestamp` e
+`webhook-signature`. `verify_delivery()` calcula o HMAC-SHA256 do Standard Webhooks sobre
+`{webhook-id}.{webhook-timestamp}.{corpo bruto}`, compara em tempo constante com cada entrada `v1`
+de `webhook-signature` e rejeita timestamps a mais de 300 segundos do relógio local (`tolerance=`
+muda a janela). Passe o corpo exatamente como recebido; JSON re-serializado não confere. Cada
+endpoint tem seu próprio segredo, então use um `WebhookVerifier` por endpoint.
+
+```python
+from assinafy import WebhookVerifier
+
+verifier = WebhookVerifier("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw")
+verifier.verify_delivery(raw_body, request.headers)            # True / False
+verifier.verify_delivery(raw_body, request.headers, tolerance=600)
+```
+
+`verify(raw_body, signature)` continua disponível para receptores escritos contra versões
+anteriores; ele compara um HMAC-SHA256 hexadecimal apenas do corpo e não verifica entregas Standard
+Webhooks.
 
 **Interpretando payloads.** Todo corpo de webhook compartilha o envelope documentado: `id`, `event`,
 `message`, `payload` (parâmetros do evento), `origin`, `created_at`, `subject` (a entidade que
-agiu), `object` (a entidade sobre a qual se agiu) e `account_id`.
+agiu), `object` (a entidade sobre a qual se agiu) e `account_id`. Cada endpoint recebe cada evento
+de forma independente, com até 2 tentativas; `webhook-id` é idêntico em toda tentativa ao mesmo
+endpoint.
 
 ```python
-raw_body = request.get_data()
-
-event = client.webhook_verifier.extract_event(raw_body)
-event_type = client.webhook_verifier.get_event_type(event)      # ex.: "document_ready"
-params = client.webhook_verifier.get_event_payload(event)        # parâmetros do evento
-subject = client.webhook_verifier.get_event_subject(event)       # autor (+ "type")
-target = client.webhook_verifier.get_event_object(event)         # alvo (+ "type")
+event = verifier.extract_event(raw_body)
+event_type = verifier.get_event_type(event)      # ex.: "document_ready"
+params = verifier.get_event_payload(event)       # parâmetros do evento
+subject = verifier.get_event_subject(event)      # autor (+ "type")
+target = verifier.get_event_object(event)        # alvo (+ "type")
 # get_event_data(event) é um alias retrocompatível de get_event_object(event)
-```
-
-**Verificação de assinatura.** O Contrato de Entrega documentado especifica o método HTTP, o
-`Content-Type`, as retentativas e o comportamento do circuit breaker, mas **não define nenhum header
-de assinatura nem esquema de segredo compartilhado**. `verify()` existe apenas para contas que
-combinaram separadamente um esquema HMAC-SHA256 com a Assinafy:
-
-```python
-signature = request.headers.get("X-Assinafy-Signature", "")
-if not client.webhook_verifier.verify(raw_body, signature):
-    return "Assinatura inválida", 401
 ```
 
 ## Parâmetros de consulta
@@ -1113,7 +1208,7 @@ Valores `None` são descartados em vez de enviados como parâmetros vazios.
 ## Formatos de resposta
 
 Endpoints JSON normalmente devolvem `{"status": 200, "message": "", "data": ...}`; o SDK devolve
-`data`. As cinco chamadas de OAuth são a exceção documentada: RFC 6749, RFC 8414 e OpenID Connect
+`data`. Os endpoints de OAuth são a exceção documentada: RFC 6749, RFC 8414 e OpenID Connect
 todos exigem um corpo plano, então `exchange_code`, `refresh`, `userinfo` e os dois métodos de
 descoberta devolvem JSON de nível superior, e `revoke` devolve `None`.
 
@@ -1211,6 +1306,12 @@ Os formatos estáveis de nível superior de cada recurso são:
     "events": ["document_ready"], "is_active": true,
     "url": "https://example.com/webhooks/assinafy", "email": "ops@example.com",
     "updated_at": "2026-06-03T03:54:17Z"
+  },
+  "WebhookEndpoint": {
+    "id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
+    "url": "https://example.com/webhooks/assinafy", "email": "ops@example.com",
+    "events": ["document_ready"], "is_active": true, "signing_enabled": true,
+    "created_at": "2026-10-01T12:00:00Z", "updated_at": "2026-10-01T12:00:00Z"
   }
 }
 ```
@@ -1234,13 +1335,13 @@ from assinafy import ApiError, AssinafyError, NetworkError, ValidationError
 try:
     client.documents.upload({"file_path": "./contrato.pdf"})
 except ValidationError as err:      # rejeitado antes de a requisição ser enviada
-    print("Validação falhou:", err.errors)
+    print("Validação falhou")
 except ApiError as err:             # a API devolveu uma resposta não-2xx
-    print(f"Erro da API {err.status_code}:", err.response_data)
+    print(f"Erro da API {err.status_code}")
 except NetworkError as err:         # nenhuma resposta chegou (DNS, TLS, timeout)
     print("Erro de rede:", err)
 except AssinafyError as err:        # formato de resposta inesperado, etc.
-    print("Erro do SDK:", err, err.context)
+    print("Erro do SDK")
 ```
 
 ## Ambientes
@@ -1250,9 +1351,11 @@ except AssinafyError as err:        # formato de resposta inesperado, etc.
 | Produção | `https://api.assinafy.com.br/v1` |
 | Sandbox | `https://sandbox.assinafy.com.br/v1` |
 
-O sandbox é gratuito e espelha a produção para testar a integração de ponta a ponta — com duas
-exceções: as rotas de OAuth existem apenas em produção, e o certificado digital depende de um
-certificado ICP-Brasil real no dispositivo do signatário.
+O sandbox permite testar a integração com recursos descartáveis. Mensagens de WhatsApp
+são simuladas nesse ambiente. O registro e o consentimento OAuth usam o servidor de
+autorização de produção; os endpoints de token e os metadados também existem no sandbox.
+A assinatura A1/A3 exige um certificado ICP-Brasil real no dispositivo do signatário
+e o fluxo de assinatura hospedado pela Assinafy.
 
 ## Desenvolvimento
 
@@ -1293,9 +1396,11 @@ O script recusa produção e URLs base ausentes, e nunca imprime um payload ou o
 variável de ambiente. Ele confere os endpoints de leitura, o CRUD de signatário/tag/campo (incluindo
 remover o regex de um campo), a busca e a estimativa de template, o upload de documento, a marcação
 por tags, o polling de `wait_until_ready`, a estimativa de custo e a limpeza de ponta a ponta. Todo
-ID de recurso devolvido com sucesso é capturado e sua limpeza é tentada num bloco `finally`. A
+ID de recurso devolvido com sucesso é capturado e sua limpeza é tentada num bloco `finally`. Na limpeza, somente respostas HTTP 429 são repetidas,
+com até três esperas de 20 segundos; outras falhas são reportadas. A
 mutação de webhook é ignorada a menos que um endpoint de teste explícito seja fornecido; quando
-habilitada, a assinatura única anterior do workspace é restaurada. O opt-in de notificações envia
+habilitada, a configuração anterior do endpoint mais antigo é restaurada. A listagem de endpoints
+e a de métodos de dois fatores são etapas somente leitura. O opt-in de notificações envia
 e-mails reais no sandbox e pode consumir créditos; omita-o para cobertura apenas de CRUD. As
 mutações de conta e de preferências de usuário são opt-ins separados e são restauradas no `finally`.
 

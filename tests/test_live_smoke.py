@@ -372,7 +372,8 @@ def test_main_uses_env_emails_cleans_every_resource_and_closes(
     call_names = [name for name, _, _ in client.calls]
     assert "webhooks.register" not in call_names
     assert "webhooks.inactivate" not in call_names
-    assert "documents.wait_until_ready" in call_names
+    assert call_names.index("documents.upload") < call_names.index("documents.wait_until_ready")
+    assert call_names.index("documents.wait_until_ready") < call_names.index("documents.get")
     assert "documents.rename" in call_names
     assert call_names[-5:] == [
         "documents.delete",
@@ -430,7 +431,7 @@ def test_notification_opt_in_exercises_template_document_flow(
             "data": [
                 {
                     "id": "PRIVATE_TEMPLATE_ID",
-                    "roles": [{"id": "PRIVATE_ROLE_ID"}],
+                    "roles": [{"id": "PRIVATE_ROLE_ID"}, {"id": "PRIVATE_SECOND_ROLE_ID"}],
                 }
             ]
         }
@@ -440,6 +441,15 @@ def test_notification_opt_in_exercises_template_document_flow(
     assert live_smoke.main() == 0
     names = [name for name, _, _ in client.calls]
     assert "documents.create_from_template" in names
+    estimates = [
+        args for name, args, _ in client.calls if name == "documents.estimate_cost_from_template"
+    ]
+    assert estimates == [
+        (
+            "PRIVATE_TEMPLATE_ID",
+            [{"role_id": "PRIVATE_ROLE_ID"}, {"role_id": "PRIVATE_SECOND_ROLE_ID"}],
+        )
+    ]
     assert "documents.wait_until_ready" in names
     delete_ids = [args[0] for name, args, _ in client.calls if name == "documents.delete"]
     assert delete_ids == ["PRIVATE_TEMPLATE_DOCUMENT_ID", "PRIVATE_DOCUMENT_ID"]
@@ -543,7 +553,7 @@ def test_unexpected_failure_still_runs_all_cleanup(
     def fail_after_creates(templates: Any) -> None:
         raise RuntimeError("PRIVATE_LATE_FAILURE")
 
-    monkeypatch.setattr(live_smoke, "_first_template_role_id", fail_after_creates)
+    monkeypatch.setattr(live_smoke, "_template_role_ids", fail_after_creates)
 
     assert live_smoke.main() == 1
     assert client.closed is True
@@ -555,3 +565,39 @@ def test_unexpected_failure_still_runs_all_cleanup(
         "signers.delete",
     ]
     assert "PRIVATE_LATE_FAILURE" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", [429, 500])
+def test_cleanup_retries_only_rate_limited_calls(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    attempts = []
+    delays = []
+    failures: list[str] = []
+    monkeypatch.setattr(live_smoke.time, "sleep", delays.append)
+
+    def remove() -> None:
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise ApiError("PRIVATE_EXCEPTION_VALUE", status)
+
+    live_smoke.cleanup_step("disposable cleanup", remove, failures)
+    assert len(attempts) == (2 if status == 429 else 1)
+    assert delays == ([20] if status == 429 else [])
+    assert failures == ([] if status == 429 else ["disposable cleanup"])
+
+
+def test_cleanup_rate_limit_retry_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = []
+    delays = []
+    failures: list[str] = []
+    monkeypatch.setattr(live_smoke.time, "sleep", delays.append)
+
+    def remove() -> None:
+        attempts.append(True)
+        raise ApiError("PRIVATE_EXCEPTION_VALUE", 429)
+
+    live_smoke.cleanup_step("disposable cleanup", remove, failures)
+    assert len(attempts) == 4
+    assert delays == [20, 20, 20]
+    assert failures == ["disposable cleanup"]

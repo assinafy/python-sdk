@@ -48,7 +48,9 @@ OAuthScope = Literal[
 ]
 OAUTH_SCOPES = frozenset(get_args(OAuthScope))
 
-OAuthGrantType = Literal["authorization_code", "refresh_token"]
+OAuthGrantType = Literal[
+    "authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"
+]
 
 OAuthTokenTypeHint = Literal["access_token", "refresh_token"]
 
