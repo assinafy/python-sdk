@@ -49,7 +49,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/assinafy/python-sdk"
+Homepage = "https://www.assinafy.com.br"
 Repository = "https://github.com/assinafy/python-sdk"
 Issues = "https://github.com/assinafy/python-sdk/issues"
 Changelog = "https://github.com/assinafy/python-sdk/blob/main/CHANGELOG.md"
