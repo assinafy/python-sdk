@@ -169,7 +169,14 @@ class TestVerifyDelivery:
         assert not verifier.verify_delivery(_SW_BODY, _SW_HEADERS)
         assert verifier.verify_delivery(_SW_BODY, _SW_HEADERS, tolerance=600)
 
-    @pytest.mark.parametrize("tolerance", [0, -1, float("inf"), float("nan")])
+    @pytest.mark.parametrize("tolerance", [0, -1, float("inf"), float("nan"), True])
     def test_rejects_invalid_tolerance(self, tolerance: float) -> None:
         with pytest.raises(ValueError):
             WebhookVerifier(_SW_SECRET).verify_delivery(_SW_BODY, _SW_HEADERS, tolerance=tolerance)
+
+    def test_rejects_future_timestamps_outside_tolerance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        verifier = WebhookVerifier(_SW_SECRET)
+        monkeypatch.setattr("assinafy.support.webhook_verifier.time.time", lambda: 1614265330 - 301)
+        assert not verifier.verify_delivery(_SW_BODY, _SW_HEADERS)

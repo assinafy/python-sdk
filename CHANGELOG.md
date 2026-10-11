@@ -2,6 +2,21 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.11.0] - 2026-10-11
+
+### Added
+
+- `signers.create()` accepts `government_id` (CPF or CNPJ), so a signer who will use the `DigitalCertificate` verification method can be created in one call.
+- `fields.validate()` rejects a missing `value` before sending the request.
+
+### Changed
+
+- `documents.send_token()` documents the published `{channel, recipient}` body as the primary form; the `{email}` body remains accepted as the legacy form. The example response now matches the published schema.
+- `documents.append_tags()` accepts an empty list, as the published schema allows.
+- `oauth.start_authorization()` validates a caller-supplied `resource` as an HTTPS origin, matching the issuer and token-exchange validation.
+- `WebhookVerifier.verify_delivery()` rejects a boolean `tolerance`.
+- Signer response examples include the nullable `government_id` field, and the `templates.get()` docstring notes that the route is not published in the OpenAPI document.
+
 ## [1.10.0] - 2026-10-07
 
 ### Added

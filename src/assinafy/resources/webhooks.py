@@ -191,8 +191,9 @@ class WebhookResource(BaseResource):
 
         ``params`` accepts ``event`` (an event-type name), ``delivered``
         (Python ``True``/``False``, sent as the documented ``true``/``false``
-        strings), ``from`` / ``to`` (Unix-second timestamps), and standard
-        pagination keys (``page``, ``per_page``). Returns
+        strings), ``endpoint_id`` (restrict to one endpoint), ``from`` / ``to``
+        (Unix-second timestamps), and standard pagination keys (``page``,
+        ``per_page``, sent as ``per-page``). Returns
         ``{"data": [...], "meta": {...}}``.
 
         Example response (``data`` envelope unwrapped, ``meta`` from

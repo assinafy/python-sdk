@@ -181,12 +181,10 @@ def validate_wait_options(timeout: float, poll_interval: float) -> None:
 
 
 def build_signer_payload(payload: dict[str, Any], require_full_name: bool) -> dict[str, Any]:
-    """Build shared signer contact fields, omitting None; update callers add government_id."""
+    """Build shared signer contact fields, omitting None."""
     if not isinstance(payload, dict):
         raise ValidationError("Signer payload must be a mapping")
-    allowed = {"full_name", "email", "whatsapp_phone_number"}
-    if not require_full_name:
-        allowed.add("government_id")
+    allowed = {"full_name", "email", "whatsapp_phone_number", "government_id"}
     unknown = payload.keys() - allowed
     if unknown:
         raise ValidationError(f"Unknown signer fields: {', '.join(sorted(unknown))}")
@@ -201,11 +199,17 @@ def build_signer_payload(payload: dict[str, Any], require_full_name: bool) -> di
     phone = payload.get("whatsapp_phone_number")
     if phone is not None and (not isinstance(phone, str) or not phone.strip()):
         raise ValidationError("whatsapp_phone_number must be a non-empty string")
+    government_id = payload.get("government_id")
+    if government_id is not None and (
+        not isinstance(government_id, str) or not government_id.strip()
+    ):
+        raise ValidationError("government_id must be a non-empty string")
     return clean_params(
         {
             "full_name": full_name,
             "email": email,
             "whatsapp_phone_number": phone,
+            "government_id": government_id,
         }
     )
 

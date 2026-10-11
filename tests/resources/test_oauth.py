@@ -110,6 +110,19 @@ class TestStartAuthorization:
         client.close()
 
     @pytest.mark.parametrize(
+        "resource",
+        [
+            "http://api.example.test",
+            "https://api.example.test/path",
+            "https://api.example.test?query=1",
+            "not-a-url",
+        ],
+    )
+    def test_resource_must_be_an_https_origin(self, resource: str) -> None:
+        with pytest.raises(ValidationError):
+            _oauth().start_authorization(CALLBACK, ["documents:read"], resource=resource)
+
+    @pytest.mark.parametrize(
         "redirect_uri",
         [
             "http://myapp.example/callback",

@@ -98,8 +98,8 @@ class OAuthResource(BaseResource):
             not isinstance(client_secret, str) or not client_secret.strip()
         ):
             raise ValidationError("OAuth client_secret must be a non-empty string when supplied")
-        self._client_id = client_id
-        self._client_secret = client_secret
+        self._client_id = client_id.strip()
+        self._client_secret = client_secret.strip() if client_secret is not None else None
 
     def __repr__(self) -> str:
         """Identify the client without ever rendering its secret."""
@@ -212,7 +212,7 @@ class OAuthResource(BaseResource):
         )
         resolved_state = self.create_state() if state is None else self._require_id(state, "State")
         resolved_resource = (
-            self._api_origin() if resource is None else self._require_id(resource, "Resource")
+            self._api_origin() if resource is None else _https_origin(resource, "Resource")
         )
 
         query: dict[str, str] = {

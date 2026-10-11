@@ -52,11 +52,24 @@ class TestSignerResource:
     def test_create_rejects_unknown_or_invalid_fields(self) -> None:
         resource = SignerResource(MockHttp(), "acc")
         with pytest.raises(ValidationError, match="Unknown signer fields"):
-            resource.create({"full_name": "Test", "government_id": "123"})
+            resource.create({"full_name": "Test", "nickname": "johnny"})
         with pytest.raises(ValidationError, match="full_name"):
             resource.create({"full_name": 123})  # type: ignore[dict-item]
         with pytest.raises(ValidationError, match="whatsapp_phone_number"):
             resource.create({"full_name": "Test", "whatsapp_phone_number": 123})
+        with pytest.raises(ValidationError, match="government_id"):
+            resource.create({"full_name": "Test", "government_id": "  "})
+
+    def test_create_forwards_government_id(self) -> None:
+        http = MockHttp()
+        resource = SignerResource(http, "acc")
+
+        resource.create({"full_name": "Test", "government_id": "00000000000"})
+
+        assert http.last_kwargs["json"] == {
+            "full_name": "Test",
+            "government_id": "00000000000",
+        }
 
     def test_create_requires_account_id(self) -> None:
         resource = SignerResource(MockHttp())
@@ -273,9 +286,9 @@ class TestSignerResource:
         http = MockHttp()
         resource = SignerResource(http, "acc")
 
-        resource.update("signer-1", {"government_id": "39053344705"})
+        resource.update("signer-1", {"government_id": "00000000000"})
 
-        assert http.last_kwargs["json"] == {"government_id": "39053344705"}
+        assert http.last_kwargs["json"] == {"government_id": "00000000000"}
 
     def test_confirm_data_uses_documented_endpoint(self) -> None:
         http = MockHttp()

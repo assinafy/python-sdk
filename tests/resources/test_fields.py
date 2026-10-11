@@ -100,6 +100,12 @@ class TestFieldResource:
         assert http.last_kwargs["params"] == {"signer-access-code": "code"}
         assert http.last_kwargs["json"] == {"value": "123"}
 
+    def test_validate_requires_a_value(self) -> None:
+        resource = FieldResource(MockHttp(), "acc")
+
+        with pytest.raises(ValidationError, match="value is required"):
+            resource.validate("field-1", None)
+
     def test_validate_multiple_posts_documented_endpoint(self) -> None:
         class ListHttp(MockHttp):
             def post(self, url: str, **kwargs: object) -> object:

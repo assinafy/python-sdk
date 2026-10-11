@@ -132,6 +132,7 @@ class TestDocumentResource:
 
         resource.list({"page": 1, "per_page": 20})
 
+        assert http.last_url == "accounts/acc/documents"
         assert http.last_kwargs["params"] == {"page": 1, "per-page": 20}
 
     def test_rename_patches_document_with_name_body(self) -> None:
@@ -220,11 +221,14 @@ class TestDocumentResource:
         resource.detach_tag("doc-1", "tag-1")
         assert http.last_url == "accounts/acc/documents/doc-1/tags/tag-1"
 
-    def test_document_tag_append_requires_at_least_one_tag(self) -> None:
-        resource = DocumentResource(MockHttp(), "acc")
+    def test_document_tag_append_allows_an_empty_list(self) -> None:
+        http = MockHttp()
+        resource = DocumentResource(http, "acc")
 
-        with pytest.raises(ValidationError, match="At least one tag ID"):
-            resource.append_tags("doc-1", [])
+        resource.append_tags("doc-1", [])
+
+        assert http.last_url == "accounts/acc/documents/doc-1/tags"
+        assert http.last_kwargs["json"] == {"tags": []}
 
     def test_document_binary_and_detail_methods_use_documented_endpoints(self) -> None:
         class BinaryHttp(MockHttp):

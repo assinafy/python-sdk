@@ -576,18 +576,27 @@ class DocumentResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /public/documents/{document_id}/send-token``.
 
-        The request body is optional and accepts ``email``. The
-        ``recipient`` + ``channel`` shape (``email`` or ``whatsapp``) is also
-        supported. Do not mix the two forms. A successful no-data envelope is
-        returned.
+        The published request body is ``channel`` + ``recipient``, where the
+        document lists ``email`` as the only supported channel. The legacy
+        ``{"email": ...}`` shape is also accepted — do not mix the two forms.
+        ``channel="whatsapp"`` is accepted for earlier deployments even though
+        the published document does not list it. When neither form is given an
+        empty body is sent, as earlier deployments answered that shape.
 
-        Current request body (JSON)::
+        Request body (JSON)::
+
+            {"channel": "email", "recipient": "signer@example.com"}
+
+        Legacy request body (JSON)::
 
             {"email": "signer@example.com"}
 
-        Backward-compatible request body (JSON)::
+        Example response (``data`` envelope unwrapped)::
 
-            {"recipient": "signer@example.com", "channel": "email"}
+            {"document": {"resource": "document", "id": "a94f...",
+                          "name": "Contract.pdf", "page_count": "3",
+                          "created_by": {"id": "c81e...", "name": "Jane Doe"}},
+             "channel": "email", "recipient": "signer@example.com"}
         """
         doc_id = self._path_id(document_id, "Document ID")
         if email is not None and (recipient is not None or channel is not None):
@@ -676,8 +685,9 @@ class DocumentResource(BaseResource):
     ) -> builtins.list[dict[str, Any]]:
         """``POST /accounts/{account_id}/documents/{document_id}/tags`` — add tags.
 
-        Adds ``tags`` (a non-empty list of tag IDs) to the document without
-        removing existing ones.
+        Adds ``tags`` (a list of tag IDs) to the document without
+        removing existing ones. The published schema allows an empty list,
+        which leaves the document unchanged.
 
         Example request body (JSON)::
 
@@ -693,7 +703,7 @@ class DocumentResource(BaseResource):
         """
         acc_id = self._account_id(account_id)
         doc_id = self._path_id(document_id, "Document ID")
-        body = {"tags": _validate_tag_ids(tags, allow_empty=False)}
+        body = {"tags": _validate_tag_ids(tags, allow_empty=True)}
         return self._call_plain_list(
             "Failed to append document tags",
             lambda: self._http.post(

@@ -25,15 +25,16 @@ class TemplateResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /accounts/{account_id}/templates`` — list workspace templates.
 
-        ``params`` accepts the published ``page``, ``per_page``, and ``search``
-        keys. Other keys are forwarded for compatibility with deployments that
-        implement the API's global list-query options.
+        ``params`` accepts the published ``page``, ``per_page`` (sent as
+        ``per-page``), and ``search`` keys. Other keys are forwarded for
+        compatibility with deployments that implement the API's global
+        list-query options.
 
         Example response (``data`` envelope unwrapped, ``meta`` from
         ``x-pagination-*`` headers)::
 
             {"data": [
-                {"id": "fa7f3e52...", "name": "nda.pdf",
+                {"resource": "template", "id": "fa7f3e52...", "name": "nda.pdf",
                  "document_name": "nda.pdf", "message": null, "status": "ready",
                  "pages": [{"id": "fa7f3e52...", "number": 1, "height": 2100,
                             "width": 1275, "download_url": "https://api.example/page",
@@ -64,9 +65,11 @@ class TemplateResource(BaseResource):
     def get(self, template_id: str, account_id: str | None = None) -> dict[str, Any]:
         """``GET /accounts/{account_id}/templates/{template_id}`` — fetch one template.
 
-        Unlike :meth:`list`, the single-template response additionally includes
-        ``default_document_tags`` (tags auto-applied to documents created from
-        this template).
+        This route is not published in the OpenAPI document; it is deployed on
+        the live API and the published schema text describes a single-template
+        response, so the SDK keeps it. Unlike :meth:`list`, the single-template
+        response additionally includes ``default_document_tags`` (tags
+        auto-applied to documents created from this template).
 
         Example response (``data`` envelope unwrapped)::
 

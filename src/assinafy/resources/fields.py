@@ -180,8 +180,12 @@ class FieldResource(BaseResource):
         """``POST /accounts/{account_id}/fields/{field_id}/validate``.
 
         Validates a single value against a field definition's rules. Pass
-        ``signer_access_code`` when validating in the signer flow; omit it when
-        validating from an authenticated backend.
+        ``signer_access_code`` (sent as ``signer-access-code``) when validating
+        in the signer flow; omit it when validating from an authenticated
+        backend. The published document does not list that parameter for this
+        endpoint; the operation prose describes the signer-flow use, so the SDK
+        forwards it. ``value`` is required by the published schema and may be
+        of any JSON type, but not ``None``.
 
         Example request body (JSON)::
 
@@ -192,6 +196,8 @@ class FieldResource(BaseResource):
 
             {"type": "text", "success": true, "error_message": ""}
         """
+        if value is None:
+            raise ValidationError("value is required")
         acc_id = self._account_id(account_id)
         fid = self._path_id(field_id, "Field ID")
         return self._call_dict(
@@ -215,7 +221,9 @@ class FieldResource(BaseResource):
         """``POST /accounts/{account_id}/fields/validate-multiple``.
 
         ``values`` is a list of ``{field_id, value}`` objects (sent as the raw
-        JSON request body).
+        JSON request body). ``signer_access_code`` (sent as
+        ``signer-access-code``) is forwarded for the signer flow; the
+        published document does not list that parameter for this endpoint.
 
         Example request body (JSON array)::
 

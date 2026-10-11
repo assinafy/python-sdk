@@ -81,7 +81,12 @@ class WebhookVerifier:
         does not verify. Returns ``False`` when no secret is configured, the
         secret is not valid base64, or any header is missing or malformed.
         """
-        if not isinstance(tolerance, int | float) or not math.isfinite(tolerance) or tolerance <= 0:
+        if (
+            isinstance(tolerance, bool)
+            or not isinstance(tolerance, int | float)
+            or not math.isfinite(tolerance)
+            or tolerance <= 0
+        ):
             raise ValueError("tolerance must be a finite positive number of seconds")
         if not self._webhook_secret:
             return False

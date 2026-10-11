@@ -149,6 +149,8 @@ class TestAssinafyClient:
         http.get("https://other.example.test/accounts/acc")
         http.get("https://api.assinafy.com.br/outside-v1")
         http.post("documents/doc/assignments/estimate-cost")
+        http.put("documents/doc/assignments/assignment/signers/signer/resend")
+        http.put("documents/doc/assignments/assignment/reset-expiration")
         http.get("accounts/acc")
 
         credential_header = "X-Api-Key" if "api_key" in credentials else "Authorization"
@@ -157,6 +159,8 @@ class TestAssinafyClient:
             assert request.headers["User-Agent"] == f"Assinafy-Python-SDK/v{__version__}"
         assert credential_header not in requests[len(public_routes)].headers
         assert credential_header not in requests[len(public_routes) + 1].headers
+        assert credential_header in requests[-4].headers
+        assert credential_header in requests[-3].headers
         assert credential_header in requests[-2].headers
         assert credential_header in requests[-1].headers
         client.close()

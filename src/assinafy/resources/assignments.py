@@ -443,7 +443,10 @@ class AssignmentResource(BaseResource):
 
         The published body accepts optional ``method``, ``entries``, and signer
         pricing descriptors containing only ``verification_method`` and
-        ``notification_methods``. Legacy signer IDs are accepted as input but
+        ``notification_methods``. The document marks ``signers`` required only
+        for ``virtual``, but the API prices per signer in both modes and
+        rejects a signer-less estimate with ``400``, so the SDK requires at
+        least one signer locally. Legacy signer IDs are accepted as input but
         are omitted from the wire body because they are not part of the current
         estimate contract. Collect estimate ``entries`` are objects with no
         published member schema, so their keys are forwarded; the placement

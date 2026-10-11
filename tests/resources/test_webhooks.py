@@ -116,13 +116,17 @@ class TestWebhookResource:
         assert captured_body[0]["events"] == []
 
     def test_get_returns_unwrapped_subscription(self) -> None:
+        captured_url: list[str] = []
+
         class MockHttp:
             def get(self, url: str, **kwargs: object) -> object:
+                captured_url.append(url)
                 return make_response(make_envelope({"url": "https://example.com/hook"}))
 
         resource = WebhookResource(MockHttp(), "acc")
         result = resource.get()
         assert result == {"url": "https://example.com/hook"}
+        assert captured_url[0] == "accounts/acc/webhooks/subscriptions"
 
     def test_get_returns_none_on_404(self) -> None:
         class NotFoundResponse(MockResponse):

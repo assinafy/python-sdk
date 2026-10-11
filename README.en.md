@@ -200,7 +200,7 @@ certificate (an e-CPF, or an e-CNPJ naming them as legal representative); a CNPJ
 requires the company's e-CNPJ.
 
 ```python
-signer = client.signers.update(signer["id"], {"government_id": "39053344705"})
+signer = client.signers.update(signer["id"], {"government_id": "00000000000"})
 
 estimate = client.assignments.estimate_cost(document["id"], {
     "method": "virtual",
@@ -955,8 +955,8 @@ client.documents.download_page(doc["id"], page_id)
 client.documents.verify(signature_hash)
 client.documents.public_info(doc["id"])
 # Choose one form; each call sends a real token.
-client.documents.send_token(doc["id"], email="signer@example.com")
-# Legacy body alternative: client.documents.send_token(doc["id"], "signer@example.com", "email")
+client.documents.send_token(doc["id"], "signer@example.com", "email")
+# Legacy body alternative: client.documents.send_token(doc["id"], email="signer@example.com")
 client.documents.list_tags(doc["id"])
 client.documents.replace_tags(doc["id"], [tag_id_a, tag_id_b])
 client.documents.append_tags(doc["id"], [tag_id_c])
@@ -1024,9 +1024,9 @@ client.signers.find_by_email("john@example.com")
 client.signers.delete(signer["id"])
 ```
 
-`create()` takes `full_name`, `email` and `whatsapp_phone_number`.
-`government_id` — the CPF or CNPJ the digital certificate requires — exists only
-on `update()`, so create the signer and then complete their record.
+`create()` takes `full_name`, `email`, `whatsapp_phone_number` and
+`government_id` (the CPF or CNPJ the digital certificate requires), so the
+signer's record can be complete from the start.
 
 Signer-access-code endpoints:
 

@@ -201,7 +201,7 @@ exige o certificado daquela pessoa (e-CPF, ou e-CNPJ que a nomeie como represent
 exige um e-CNPJ da empresa.
 
 ```python
-signatario = client.signers.update(signer_id, {"government_id": "39053344705"})
+signatario = client.signers.update(signer_id, {"government_id": "00000000000"})
 
 custo = client.assignments.estimate_cost(document_id, {
     "method": "virtual",
@@ -413,7 +413,7 @@ client.signers.confirm_data(
     document["id"],
     signer_access_code,
     {"full_name": "Signatário de Exemplo", "email": "signatario@example.com",
-     "government_id": "39053344705"},
+     "government_id": "00000000000"},
 )
 ```
 
@@ -942,9 +942,9 @@ client.documents.download_page(doc["id"], page_id)
 client.documents.verify(signature_hash)
 client.documents.public_info(doc["id"])
 # Escolha um formato; cada chamada envia um token real.
-client.documents.send_token(doc["id"], email="signatario@example.com")
+client.documents.send_token(doc["id"], "signatario@example.com", "email")
 # Corpo legado alternativo:
-# client.documents.send_token(doc["id"], "signatario@example.com", "email")
+# client.documents.send_token(doc["id"], email="signatario@example.com")
 client.documents.list_tags(doc["id"])
 client.documents.replace_tags(doc["id"], [tag_id_a, tag_id_b])
 client.documents.append_tags(doc["id"], [tag_id_c])
@@ -1011,9 +1011,8 @@ client.signers.find_by_email("joao@example.com")
 client.signers.delete(signer["id"])
 ```
 
-`create()` aceita `full_name`, `email` e `whatsapp_phone_number`. `government_id` (o CPF ou CNPJ que
-o certificado digital exige) só existe em `update()`, então crie o signatário e depois complete o
-documento dele.
+`create()` aceita `full_name`, `email`, `whatsapp_phone_number` e `government_id` (o CPF ou CNPJ
+que o certificado digital exige), então o documento do signatário já pode nascer completo.
 
 Endpoints por código de acesso do signatário:
 
@@ -1026,7 +1025,7 @@ client.signers.confirm_data(
     document_id,
     signer_access_code,
     {"full_name": "João Silva", "email": "joao@example.com",
-     "government_id": "39053344705"},
+     "government_id": "00000000000"},
 )
 client.signers.upload_signature(signer_access_code, png_bytes, "signature")
 # Alternativa: client.signers.upload_signature(signer_access_code, png_bytes, reuse=True)

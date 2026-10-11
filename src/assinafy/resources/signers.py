@@ -26,7 +26,7 @@ class SignerResource(BaseResource):
 
         {"resource": "signer", "id": "signer-id", "full_name": "Example Signer",
          "email": "signer@example.com", "whatsapp_phone_number": null,
-         "has_accepted_terms": false}
+         "government_id": null, "has_accepted_terms": false}
     """
 
     def create(self, payload: dict[str, Any], account_id: str | None = None) -> dict[str, Any]:
@@ -34,7 +34,9 @@ class SignerResource(BaseResource):
 
         ``payload`` requires ``full_name``. Include ``email`` and/or
         ``whatsapp_phone_number`` (E.164, e.g. ``+5548999990000``) depending on
-        the verification/notification channels you plan to use.
+        the verification/notification channels you plan to use, and
+        ``government_id`` (CPF or CNPJ) when the signer will use the
+        ``DigitalCertificate`` verification method.
 
         Example request body (JSON)::
 
@@ -44,7 +46,7 @@ class SignerResource(BaseResource):
 
             {"resource": "signer", "id": "1031ff86...", "full_name": "John Doe",
              "email": "john@example.com", "whatsapp_phone_number": null,
-             "has_accepted_terms": false}
+             "government_id": null, "has_accepted_terms": false}
         """
         body = build_signer_payload(payload, require_full_name=True)
         acc_id = self._account_id(account_id)
@@ -64,7 +66,7 @@ class SignerResource(BaseResource):
 
             {"resource": "signer", "id": "1031ff86...", "full_name": "John Doe",
              "email": "john@example.com", "whatsapp_phone_number": null,
-             "has_accepted_terms": false}
+             "government_id": null, "has_accepted_terms": false}
 
         Request body: none.
         """
@@ -91,7 +93,7 @@ class SignerResource(BaseResource):
             {"data": [
                 {"id": "19e6b92e...", "full_name": "John Doe",
                  "email": "john@example.com", "whatsapp_phone_number": null,
-                 "has_accepted_terms": false}
+                 "government_id": null, "has_accepted_terms": false}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 3, "last_page": 1}}
 
@@ -133,11 +135,6 @@ class SignerResource(BaseResource):
         acc_id = self._account_id(account_id)
         sid = self._path_id(signer_id, "Signer ID")
         body = build_signer_payload(payload, require_full_name=False)
-        if payload.get("government_id") is not None:
-            government_id = payload["government_id"]
-            if not isinstance(government_id, str) or not government_id.strip():
-                raise ValidationError("government_id must be a non-empty string")
-            body["government_id"] = government_id
         if not body:
             raise ValidationError("At least one signer field is required")
         return self._call_dict(

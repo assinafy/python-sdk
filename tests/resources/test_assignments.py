@@ -227,6 +227,19 @@ class TestAssignmentResource:
         AssignmentResource(MockHttp(), "acc").resend_notification("doc", "assignment", "signer")
         assert captured_url[0] == "documents/doc/assignments/assignment/signers/signer/resend"
 
+    def test_estimate_cost_posts_to_documented_endpoint(self) -> None:
+        captured_url: list[str] = []
+
+        class MockHttp:
+            def post(self, url: str, **kwargs: object) -> object:
+                captured_url.append(url)
+                return make_response(make_envelope({"total_credits": 0.45}))
+
+        resource = AssignmentResource(MockHttp(), "acc")
+        resource.estimate_cost("doc-1", {"signers": [{"verification_method": "Whatsapp"}]})
+
+        assert captured_url[0] == "documents/doc-1/assignments/estimate-cost"
+
     def test_estimate_cost_accepts_signer_descriptors_without_ids(self) -> None:
         captured_body: list[object] = []
 
@@ -399,25 +412,38 @@ class TestAssignmentResource:
         with pytest.raises(ValidationError, match="entry"):
             resource.sign("doc", "assignment", [{"itemId": "item"}], "code")
 
-    def test_whatsapp_notifications_returns_list(self) -> None:
+    def test_whatsapp_notifications_uses_documented_endpoint(self) -> None:
+        captured_url: list[str] = []
+
         class MockHttp:
             def get(self, url: str, **kwargs: object) -> object:
+                captured_url.append(url)
                 return make_response(make_envelope([{"sent_at": 1}]))
 
         resource = AssignmentResource(MockHttp(), "acc")
         assert resource.whatsapp_notifications("doc-1", "assignment-1") == [{"sent_at": 1}]
+        assert captured_url[0] == "documents/doc-1/assignments/assignment-1/whatsapp-notifications"
+
+    def test_whatsapp_notifications_rejects_unsafe_ids(self) -> None:
+        resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError):
+            resource.whatsapp_notifications("../doc", "assignment-1")
+        with pytest.raises(ValidationError):
+            resource.whatsapp_notifications("doc-1", "")
 
     def test_reset_expiration_sends_iso_timestamp(self) -> None:
-        captured_body: list[object] = []
+        captured: list[object] = []
 
         class MockHttp:
             def put(self, url: str, **kwargs: object) -> object:
-                captured_body.append(kwargs.get("json"))
+                captured.append(url)
+                captured.append(kwargs.get("json"))
                 return make_response(make_envelope({"id": "a"}))
 
         resource = AssignmentResource(MockHttp(), "acc")
         resource.reset_expiration("doc-1", "a", "2030-12-31T00:00:00Z")
-        assert captured_body[0] == {"expires_at": "2030-12-31T00:00:00Z"}
+        assert captured[0] == "documents/doc-1/assignments/a/reset-expiration"
+        assert captured[1] == {"expires_at": "2030-12-31T00:00:00Z"}
 
     def test_reset_expiration_allows_none_to_clear(self) -> None:
         captured_body: list[object] = []
@@ -450,3 +476,12 @@ class TestAssignmentResource:
 
         assert captured_url[0] == ("documents/doc-1/assignments/a/signers/s/estimate-resend-cost")
         assert result == {"total": 0}
+
+    def test_estimate_resend_cost_rejects_empty_ids(self) -> None:
+        resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError):
+            resource.estimate_resend_cost("", "a", "s")
+        with pytest.raises(ValidationError):
+            resource.estimate_resend_cost("doc-1", "", "s")
+        with pytest.raises(ValidationError):
+            resource.estimate_resend_cost("doc-1", "a", "")

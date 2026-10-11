@@ -77,7 +77,7 @@ class SignerDocumentResource(BaseResource):
              "assignment": null, "pages": [],
              "created_at": "2026-06-03T03:54:16Z",
              "updated_at": "2026-06-03T03:54:17Z"}],
-             "meta": {"total_count": 1, "page_count": 1, "current_page": 1, "per_page": 20}}
+             "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
         sid = self._path_id(signer_id, "Signer ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
