@@ -27,6 +27,8 @@ class FieldResource(BaseResource):
 
         ``payload`` requires ``type`` (one of the values returned by
         :meth:`list_types`) and ``name``. Optional: ``regex``, ``is_required``.
+        ``regex`` is a delimited pattern such as ``"/^[0-9]+$/"``; the API
+        answers ``400`` to an undelimited one.
         ``is_read_only``/``is_visible`` are server-controlled response fields,
         not accepted create input.
 
@@ -119,6 +121,7 @@ class FieldResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /accounts/{account_id}/fields/{field_id}`` — update a field.
 
+        ``regex`` is a delimited pattern such as ``"/^[0-9]+$/"``.
         Passing ``{"regex": None}`` is preserved and clears the field's regex,
         matching :meth:`~assinafy.resources.tags.TagResource.update`'s handling
         of ``color: None``.
@@ -177,15 +180,17 @@ class FieldResource(BaseResource):
         signer_access_code: str | None = None,
         account_id: str | None = None,
     ) -> dict[str, Any]:
-        """``POST /accounts/{account_id}/fields/{field_id}/validate``.
+        """``POST /accounts/{account_id}/fields/{field_id}/validate?signer-access-code=...``.
 
-        Validates a single value against a field definition's rules. Pass
-        ``signer_access_code`` (sent as ``signer-access-code``) when validating
-        in the signer flow; omit it when validating from an authenticated
-        backend. The published document does not list that parameter for this
-        endpoint; the operation prose describes the signer-flow use, so the SDK
-        forwards it. ``value`` is required by the published schema and may be
-        of any JSON type, but not ``None``.
+        Validates a single value against a field definition's rules in the
+        signing flow. ``signer_access_code`` (sent as ``signer-access-code``) is
+        required and is the only credential sent — never the client's API key
+        or bearer token; a missing or blank code raises
+        :class:`~assinafy.errors.ValidationError` before any request. The
+        operation prose describes this signer-flow use, although the published
+        ``security`` lists only the workspace credentials; use
+        :meth:`validate_as_workspace` for that. ``value`` is required by the
+        published schema and may be of any JSON type, but not ``None``.
 
         Example request body (JSON)::
 
@@ -196,21 +201,31 @@ class FieldResource(BaseResource):
 
             {"type": "text", "success": true, "error_message": ""}
         """
-        if value is None:
-            raise ValidationError("value is required")
-        acc_id = self._account_id(account_id)
-        fid = self._path_id(field_id, "Field ID")
-        return self._call_dict(
-            "Failed to validate field value",
-            lambda: self._http.post(
-                f"accounts/{acc_id}/fields/{fid}/validate",
-                params=clean_params(
-                    {"signer_access_code": signer_access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
-                json={"value": value},
-            ),
-        )
+        query = self._signer_query(signer_access_code)
+        return self._validate(field_id, value, query, account_id)
+
+    def validate_as_workspace(
+        self,
+        field_id: str,
+        value: Any,
+        *,
+        account_id: str | None = None,
+    ) -> dict[str, Any]:
+        """``POST /accounts/{account_id}/fields/{field_id}/validate`` with workspace credentials.
+
+        Validates a single value with the configured API key or bearer token,
+        the ``security`` published for this operation. No signer access code is
+        sent. ``value`` may be of any JSON type, but not ``None``.
+
+        Example request body (JSON)::
+
+            {"value": "400.676.228-36"}
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"type": "cpf", "success": true, "error_message": ""}
+        """
+        return self._validate(field_id, value, {}, account_id)
 
     def validate_multiple(
         self,
@@ -218,12 +233,14 @@ class FieldResource(BaseResource):
         signer_access_code: str | None = None,
         account_id: str | None = None,
     ) -> builtins.list[dict[str, Any]]:
-        """``POST /accounts/{account_id}/fields/validate-multiple``.
+        """``POST /accounts/{account_id}/fields/validate-multiple?signer-access-code=...``.
 
         ``values`` is a list of ``{field_id, value}`` objects (sent as the raw
         JSON request body). ``signer_access_code`` (sent as
-        ``signer-access-code``) is forwarded for the signer flow; the
-        published document does not list that parameter for this endpoint.
+        ``signer-access-code``) is required and is the only credential sent; a
+        missing or blank code raises :class:`~assinafy.errors.ValidationError`.
+        Use :meth:`validate_multiple_as_workspace` with the workspace API key or
+        bearer token.
 
         Example request body (JSON array)::
 
@@ -234,6 +251,51 @@ class FieldResource(BaseResource):
             [{"field_id": "1031ff86...", "type": "text", "success": true,
               "error_message": ""}]
         """
+        query = self._signer_query(signer_access_code)
+        return self._validate_multiple(values, query, account_id)
+
+    def validate_multiple_as_workspace(
+        self,
+        values: builtins.list[dict[str, Any]],
+        *,
+        account_id: str | None = None,
+    ) -> builtins.list[dict[str, Any]]:
+        """``POST /accounts/{account_id}/fields/validate-multiple`` with workspace credentials.
+
+        Validates several ``{field_id, value}`` objects with the configured API
+        key or bearer token; no signer access code is sent.
+
+        Example request body (JSON array)::
+
+            [{"field_id": "1031ff86...", "value": "1111111111111"}]
+
+        Example response (``data`` envelope unwrapped)::
+
+            [{"field_id": "1031ff86...", "type": "cpf", "success": false,
+              "error_message": "CPF inválido"}]
+        """
+        return self._validate_multiple(values, {}, account_id)
+
+    def _validate(
+        self, field_id: str, value: Any, query: dict[str, Any], account_id: str | None
+    ) -> dict[str, Any]:
+        if value is None:
+            raise ValidationError("value is required")
+        acc_id = self._account_id(account_id)
+        fid = self._path_id(field_id, "Field ID")
+        return self._call_dict(
+            "Failed to validate field value",
+            lambda: self._http.post(
+                f"accounts/{acc_id}/fields/{fid}/validate", params=query, json={"value": value}
+            ),
+        )
+
+    def _validate_multiple(
+        self,
+        values: builtins.list[dict[str, Any]],
+        query: dict[str, Any],
+        account_id: str | None,
+    ) -> builtins.list[dict[str, Any]]:
         if (
             not isinstance(values, list)
             or not values
@@ -250,12 +312,7 @@ class FieldResource(BaseResource):
         return self._call_plain_list(
             "Failed to validate field values",
             lambda: self._http.post(
-                f"accounts/{acc_id}/fields/validate-multiple",
-                params=clean_params(
-                    {"signer_access_code": signer_access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
-                json=values,
+                f"accounts/{acc_id}/fields/validate-multiple", params=query, json=values
             ),
         )
 

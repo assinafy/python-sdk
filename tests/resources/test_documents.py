@@ -181,27 +181,28 @@ class TestDocumentResource:
         resource.public_info("doc-1")
         assert http.last_url == "public/documents/doc-1"
 
+        expected = {"channel": "email", "recipient": "signer@example.com"}
         resource.send_token("doc-1", "signer@example.com", "email")
         assert http.last_url == "public/documents/doc-1/send-token"
-        assert http.last_kwargs["json"] == {
-            "recipient": "signer@example.com",
-            "channel": "email",
-        }
+        assert http.last_kwargs["json"] == expected
+
+        resource.send_token("doc-1", "signer@example.com")
+        assert http.last_kwargs["json"] == expected
 
         resource.send_token("doc-1", email="signer@example.com")
-        assert http.last_kwargs["json"] == {"email": "signer@example.com"}
+        assert http.last_kwargs["json"] == expected
 
-        resource.send_token("doc-1")
-        assert "json" not in http.last_kwargs
-
+        with pytest.raises(ValidationError, match="Invalid recipient"):
+            resource.send_token("doc-1")
         with pytest.raises(ValidationError, match="not both"):
-            resource.send_token("doc-1", "signer@example.com", "email", email="other@example.com")
-        with pytest.raises(ValidationError, match="Channel"):
-            resource.send_token("doc-1", "signer@example.com", "sms")
-        with pytest.raises(ValidationError, match="Invalid email"):
+            resource.send_token("doc-1", "signer@example.com", email="other@example.com")
+        for channel in ("whatsapp", "sms"):
+            with pytest.raises(ValidationError, match="Channel"):
+                resource.send_token("doc-1", "signer@example.com", channel)
+        with pytest.raises(ValidationError, match="Invalid recipient"):
             resource.send_token("doc-1", email="not-an-email")
-        with pytest.raises(ValidationError, match="Invalid email"):
-            resource.send_token("doc-1", "not-an-email", "email")
+        with pytest.raises(ValidationError, match="Invalid recipient"):
+            resource.send_token("doc-1", "+5511999990000", "email")
 
     def test_document_tag_methods_use_documented_endpoints(self) -> None:
         http = MockHttp()

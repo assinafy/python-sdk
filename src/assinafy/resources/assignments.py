@@ -307,9 +307,11 @@ class AssignmentResource(BaseResource):
 
         The published contract documents ``page`` and ``per_page`` (sent as
         ``per-page``) and scopes results to *the authenticated credential's
-        current account*. The SDK forwards the explicit or client-default
-        account as an ``accountId`` context parameter and omits it for
-        account-less token clients, but passing an ``account_id`` for a
+        current account*. The published document lists no account parameter,
+        but the API answers ``400`` ("an account context is required") to an
+        API-key request without one, so the SDK forwards the explicit or
+        client-default account as an ``accountId`` context parameter and omits
+        it for account-less token clients. Passing an ``account_id`` for a
         different workspace does not re-scope this endpoint — use a credential
         belonging to that workspace instead.
         Returns

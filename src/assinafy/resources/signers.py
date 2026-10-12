@@ -91,7 +91,7 @@ class SignerResource(BaseResource):
         Example response (``data`` envelope unwrapped)::
 
             {"data": [
-                {"id": "19e6b92e...", "full_name": "John Doe",
+                {"resource": "signer", "id": "19e6b92e...", "full_name": "John Doe",
                  "email": "john@example.com", "whatsapp_phone_number": null,
                  "government_id": null, "has_accepted_terms": false}
              ],
@@ -130,7 +130,7 @@ class SignerResource(BaseResource):
 
             {"resource": "signer", "id": "signer-id", "full_name": "Example Signer",
              "email": "signer@example.com", "whatsapp_phone_number": null,
-             "has_accepted_terms": false}
+             "government_id": null, "has_accepted_terms": false}
         """
         acc_id = self._account_id(account_id)
         sid = self._path_id(signer_id, "Signer ID")
@@ -167,15 +167,15 @@ class SignerResource(BaseResource):
 
         Example return value::
 
-            {"id": "1031ff86...", "full_name": "John Doe",
+            {"resource": "signer", "id": "1031ff86...", "full_name": "John Doe",
              "email": "john@example.com", "whatsapp_phone_number": null,
-             "has_accepted_terms": false}
+             "government_id": null, "has_accepted_terms": false}
 
         Example response (``data`` envelope unwrapped)::
 
             {"resource": "signer", "id": "signer-id", "full_name": "Example Signer",
              "email": "signer@example.com", "whatsapp_phone_number": null,
-             "has_accepted_terms": false}
+             "government_id": null, "has_accepted_terms": false}
         """
         validate_email(email)
         target = email.lower()
@@ -203,7 +203,7 @@ class SignerResource(BaseResource):
 
             {"resource": "signer", "id": "1031ff86...", "full_name": "John Doe",
              "email": "john@example.com", "whatsapp_phone_number": null,
-             "has_accepted_terms": true, "has_signature": true,
+             "government_id": null, "has_accepted_terms": true, "has_signature": true,
              "has_initial": false, "is_signature_reusable": false}
 
         Request body: none.
@@ -293,7 +293,7 @@ class SignerResource(BaseResource):
 
             {"resource": "signer", "id": "signer-id", "full_name": "Example Signer",
              "email": "signer@example.com", "whatsapp_phone_number": null,
-             "has_accepted_terms": false}
+             "government_id": null, "has_accepted_terms": false}
         """
         doc_id = self._path_id(document_id, "Document ID")
         query = self._signer_query(signer_access_code)

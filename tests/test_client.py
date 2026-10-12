@@ -6,7 +6,7 @@ import pytest
 
 from assinafy import __version__
 from assinafy.client import AssinafyClient
-from assinafy.errors import AssinafyError, ValidationError
+from assinafy.errors import ApiError, AssinafyError, ValidationError
 from assinafy.resources.oauth import OAuthResource
 
 
@@ -138,19 +138,28 @@ class TestAssinafyClient:
             ("PUT", "signers/accept-terms"),
             ("POST", "signature"),
             ("GET", "signature/signature"),
-            ("GET", "signers/signer/documents"),
-            ("GET", "signers/signer/documents/search"),
             ("GET", "signers/signer/documents/doc/download/original"),
             ("POST", "oauth/token"),
             ("POST", "oauth/revoke"),
         ]
         for method, path in public_routes:
             http.request(method, path)
+        signer_code_routes = [
+            ("GET", "signers/signer/documents"),
+            ("GET", "signers/signer/documents/search"),
+            ("POST", "accounts/acc/fields/field/validate"),
+            ("POST", "accounts/acc/fields/validate-multiple"),
+        ]
+        for method, path in signer_code_routes:
+            http.request(method, path, params={"signer-access-code": "code"})
+        public_routes += signer_code_routes
         http.get("https://other.example.test/accounts/acc")
         http.get("https://api.assinafy.com.br/outside-v1")
         http.post("documents/doc/assignments/estimate-cost")
         http.put("documents/doc/assignments/assignment/signers/signer/resend")
         http.put("documents/doc/assignments/assignment/reset-expiration")
+        for method, path in signer_code_routes:
+            http.request(method, path)
         http.get("accounts/acc")
 
         credential_header = "X-Api-Key" if "api_key" in credentials else "Authorization"
@@ -159,10 +168,8 @@ class TestAssinafyClient:
             assert request.headers["User-Agent"] == f"Assinafy-Python-SDK/v{__version__}"
         assert credential_header not in requests[len(public_routes)].headers
         assert credential_header not in requests[len(public_routes) + 1].headers
-        assert credential_header in requests[-4].headers
-        assert credential_header in requests[-3].headers
-        assert credential_header in requests[-2].headers
-        assert credential_header in requests[-1].headers
+        for request in requests[len(public_routes) + 2 :]:
+            assert credential_header in request.headers, request.url.path
         client.close()
 
     def test_userinfo_drops_the_api_key_but_keeps_a_supplied_bearer_token(self) -> None:
@@ -458,3 +465,37 @@ class TestAssinafyClient:
             ],
         }
         client.close()
+
+
+def test_rate_limited_response_exposes_quota_and_retry_after() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={
+                "X-Rate-Limit-Limit": "120",
+                "X-Rate-Limit-Remaining": "0",
+                "X-Rate-Limit-Reset": "42",
+                "Retry-After": "42",
+            },
+            json={"status": 429, "data": None, "message": "Too Many Requests"},
+        )
+
+    client = AssinafyClient(api_key="k", account_id="acc")
+    client._http._transport = httpx.MockTransport(handler)
+    with pytest.raises(ApiError) as exc_info:
+        client.documents.list()
+    client.close()
+
+    err = exc_info.value
+    assert err.status_code == 429
+    assert (err.rate_limit_limit, err.rate_limit_remaining, err.rate_limit_reset) == (120, 0, 42)
+    assert err.retry_after == 42
+
+
+def test_api_error_without_rate_limit_headers_leaves_them_unset() -> None:
+    err = ApiError.from_response(
+        500, None, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+    )
+    assert err.retry_after is None
+    assert err.rate_limit_limit is None
+    assert ApiError("x", 400).rate_limit_remaining is None

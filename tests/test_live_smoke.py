@@ -415,8 +415,12 @@ def test_notification_opt_in_exercises_assignment_and_resend(
     created_email = next(
         args[0]["email"] for name, args, _ in client.calls if name == "signers.create"
     )
-    assert token_call[1] == ("PRIVATE_DOCUMENT_ID",)
-    assert token_call[2] == {"email": created_email}
+    assert token_call[1] == ("PRIVATE_DOCUMENT_ID", created_email)
+    assert token_call[2] == {}
+    expirations = [
+        args[2] for name, args, _ in client.calls if name == "assignments.reset_expiration"
+    ]
+    assert expirations == ["2031-01-31T00:00:00Z", None]
     assert "signer_documents.download" in names
     assert names.index("assignments.create") < names.index("documents.delete")
 
@@ -424,7 +428,7 @@ def test_notification_opt_in_exercises_assignment_and_resend(
 def test_notification_opt_in_exercises_template_document_flow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _set_safe_env(monkeypatch)
+    _set_safe_env(monkeypatch, "first@example.test,second@example.test")
     monkeypatch.setenv("ASSINAFY_SEND_TEST_NOTIFICATIONS", "1")
     client = FakeClient(
         templates={
@@ -453,25 +457,6 @@ def test_notification_opt_in_exercises_template_document_flow(
     assert "documents.wait_until_ready" in names
     delete_ids = [args[0] for name, args, _ in client.calls if name == "documents.delete"]
     assert delete_ids == ["PRIVATE_TEMPLATE_DOCUMENT_ID", "PRIVATE_DOCUMENT_ID"]
-
-
-def test_send_document_token_falls_back_only_for_contract_rejection() -> None:
-    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-
-    class Documents:
-        def send_token(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-            calls.append((args, kwargs))
-            if kwargs:
-                raise ApiError("current body not deployed", 400)
-            return {"status": 200}
-
-    client = type("Client", (), {"documents": Documents()})()
-
-    assert live_smoke._send_document_token(client, "doc-1", "user@example.test") == {"status": 200}
-    assert calls == [
-        (("doc-1",), {"email": "user@example.test"}),
-        (("doc-1", "user@example.test", "email"), {}),
-    ]
 
 
 def test_account_and_preference_opt_ins_restore_and_delete(

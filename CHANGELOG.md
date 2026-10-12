@@ -2,6 +2,26 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.11.1] - 2026-10-12
+
+### Added
+
+- `ApiError` exposes `rate_limit_limit`, `rate_limit_remaining` and `rate_limit_reset` (the `X-Rate-Limit-Limit`, `X-Rate-Limit-Remaining` and `X-Rate-Limit-Reset` headers) and `retry_after` (the `Retry-After` seconds of a `429 Too Many Requests`), so a caller can wait the time the API asks for.
+- `signer_documents.list_as_workspace()` and `search_as_workspace()` list and search a workspace signer's documents with the API key or bearer token.
+- `fields.validate_as_workspace()` and `validate_multiple_as_workspace()` validate field values with the API key or bearer token.
+
+### Changed
+
+- `documents.send_token()` always sends the required `{"channel": "email", "recipient": "<signer email>"}` body. `channel` defaults to `"email"` and any other channel raises `ValidationError`; a missing recipient raises `ValidationError` instead of sending an empty body. `email=` remains an alias of `recipient` and now sends the same body. Migration: call `send_token(document_id, signer_email)`.
+- `assignments.reset_expiration(document_id, assignment_id, None)` is documented as removing the expiration; it sends `{"expires_at": null}`.
+- Docstring examples include `government_id` on signers, `endpoint_id` on webhook deliveries and `default_document_tags` on listed templates.
+
+### Security
+
+- A request that carries a signer access code is sent without the client's API key or bearer token, on every route. `signer_documents.list()` and `search()` use only the code; workspace access goes through the new `*_as_workspace` methods.
+- `fields.validate()` and `validate_multiple()` require a non-blank signer access code and no longer fall back to the workspace credentials when it is omitted. Migration: call `validate_as_workspace()` or `validate_multiple_as_workspace()` for workspace access.
+- `signer_documents.download()` rejects a blank signer access code; omitting it still downloads the public artifact.
+
 ## [1.11.0] - 2026-10-11
 
 ### Added

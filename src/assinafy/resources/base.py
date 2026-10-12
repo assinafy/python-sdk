@@ -54,18 +54,17 @@ class BaseResource:
             raise ValidationError(f"{name} is required")
         return value
 
-    def _signer_query(self, signer_access_code: str, **extra: Any) -> dict[str, Any]:
+    def _signer_query(self, signer_access_code: str | None, **extra: Any) -> dict[str, Any]:
         """Build the query string for a signer-facing endpoint.
 
         Every endpoint under the documented ``signerAccessCode`` security scheme
         reads the code from the ``signer-access-code`` query parameter, so the
         required-code case lives here rather than in each method. ``extra`` adds
         that endpoint's own parameters and follows the same alias/``None``-drop
-        rules as :func:`~assinafy.utils.clean_params`.
-
-        The handful of endpoints where the code is *optional* build their params
-        with :func:`~assinafy.utils.clean_params` directly, so that passing
-        ``None`` stays a way to omit it rather than an error.
+        rules as :func:`~assinafy.utils.clean_params`. A ``None`` or blank code
+        raises :class:`~assinafy.errors.ValidationError`. The client sends a
+        request carrying ``signer-access-code`` without its API key or bearer
+        token, so the code is the only credential.
         """
         return clean_params(
             {

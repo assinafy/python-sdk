@@ -200,8 +200,10 @@ class WebhookResource(BaseResource):
         ``x-pagination-*`` headers)::
 
             {"data": [
-                {"id": "a1b2c3d4e5f6...", "event": "document_ready",
-                 "activity_id": 456, "endpoint": "https://example.com/webhook",
+                {"resource": "activity_dispatching_history",
+                 "id": "a1b2c3d4e5f6...", "event": "document_ready",
+                 "activity_id": 456, "endpoint_id": "65f1c2a9b3e4d5f60718293a4b5c6d7e",
+                 "endpoint": "https://example.com/webhook",
                  "payload": {"event": "document_ready", "id": 456,
                              "object": {"id": "abc123", "type": "Document"},
                              "subject": {"id": "def456", "type": "User"}},
@@ -236,7 +238,8 @@ class WebhookResource(BaseResource):
 
             {"resource": "activity_dispatching_history",
              "id": "a1b2c3d4e5f6...", "event": "document_ready",
-             "activity_id": 456, "endpoint": "https://example.com/webhook",
+             "activity_id": 456, "endpoint_id": "65f1c2a9b3e4d5f60718293a4b5c6d7e",
+             "endpoint": "https://example.com/webhook", "payload": null,
              "delivered": true, "http_status": 200, "response_body": "OK",
              "error": null, "created_at": "2026-06-05T20:50:55Z",
              "updated_at": "2026-06-05T20:50:56Z"}

@@ -48,7 +48,9 @@ def to_sdk_error(error: Exception, fallback_message: str) -> AssinafyError:
             data: Any = error.response.json()
         except ValueError:
             data = None
-        return ApiError.from_response(error.response.status_code, data)
+        return ApiError.from_response(
+            error.response.status_code, data, headers=error.response.headers
+        )
 
     if isinstance(error, httpx.RequestError):
         return NetworkError(f"{fallback_message}: {type(error).__name__}")

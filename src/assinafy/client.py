@@ -54,7 +54,7 @@ _NO_CLIENT_AUTH_OPERATION_PATTERNS = tuple(
         ("GET", r"public/documents/[^/]+"),
         ("GET", r"signature/[^/]+"),
         ("GET", r"signers/[^/]+/document"),
-        ("GET", r"signers/[^/]+/documents(?:/search|/[^/]+/download/[^/]+)?"),
+        ("GET", r"signers/[^/]+/documents/[^/]+/download/[^/]+"),
         ("POST", r"documents/[^/]+/assignments/(?!estimate-cost$)[^/]+"),
         ("PUT", r"documents/[^/]+/assignments/[^/]+/reject"),
         ("PUT", r"documents/[^/]+/signers/confirm-data"),
@@ -65,6 +65,10 @@ _NO_CLIENT_AUTH_OPERATION_PATTERNS = tuple(
 # client's workspace API key would answer for the wrong identity, so it is dropped
 # while the per-request ``Authorization`` header is left in place.
 _BEARER_ONLY_OPERATIONS = frozenset({("GET", "oauth/userinfo")})
+# A request carrying a signer access code authenticates with that code alone, whatever
+# its route: signer-document listing/search and field validation also accept workspace
+# credentials, which are sent only by the explicit ``*_as_workspace`` methods.
+_SIGNER_ACCESS_CODE_PARAM = "signer-access-code"
 
 
 class AssinafyClient:
@@ -353,6 +357,7 @@ class AssinafyClient:
             return
         if (
             not in_api
+            or _SIGNER_ACCESS_CODE_PARAM in request.url.params
             or operation in _NO_CLIENT_AUTH_OPERATIONS
             or any(
                 method == request.method and pattern.fullmatch(path)

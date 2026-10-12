@@ -65,7 +65,7 @@ def cleanup_step(label: str, fn: Callable[[], Any], failures: list[str]) -> Any:
             except ApiError as error:
                 if error.status_code != 429 or attempt == 3:
                     raise
-                time.sleep(20)
+                time.sleep(min(error.retry_after or 20, 60))
         return None
 
     return step(label, run, failures)
@@ -218,16 +218,6 @@ def _first_document_page_id(document: Any) -> str | None:
     pages = document.get("pages") if isinstance(document, dict) else None
     page = pages[0] if isinstance(pages, list) and pages and isinstance(pages[0], dict) else None
     return _resource_id(page)
-
-
-def _send_document_token(client: AssinafyClient, document_id: str, email: str) -> dict[str, Any]:
-    """Try the current OpenAPI body, then the still-deployed legacy body."""
-    try:
-        return client.documents.send_token(document_id, email=email)
-    except ApiError as err:
-        if err.status_code not in {400, 422}:
-            raise
-        return client.documents.send_token(document_id, email, "email")
 
 
 def main() -> int:
@@ -513,6 +503,16 @@ def main() -> int:
                 lambda: client.signers.find_by_email(signer_emails[0]),
                 failures,
             )
+            step(
+                "signer_documents.list_as_workspace()",
+                lambda: client.signer_documents.list_as_workspace(primary_signer_id),
+                failures,
+            )
+            step(
+                "signer_documents.search_as_workspace()",
+                lambda: client.signer_documents.search_as_workspace(primary_signer_id, "sdk"),
+                failures,
+            )
 
         tag_name = f"sdk-smoke-{timestamp}"
         tag = step(
@@ -538,7 +538,7 @@ def main() -> int:
             step("fields.get()", lambda: client.fields.get(field_id), failures)
             step(
                 "fields.update() sets a regex",
-                lambda: client.fields.update(field_id, {"regex": "^[0-9]+$"}),
+                lambda: client.fields.update(field_id, {"regex": "/^[0-9]+$/"}),
                 failures,
             )
             cleared = step(
@@ -550,13 +550,15 @@ def main() -> int:
                 print("  FAIL [regex was not cleared]")
                 failures.append("fields.update() regex-clear did not take effect")
             step(
-                "fields.validate()",
-                lambda: client.fields.validate(field_id, "123"),
+                "fields.validate_as_workspace()",
+                lambda: client.fields.validate_as_workspace(field_id, "123"),
                 failures,
             )
             step(
-                "fields.validate_multiple()",
-                lambda: client.fields.validate_multiple([{"field_id": field_id, "value": "123"}]),
+                "fields.validate_multiple_as_workspace()",
+                lambda: client.fields.validate_multiple_as_workspace(
+                    [{"field_id": field_id, "value": "123"}]
+                ),
                 failures,
             )
 
@@ -662,7 +664,7 @@ def main() -> int:
                 if assignment_id and primary_signer_id:
                     step(
                         "documents.send_token() sends test OTP",
-                        lambda: _send_document_token(client, document_id, signer_emails[0]),
+                        lambda: client.documents.send_token(document_id, signer_emails[0]),
                         failures,
                     )
                     step(
@@ -679,6 +681,19 @@ def main() -> int:
                         ),
                         failures,
                     )
+                    cleared_expiration = step(
+                        "assignments.reset_expiration(None) clears the expiration",
+                        lambda: client.assignments.reset_expiration(
+                            document_id, assignment_id, None
+                        ),
+                        failures,
+                    )
+                    if (
+                        isinstance(cleared_expiration, dict)
+                        and cleared_expiration.get("expires_at") is not None
+                    ):
+                        print("  FAIL [expiration was not cleared]")
+                        failures.append("assignments.reset_expiration(None) did not clear")
                     step(
                         "assignments.estimate_resend_cost()",
                         lambda: client.assignments.estimate_resend_cost(
@@ -713,7 +728,8 @@ def main() -> int:
                     ),
                     failures,
                 )
-            if role_ids and signer_ids and send_test_notifications:
+            # The API refuses the same signer in two roles: one signer per role.
+            if role_ids and len(signer_ids) >= len(role_ids) and send_test_notifications:
                 template_document = step(
                     "documents.create_from_template() sends test notifications",
                     lambda: client.documents.create_from_template(
@@ -721,11 +737,11 @@ def main() -> int:
                         [
                             {
                                 "role_id": template_role_id,
-                                "id": signer_ids[index % len(signer_ids)],
+                                "id": signer_id,
                                 "verification_method": "Email",
                                 "notification_methods": ["Email"],
                             }
-                            for index, template_role_id in enumerate(role_ids)
+                            for template_role_id, signer_id in zip(role_ids, signer_ids)
                         ],
                         {"name": f"sdk-template-smoke-{timestamp}.pdf"},
                     ),
@@ -742,7 +758,7 @@ def main() -> int:
             else:
                 print(
                     "\n=== template document creation ===\n"
-                    "  SKIP [template roles or notification opt-in unavailable]"
+                    "  SKIP [too few test signers for the template roles, or no opt-in]"
                 )
     except Exception as err:  # noqa: BLE001
         print(f"\n=== smoke execution ===\n  FAIL [{type(err).__name__}]")

@@ -48,6 +48,7 @@ class TemplateResource(BaseResource):
                             "created_at": "2024-07-19T15:23:03Z",
                             "updated_at": "2024-07-19T15:23:03Z"}],
                  "tags": [{"id": "fa8c09f3...", "name": "HR"}],
+                 "default_document_tags": [{"id": "fa8c09f4...", "name": "Signed"}],
                  "created_at": "2024-07-19T15:23:03Z",
                  "updated_at": "2024-07-19T15:23:03Z"}
              ],
@@ -67,9 +68,8 @@ class TemplateResource(BaseResource):
 
         This route is not published in the OpenAPI document; it is deployed on
         the live API and the published schema text describes a single-template
-        response, so the SDK keeps it. Unlike :meth:`list`, the single-template
-        response additionally includes ``default_document_tags`` (tags
-        auto-applied to documents created from this template).
+        response, so the SDK keeps it. ``default_document_tags`` lists the tags
+        auto-applied to documents created from this template.
 
         Example response (``data`` envelope unwrapped)::
 

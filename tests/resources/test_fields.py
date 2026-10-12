@@ -104,7 +104,7 @@ class TestFieldResource:
         resource = FieldResource(MockHttp(), "acc")
 
         with pytest.raises(ValidationError, match="value is required"):
-            resource.validate("field-1", None)
+            resource.validate("field-1", None, "code")
 
     def test_validate_multiple_posts_documented_endpoint(self) -> None:
         class ListHttp(MockHttp):
@@ -116,18 +116,43 @@ class TestFieldResource:
         http = ListHttp()
         resource = FieldResource(http, "acc")
 
-        result = resource.validate_multiple([{"field_id": "field-1", "value": "hi"}])
+        result = resource.validate_multiple([{"field_id": "field-1", "value": "hi"}], "code")
 
         assert http.last_url == "accounts/acc/fields/validate-multiple"
+        assert http.last_kwargs["params"] == {"signer-access-code": "code"}
         assert http.last_kwargs["json"] == [{"field_id": "field-1", "value": "hi"}]
         assert result == [{"field_id": "field-1", "success": True}]
+
+        resource.validate_multiple_as_workspace([{"field_id": "field-1", "value": "hi"}])
+        assert http.last_kwargs["params"] == {}
+
+    def test_validate_as_workspace_sends_no_access_code(self) -> None:
+        http = MockHttp()
+        resource = FieldResource(http, "acc")
+
+        resource.validate_as_workspace("field-1", "123", account_id="other")
+
+        assert http.last_url == "accounts/other/fields/field-1/validate"
+        assert http.last_kwargs["params"] == {}
+        assert http.last_kwargs["json"] == {"value": "123"}
+
+    @pytest.mark.parametrize("code", [None, "", "   "])
+    def test_signer_validation_rejects_a_missing_or_blank_code(self, code: str | None) -> None:
+        http = MockHttp()
+        resource = FieldResource(http, "acc")
+
+        with pytest.raises(ValidationError, match="Signer access code"):
+            resource.validate("field-1", "123", code)
+        with pytest.raises(ValidationError, match="Signer access code"):
+            resource.validate_multiple([{"field_id": "field-1", "value": "x"}], code)
+        assert http.last_url == ""
 
     def test_validate_multiple_requires_at_least_one_value(self) -> None:
         resource = FieldResource(MockHttp(), "acc")
         with pytest.raises(ValidationError, match="field value"):
-            resource.validate_multiple([])
+            resource.validate_multiple([], "code")
         with pytest.raises(ValidationError, match="field value"):
-            resource.validate_multiple([{"field_id": "field-1"}])
+            resource.validate_multiple_as_workspace([{"field_id": "field-1"}])
 
     def test_list_types_hits_global_endpoint(self) -> None:
         http = MockHttp()

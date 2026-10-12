@@ -12,9 +12,12 @@ from .base import BaseResource
 class SignerDocumentResource(BaseResource):
     """Signer-facing document endpoints.
 
-    Listing and mutation methods require a ``signer-access-code`` query
-    parameter. Artifact download is public in the current contract and still
-    accepts an optional code for compatibility with earlier deployments.
+    Every method that takes ``signer_access_code`` rejects a missing or blank
+    code before sending anything, and the request carries only that code —
+    never the client's API key or bearer token. Listing and searching a signer's
+    documents with the workspace credentials is a separate, explicit call:
+    :meth:`list_as_workspace` and :meth:`search_as_workspace`. Artifact download
+    is public in the current contract and is sent without client credentials.
     """
 
     def current(
@@ -57,10 +60,10 @@ class SignerDocumentResource(BaseResource):
         """``GET /signers/{signer_id}/documents?signer-access-code=...``.
 
         ``params`` accepts the published ``page`` and ``per_page`` keys. Other
-        keys are forwarded for deployment compatibility. This
-        endpoint requires the signer access code (the
-        documented security scheme for every signer-facing endpoint); an
-        omitted/invalid code always returns 401.
+        keys are forwarded for deployment compatibility. The signer access code
+        is required and is the only credential sent; an invalid code returns
+        401. Use :meth:`list_as_workspace` to list with the workspace API key or
+        bearer token instead.
         Returns ``{"data": [Document, ...], "meta": {...}}`` where each item
         has the complete :class:`~assinafy.resources.documents.DocumentResource`
         shape and ``meta`` contains the four documented pagination integers.
@@ -79,12 +82,46 @@ class SignerDocumentResource(BaseResource):
              "updated_at": "2026-06-03T03:54:17Z"}],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
-        sid = self._path_id(signer_id, "Signer ID")
         access_code = self._require_id(signer_access_code, "Signer access code")
+        return self._list_documents(signer_id, params, access_code)
+
+    def list_as_workspace(
+        self,
+        signer_id: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """``GET /signers/{signer_id}/documents`` with the workspace credentials.
+
+        Lists the documents of a signer that belongs to the client's workspace,
+        authenticated with the configured API key or bearer token. No signer
+        access code is sent; ``params`` must not contain one. ``params`` accepts
+        the published ``page`` and ``per_page`` (sent as ``per-page``) keys.
+        Returns the same ``{"data": [Document, ...], "meta": {...}}`` shape as
+        :meth:`list`.
+
+        Request body: none.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"data": [{"resource": "document", "id": "document-id",
+              "account_id": "account-id", "name": "contract.pdf",
+              "status": "pending_signature", "...": "..."}],
+             "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
+        """
+        return self._list_documents(signer_id, params, None)
+
+    def _list_documents(
+        self,
+        signer_id: str,
+        params: dict[str, Any] | None,
+        access_code: str | None,
+    ) -> dict[str, Any]:
+        sid = self._path_id(signer_id, "Signer ID")
         cleaned = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
         if "signer-access-code" in cleaned:
             raise ValidationError("Pass signer_access_code separately from params")
-        cleaned["signer-access-code"] = access_code
+        if access_code is not None:
+            cleaned["signer-access-code"] = access_code
         return self._call_list(
             "Failed to list signer documents",
             lambda: self._http.get(f"signers/{sid}/documents", params=cleaned),
@@ -100,7 +137,9 @@ class SignerDocumentResource(BaseResource):
 
         Lightweight, compact counterpart to :meth:`list` (no pagination
         parameters are documented for this endpoint). ``search`` is an optional
-        partial-match term. Returns ``{"data": [Document, ...]}`` where every
+        partial-match term. The signer access code is required and is the only
+        credential sent; use :meth:`search_as_workspace` for workspace access.
+        Returns ``{"data": [Document, ...]}`` where every
         item has the complete
         :class:`~assinafy.resources.documents.DocumentResource` shape.
 
@@ -117,8 +156,34 @@ class SignerDocumentResource(BaseResource):
              "created_at": "2026-06-03T03:54:16Z",
              "updated_at": "2026-06-03T03:54:17Z"}]}
         """
-        sid = self._path_id(signer_id, "Signer ID")
         query = self._signer_query(signer_access_code, search=search)
+        return self._search_documents(signer_id, query)
+
+    def search_as_workspace(
+        self,
+        signer_id: str,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        """``GET /signers/{signer_id}/documents/search`` with the workspace credentials.
+
+        Searches the documents of a signer that belongs to the client's
+        workspace, authenticated with the configured API key or bearer token;
+        no signer access code is sent. ``search`` is an optional partial-match
+        term. Returns the same ``{"data": [Document, ...]}`` shape as
+        :meth:`search`.
+
+        Request body: none.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"data": [{"resource": "document", "id": "document-id",
+              "account_id": "account-id", "name": "contract.pdf",
+              "status": "pending_signature", "...": "..."}]}
+        """
+        return self._search_documents(signer_id, clean_params({"search": search}))
+
+    def _search_documents(self, signer_id: str, query: dict[str, Any]) -> dict[str, Any]:
+        sid = self._path_id(signer_id, "Signer ID")
         return self._call_list(
             "Failed to search signer documents",
             lambda: self._http.get(f"signers/{sid}/documents/search", params=query),
@@ -190,8 +255,9 @@ class SignerDocumentResource(BaseResource):
     ) -> bytes:
         """``GET /signers/{signer_id}/documents/{document_id}/download/{artifact}``.
 
-        This is a public signer-link endpoint; ``signer_access_code`` is accepted
-        for backward compatibility but is not required by the current API.
+        This is a public signer-link endpoint, always sent without the client's
+        API key or bearer token. ``signer_access_code`` is optional and accepted
+        for backward compatibility; when given it must be non-blank.
         Returns raw artifact bytes. Valid artifacts: ``original``,
         ``certificated``, ``certificate-page``, ``pades``, and ``bundle``.
         ``pades`` exists only for documents signed with an ICP-Brasil certificate.
@@ -203,14 +269,11 @@ class SignerDocumentResource(BaseResource):
         artifact = self._require_id(artifact_name, "Artifact name")
         if artifact not in DOCUMENT_ARTIFACT_NAMES:
             raise ValidationError(f"Unknown document artifact: {artifact}")
+        query = {} if signer_access_code is None else self._signer_query(signer_access_code)
         return self._call_binary(
             "Failed to download signer document",
             lambda: self._http.get(
-                f"signers/{sid}/documents/{doc_id}/download/{artifact}",
-                params=clean_params(
-                    {"signer_access_code": signer_access_code},
-                    QUERY_PARAM_ALIASES,
-                ),
+                f"signers/{sid}/documents/{doc_id}/download/{artifact}", params=query
             ),
         )
 

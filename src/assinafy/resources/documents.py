@@ -24,7 +24,6 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 _READY_STATUSES = frozenset({"metadata_ready", "pending_signature", "certificated"})
 _FAILED_STATUSES = frozenset({"failed", "rejected_by_signer", "rejected_by_user", "expired"})
-_TOKEN_CHANNELS = frozenset({"email", "whatsapp"})
 _TEMPLATE_OPTIONS = frozenset({"name", "message", "expires_at", "editor_fields", "tags"})
 _TEMPLATE_SIGNER_FIELDS = frozenset(
     {"role_id", "id", "verification_method", "notification_methods", "step"}
@@ -574,51 +573,36 @@ class DocumentResource(BaseResource):
         *,
         email: str | None = None,
     ) -> dict[str, Any]:
-        """``PUT /public/documents/{document_id}/send-token``.
+        """``PUT /public/documents/{document_id}/send-token`` — email a one-time access token.
 
-        The published request body is ``channel`` + ``recipient``, where the
-        document lists ``email`` as the only supported channel. The legacy
-        ``{"email": ...}`` shape is also accepted — do not mix the two forms.
-        ``channel="whatsapp"`` is accepted for earlier deployments even though
-        the published document does not list it. When neither form is given an
-        empty body is sent, as earlier deployments answered that shape.
+        Sends a one-time token to a signer of a public document so they can
+        view it. The document must be pending signature and ``recipient`` must
+        be the email address of a signer who has not signed yet. ``email`` is
+        the only supported channel: ``channel`` defaults to ``"email"`` and any
+        other value raises :class:`~assinafy.errors.ValidationError`. The
+        keyword ``email=`` is kept as an alias of ``recipient`` and sends the
+        same body. Public endpoint: no client credentials are sent.
 
-        Request body (JSON)::
+        Request body (JSON; both fields required)::
 
             {"channel": "email", "recipient": "signer@example.com"}
-
-        Legacy request body (JSON)::
-
-            {"email": "signer@example.com"}
 
         Example response (``data`` envelope unwrapped)::
 
             {"document": {"resource": "document", "id": "a94f...",
-                          "name": "Contract.pdf", "page_count": "3",
-                          "created_by": {"id": "c81e...", "name": "Jane Doe"}},
+                          "name": "Contract.pdf", "page_count": 3,
+                          "created_by": "Acme Inc."},
              "channel": "email", "recipient": "signer@example.com"}
         """
         doc_id = self._path_id(document_id, "Document ID")
-        if email is not None and (recipient is not None or channel is not None):
-            raise ValidationError("Use email or recipient/channel, not both")
-        if email is not None:
-            body = {"email": validate_email(email)}
-        elif recipient is not None or channel is not None:
-            if not isinstance(channel, str) or channel not in _TOKEN_CHANNELS:
-                raise ValidationError('Channel must be "email" or "whatsapp"')
-            validated_recipient = self._require_id(recipient, "Recipient")
-            if channel == "email":
-                validated_recipient = validate_email(validated_recipient)
-            body = {
-                "recipient": validated_recipient,
-                "channel": self._require_id(channel, "Channel"),
-            }
-        else:
-            body = {}
-        path = f"public/documents/{doc_id}/send-token"
+        if email is not None and recipient is not None:
+            raise ValidationError("Use email or recipient, not both")
+        if channel is not None and channel != "email":
+            raise ValidationError('Channel must be "email"')
+        body = {"channel": "email", "recipient": validate_email(email or recipient, "Recipient")}
         return self._call_dict(
             "Failed to send document token",
-            lambda: self._http.put(path, json=body) if body else self._http.put(path),
+            lambda: self._http.put(f"public/documents/{doc_id}/send-token", json=body),
         )
 
     def list_tags(

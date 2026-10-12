@@ -941,10 +941,8 @@ client.documents.thumbnail(doc["id"])
 client.documents.download_page(doc["id"], page_id)
 client.documents.verify(signature_hash)
 client.documents.public_info(doc["id"])
-# Escolha um formato; cada chamada envia um token real.
-client.documents.send_token(doc["id"], "signatario@example.com", "email")
-# Corpo legado alternativo:
-# client.documents.send_token(doc["id"], email="signatario@example.com")
+# Envia um token real por e-mail; o canal "email" é o único suportado.
+client.documents.send_token(doc["id"], "signatario@example.com")
 client.documents.list_tags(doc["id"])
 client.documents.replace_tags(doc["id"], [tag_id_a, tag_id_b])
 client.documents.append_tags(doc["id"], [tag_id_c])
@@ -1089,14 +1087,18 @@ OAuthResource.code_challenge(verifier)
 client.signer_documents.current(signer_id, signer_access_code)
 client.signer_documents.list(signer_id, signer_access_code, {"page": 1, "per_page": 20})
 client.signer_documents.search(signer_id, signer_access_code, "contrato")  # leve
+# Com a API key ou o token do workspace (o signatário precisa pertencer a ele):
+client.signer_documents.list_as_workspace(signer_id, {"page": 1, "per_page": 20})
+client.signer_documents.search_as_workspace(signer_id, "contrato")
 client.signer_documents.sign_multiple(["doc-1", "doc-2"], signer_access_code)
 # Alternativa mutuamente exclusiva:
 # client.signer_documents.decline_multiple(["doc-1"], "Termos desfavoráveis.", signer_access_code)
 client.signer_documents.download(signer_id, document_id, artifact_name="original")
 ```
 
-A rota de download é pública. O argumento opcional `signer_access_code` existe para implantações
-que o exijam.
+Os métodos que recebem `signer_access_code` rejeitam um código ausente ou em branco e enviam só o
+código, nunca a API key ou o token. A rota de download é pública. O argumento opcional
+`signer_access_code` existe para implantações que o exijam.
 
 ### Definições de campo
 
@@ -1111,6 +1113,8 @@ client.fields.validate_multiple(
     [{"field_id": field["id"], "value": "390.533.447-05"}],
     signer_access_code=signer_access_code,
 )
+client.fields.validate_as_workspace(field["id"], "390.533.447-05")  # API key ou token
+client.fields.validate_multiple_as_workspace([{"field_id": field["id"], "value": "390.533.447-05"}])
 client.fields.list_types()
 client.fields.delete(field["id"])
 ```
@@ -1337,6 +1341,8 @@ except ValidationError as err:      # rejeitado antes de a requisição ser envi
     print("Validação falhou")
 except ApiError as err:             # a API devolveu uma resposta não-2xx
     print(f"Erro da API {err.status_code}")
+    if err.status_code == 429:      # limite de requisições: aguarde Retry-After segundos
+        print(err.retry_after, err.rate_limit_limit, err.rate_limit_remaining, err.rate_limit_reset)
 except NetworkError as err:         # nenhuma resposta chegou (DNS, TLS, timeout)
     print("Erro de rede:", err)
 except AssinafyError as err:        # formato de resposta inesperado, etc.
@@ -1396,7 +1402,7 @@ variável de ambiente. Ele confere os endpoints de leitura, o CRUD de signatári
 remover o regex de um campo), a busca e a estimativa de template, o upload de documento, a marcação
 por tags, o polling de `wait_until_ready`, a estimativa de custo e a limpeza de ponta a ponta. Todo
 ID de recurso devolvido com sucesso é capturado e sua limpeza é tentada num bloco `finally`. Na limpeza, somente respostas HTTP 429 são repetidas,
-com até três esperas de 20 segundos; outras falhas são reportadas. A
+com até três esperas de `Retry-After` segundos (20 por padrão, no máximo 60); outras falhas são reportadas. A
 mutação de webhook é ignorada a menos que um endpoint de teste explícito seja fornecido; quando
 habilitada, a configuração anterior do endpoint mais antigo é restaurada. A listagem de endpoints
 e a de métodos de dois fatores são etapas somente leitura. O opt-in de notificações envia

@@ -954,9 +954,8 @@ client.documents.thumbnail(doc["id"])
 client.documents.download_page(doc["id"], page_id)
 client.documents.verify(signature_hash)
 client.documents.public_info(doc["id"])
-# Choose one form; each call sends a real token.
-client.documents.send_token(doc["id"], "signer@example.com", "email")
-# Legacy body alternative: client.documents.send_token(doc["id"], email="signer@example.com")
+# Sends a real token by email; "email" is the only supported channel.
+client.documents.send_token(doc["id"], "signer@example.com")
 client.documents.list_tags(doc["id"])
 client.documents.replace_tags(doc["id"], [tag_id_a, tag_id_b])
 client.documents.append_tags(doc["id"], [tag_id_c])
@@ -1104,14 +1103,18 @@ the whole flow.
 client.signer_documents.current(signer_id, signer_access_code)
 client.signer_documents.list(signer_id, signer_access_code, {"page": 1, "per_page": 20})
 client.signer_documents.search(signer_id, signer_access_code, "contract")  # lightweight
+# With the workspace API key or token (the signer must belong to the workspace):
+client.signer_documents.list_as_workspace(signer_id, {"page": 1, "per_page": 20})
+client.signer_documents.search_as_workspace(signer_id, "contract")
 client.signer_documents.sign_multiple(["doc-1", "doc-2"], signer_access_code)
 # Mutually exclusive alternative:
 # client.signer_documents.decline_multiple(["doc-1"], "Unfavorable terms.", signer_access_code)
 client.signer_documents.download(signer_id, document_id, artifact_name="original")
 ```
 
-The download route is public. Its optional `signer_access_code` argument is
-available for deployments that require it.
+Methods that take `signer_access_code` reject a missing or blank code and send
+only the code, never the API key or token. The download route is public. Its
+optional `signer_access_code` argument is available for deployments that require it.
 
 ### Field definitions
 
@@ -1126,6 +1129,8 @@ client.fields.validate_multiple(
     [{"field_id": field["id"], "value": "000.000.000-00"}],  # synthetic CPF placeholder
     signer_access_code=signer_access_code,
 )
+client.fields.validate_as_workspace(field["id"], "000.000.000-00")  # API key or token
+client.fields.validate_multiple_as_workspace([{"field_id": field["id"], "value": "000.000.000-00"}])
 client.fields.list_types()
 client.fields.delete(field["id"])
 ```
@@ -1358,6 +1363,8 @@ except ValidationError as err:      # rejected before the request was sent
     print("Validation failed")
 except ApiError as err:             # the API returned a non-2xx response
     print(f"API error {err.status_code}")
+    if err.status_code == 429:      # rate limited: wait Retry-After seconds
+        print(err.retry_after, err.rate_limit_limit, err.rate_limit_remaining, err.rate_limit_reset)
 except NetworkError as err:         # no response arrived (DNS, TLS, timeout)
     print("Network error:", err)
 except AssinafyError as err:        # unexpected response shape, etc.
@@ -1418,7 +1425,7 @@ lookup and cost estimation, document upload, document tagging,
 `wait_until_ready` polling, cost estimation, and cleanup end-to-end. Every
 successfully returned resource ID is captured and its cleanup is attempted in a
 `finally` block. Cleanup retries only explicit HTTP 429 responses, with up to
-three 20-second waits; other failures are reported. Webhook mutation is skipped unless an explicit test endpoint is
+three waits of `Retry-After` seconds (20 by default, at most 60); other failures are reported. Webhook mutation is skipped unless an explicit test endpoint is
 supplied; when enabled, the oldest endpoint's prior configuration is restored.
 Endpoint listing and two-factor listing are read-only steps.
 The notification opt-in sends real sandbox emails and may consume sandbox

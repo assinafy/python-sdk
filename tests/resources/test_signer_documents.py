@@ -68,6 +68,43 @@ class TestSignerDocumentResource:
             "signer-access-code": "code",
         }
 
+    def test_workspace_variants_send_no_access_code(self) -> None:
+        http = MockHttp()
+        resource = SignerDocumentResource(http)
+
+        resource.list_as_workspace("signer-1", {"page": 2, "per_page": 10})
+        assert http.last_url == "signers/signer-1/documents"
+        assert http.last_kwargs["params"] == {"page": 2, "per-page": 10}
+
+        resource.search_as_workspace("signer-1", "contract")
+        assert http.last_url == "signers/signer-1/documents/search"
+        assert http.last_kwargs["params"] == {"search": "contract"}
+
+        resource.search_as_workspace("signer-1")
+        assert http.last_kwargs["params"] == {}
+
+        with pytest.raises(ValidationError, match="separately"):
+            resource.list_as_workspace("signer-1", {"signer_access_code": "code"})
+
+    @pytest.mark.parametrize("code", [None, "", "   "])
+    def test_signer_methods_reject_a_missing_or_blank_code(self, code: str | None) -> None:
+        http = MockHttp()
+        resource = SignerDocumentResource(http)
+
+        for call in (
+            lambda: resource.current("signer-1", code),  # type: ignore[arg-type]
+            lambda: resource.list("signer-1", code),  # type: ignore[arg-type]
+            lambda: resource.search("signer-1", code),  # type: ignore[arg-type]
+            lambda: resource.sign_multiple(["doc-1"], code),  # type: ignore[arg-type]
+            lambda: resource.decline_multiple(["doc-1"], "No", code),  # type: ignore[arg-type]
+        ):
+            with pytest.raises(ValidationError, match="Signer access code"):
+                call()
+        if code is not None:
+            with pytest.raises(ValidationError, match="Signer access code"):
+                resource.download("signer-1", "doc-1", code)
+        assert http.last_url == ""
+
     def test_search_omits_search_term_when_not_given(self) -> None:
         http = MockHttp()
         resource = SignerDocumentResource(http)
@@ -118,6 +155,7 @@ class TestSignerDocumentResource:
         content = resource.download("signer-1", "doc-1", "code", "original")
 
         assert http.last_url == "signers/signer-1/documents/doc-1/download/original"
+        assert http.last_kwargs["params"] == {"signer-access-code": "code"}
         assert content == b"pdf"
 
     def test_download_is_public_without_access_code(self) -> None:
