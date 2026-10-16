@@ -2,7 +2,7 @@
 
 All notable changes to `assinafy` are documented in this file.
 
-## [1.12.0] - 2026-10-16
+## [2.0.0] - 2026-10-16
 
 ### Added
 
