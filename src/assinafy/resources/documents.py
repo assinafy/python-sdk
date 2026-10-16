@@ -22,7 +22,9 @@ from .base import BaseResource
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-_READY_STATUSES = frozenset({"metadata_ready", "pending_signature", "certificated"})
+_READY_STATUSES = frozenset(
+    {"metadata_ready", "pending_signature", "pending_identity_review", "certificated"}
+)
 _FAILED_STATUSES = frozenset({"failed", "rejected_by_signer", "rejected_by_user", "expired"})
 _TEMPLATE_OPTIONS = frozenset({"name", "message", "expires_at", "editor_fields", "tags"})
 _TEMPLATE_SIGNER_FIELDS = frozenset(
@@ -150,6 +152,7 @@ class DocumentResource(BaseResource):
              {"code": "certificated", "deletable": false},
              {"code": "rejected_by_signer", "deletable": true},
              {"code": "pending_signature", "deletable": true},
+             {"code": "pending_identity_review", "deletable": true},
              {"code": "rejected_by_user", "deletable": true},
              {"code": "failed", "deletable": true}]
 
@@ -272,7 +275,9 @@ class DocumentResource(BaseResource):
         """Poll :meth:`get` until the document leaves a processing state.
 
         Resolves (returning the document) when the status is one of
-        ``metadata_ready``, ``pending_signature``, or ``certificated``. Raises
+        ``metadata_ready``, ``pending_signature``, ``pending_identity_review``,
+        or ``certificated``. Readiness means processing is complete; an identity
+        review can still hold certification. Raises
         :class:`~assinafy.errors.AssinafyError` if the status reaches a
         terminal failure (``failed``, ``rejected_by_signer``,
         ``rejected_by_user``, ``expired``) or if the timeout elapses.
@@ -306,9 +311,13 @@ class DocumentResource(BaseResource):
             except ApiError as err:
                 if err.status_code not in {408, 429} and err.status_code < 500:
                     raise
-                self._logger.warning("Error checking document status", {"error": str(err)})
+                self._logger.warning(
+                    "Error checking document status", {"status_code": err.status_code}
+                )
             except NetworkError as err:
-                self._logger.warning("Error checking document status", {"error": str(err)})
+                self._logger.warning(
+                    "Error checking document status", {"error_type": type(err).__name__}
+                )
             else:
                 status = document.get("status", "unknown")
                 self._logger.debug(
@@ -402,7 +411,9 @@ class DocumentResource(BaseResource):
 
         The API only permits deletion when the document is in a deletable
         status (``metadata_ready``, ``expired``, ``pending_signature``,
-        ``rejected_by_signer``, ``rejected_by_user``, ``failed``). A 400 is
+        ``pending_identity_review``, ``rejected_by_signer``, ``rejected_by_user``,
+        ``failed``). Deleting a document awaiting identity review cancels it and
+        notifies the signers. A 400 is
         returned otherwise and surfaced as :class:`~assinafy.errors.ApiError`.
         Request body: none. OpenAPI returns ``data: []`` on success; the SDK
         maps that empty result to ``None``.
@@ -461,7 +472,10 @@ class DocumentResource(BaseResource):
         if options is not None and not isinstance(options, dict):
             raise ValidationError("Template options must be a mapping")
         option_values = _validate_template_options(options or {})
-        body: dict[str, Any] = {**option_values, "signers": signers}
+        body: dict[str, Any] = {
+            **option_values,
+            "signers": [clean_params(signer) for signer in signers],
+        }
         self._logger.info(
             "Creating document from template",
             {"template_id": tmpl_id, "account_id": acc_id},
@@ -509,11 +523,12 @@ class DocumentResource(BaseResource):
         if not isinstance(signers, list) or not signers:
             raise ValidationError("At least one signer is required")
         _validate_template_signers(signers, require_id=False, estimate=True)
+        body = {"signers": [clean_params(signer) for signer in signers]}
         return self._call_dict(
             "Failed to estimate cost from template",
             lambda: self._http.post(
                 f"accounts/{acc_id}/templates/{tmpl_id}/documents/estimate-cost",
-                json={"signers": signers},
+                json=body,
             ),
         )
 

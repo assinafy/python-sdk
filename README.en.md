@@ -57,7 +57,7 @@ shapes are documented once and referenced by the methods that return them.
 
 ## Requirements
 
-- Python 3.10+; prefer actively maintained Python 3.14 for production.
+- Python 3.10+; prefer actively maintained Python 3.15 for production.
   Python has no LTS edition; 3.10 remains accepted for compatibility.
 - `httpx` (installed automatically)
 - TLS 1.2 or newer: the client refuses TLS 1.0 and 1.1
@@ -186,9 +186,10 @@ missing side is inferred, and sending neither defaults both to `Email`.
 | `Email` *(default)* | A one-time code (OTP) by email, required before signing | Free |
 | `Whatsapp` | A one-time code (OTP) over WhatsApp | Verification free; the notification it requires costs 0.45 credits, on paid plans only |
 | `DigitalCertificate` | The signer signs with their **own ICP-Brasil certificate (A1/A3)** through the Web PKI browser extension, producing a qualified **PAdES** signature | 0.5 credits, plus its notification |
+| `IdDocumentFaceMatchBasic` | Government ID photo, face match and liveness through a hosted verification session; requires the account feature and a valid CPF in `government_id` | Per-signer fee, plus its notification; use the cost estimate |
 
 Allowed pairings: `Email` → notify by `Email`; `Whatsapp` → notify by
-`Whatsapp`; `DigitalCertificate` → notify by `Email` **or** `Whatsapp`. Only one
+`Whatsapp`; `DigitalCertificate` and `IdDocumentFaceMatchBasic` → notify by `Email` **or** `Whatsapp`. Only one
 notification method per signer, and an invalid pairing raises `ValidationError` before sending a request.
 
 ### ICP-Brasil digital certificate (A1/A3)
@@ -235,6 +236,76 @@ contract is unspecified and this SDK does not call them — drive that step
 through the Assinafy-hosted signing flow. Everything around it is covered:
 creating the assignment, `confirm_data`, cost estimation, and downloading the
 resulting `pades` artifact once the flow completes.
+
+### Biometric identity verification
+
+Use `IdDocumentFaceMatchBasic` in assignment creation or template role assignments;
+both cost-estimate methods accept it too. The account must have the ID Document +
+Face Match feature, and the signer must have a valid CPF in `government_id`.
+
+```python
+estimate = client.assignments.estimate_cost(document_id, {
+    "signers": [{"verification_method": "IdDocumentFaceMatchBasic",
+                 "notification_methods": ["Email"]}],
+})
+assignment = client.assignments.create(document_id, {
+    "signers": [{"id": signer_id,
+                 "verification_method": "IdDocumentFaceMatchBasic",
+                 "notification_methods": ["Email"]}],
+})
+
+# In the signer session, after obtaining explicit biometric-processing consent:
+state = client.signers.identity_verification(signer_access_code)
+if state["can_start"] and biometric_consent:
+    session = client.signers.start_identity_verification(
+        signer_access_code, consent=True,
+    )
+    capture_url = session["url"]  # Redirect unchanged, including its fragment.
+```
+
+`identity_verification()` returns `{"can_start": false, "status": "Pending",
+"url": "https://verify.assinafy.com.br/c/session-id#t=example-token",
+"expires_at": "2026-10-17T12:00:00Z", "completed_at": null}`.
+Starting returns `{"id": "verification-id", "url": "https://verify.assinafy.com.br/c/session-id#t=example-token",
+"expires_at": "2026-10-17T12:00:00Z"}`. The URL is a bearer credential: never log it
+or store it in the browser. A Pending session's URL can be reopened; only an
+Expired session can be replaced. Pending, InReview, Approved, Declined and
+Abandoned sessions cannot be restarted. Declined/Abandoned require a new document
+and assignment; restarting an expired capture session does not bill again.
+
+The signer continues to confirm data and sign while a verification is InReview.
+After all signatures, `pending_identity_review` holds certification until the
+account approves every open review. Handle `signer_identity_review_required`
+through your webhook receiver, then let an authorized workspace reviewer inspect
+the summary and images:
+
+```python
+review = client.assignments.identity_verification(document_id, assignment_id, signer_id)
+if review["status"] == "InReview" and "face" in review["images"]:
+    image_bytes = client.assignments.download_identity_verification_image(
+        document_id, assignment_id, signer_id, "face",
+    )
+# After the workspace reviewer makes a decision:
+review = client.assignments.review_identity_verification(
+    document_id, assignment_id, signer_id, "Approved", note="Identity confirmed",
+)
+```
+
+The review summary includes `id`, `status`, `provider`, `verification_method`,
+`reason_codes`, `evidence_available`, `expected`, `document`, `matches`, `checks`,
+`images`, `ruleset_version`, `evidence_sha256`, `reviewed_by`, `reviewed_at`,
+`review_note` and `completed_at`. Evidence can be absent or nullable. A direct
+provider approval has its evidence on the `signer_identity_verified` activity.
+Images are `document_front`, `document_back`, `document_pdf` and `face`, available
+only during InReview; they return raw JPEG/PNG/PDF bytes with no caching and HTTP
+404 once decided. Keep evidence out of caches and logs.
+
+Decisions are `Approved` or `Rejected`; `note` is optional, at most 2000 characters,
+recorded in activity and sent to the provider, never shown to the signer.
+Rejection cancels the document as `rejected_by_user` and sends cancellation
+notices to signers and copy receivers. Subscribe to `signer_identity_verified`,
+`signer_identity_verification_failed`, `signer_identity_review_required`,
+`signer_identity_review_approved` and `signer_identity_review_rejected` as needed.
 
 ## The signing lifecycle
 
@@ -289,7 +360,8 @@ document = client.documents.wait_until_ready(document["id"])
 ```
 
 `wait_until_ready` polls `documents.get` until the status reaches
-`metadata_ready`, `pending_signature`, or `certificated`; it raises on a
+`metadata_ready`, `pending_signature`, `pending_identity_review`, or `certificated`;
+identity review can still hold certification. It raises on a
 terminal failure status and does not retry a `404`, which waiting can never
 resolve. Rename the document here if you need to — the API locks the name once
 an assignment exists:
@@ -1158,6 +1230,7 @@ client.webhooks.list_dispatches({"delivered": False, "page": 1, "per_page": 20})
 # client.webhooks.get_endpoint_secret(endpoint["id"])
 # client.webhooks.rotate_endpoint_secret(endpoint["id"])
 # client.webhooks.delete_endpoint(endpoint["id"])
+# client.webhooks.delete_endpoint_by_url("https://example.com/webhooks/assinafy")
 # client.webhooks.retry_dispatch(dispatch_id)
 
 # Oldest-endpoint calls, for integrations written before multiple endpoints.
@@ -1174,7 +1247,10 @@ and `events`, and accepts `name`, `is_active` (default `True`) and
 `signing_enabled` (default `False`). `update_endpoint()` changes only the fields
 sent. Turning `signing_enabled` on generates a secret when the endpoint has
 none; turning it off discards the secret. `delete_endpoint()` stops delivery and
-frees the slot.
+frees the slot. `delete_endpoint_by_url(url)` does the same using the exact
+registered URL as a query parameter, with no request body; it returns `None`
+on success and raises HTTP `404` if the workspace has no matching endpoint.
+OAuth applications need `webhooks:write` for either deletion method.
 
 **Oldest endpoint.** `get()`, `register()` and `inactivate()` act on the
 account's oldest endpoint (`register()` creates one when none exists).
@@ -1261,7 +1337,7 @@ The complete stable top-level resource payloads are:
   "Signer": {
     "resource": "signer", "id": "signer-id", "full_name": "Example Signer",
     "email": "signer@example.com", "whatsapp_phone_number": null,
-    "has_accepted_terms": false
+    "government_id": null, "has_accepted_terms": false
   },
   "Document": {
     "resource": "document", "id": "document-id", "account_id": "account-id",
@@ -1279,8 +1355,9 @@ The complete stable top-level resource payloads are:
     "signers": [{
       "resource": "signer", "id": "signer-id", "full_name": "Example Signer",
       "email": "signer@example.com", "whatsapp_phone_number": null,
-      "has_accepted_terms": false, "verification_method": "Email",
+      "government_id": null, "has_accepted_terms": false, "verification_method": "Email",
       "notification_methods": ["Email"], "step": 1, "notified": true,
+      "identity_verification_status": null,
       "completed": false, "notification_history": [{
         "event": "signature_request", "status": "sent", "error_code": null,
         "error_message": null, "sent_at": "2026-08-26T12:00:00Z",

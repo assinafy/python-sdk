@@ -2,6 +2,22 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [1.12.0] - 2026-10-16
+
+### Added
+
+- `IdDocumentFaceMatchBasic` verification for assignment and template creation and cost estimates, paired with Email or Whatsapp notifications.
+- `signers.identity_verification()` and `start_identity_verification()` for biometric verification state and explicitly consented hosted capture sessions.
+- `assignments.identity_verification()`, `download_identity_verification_image()` and `review_identity_verification()` for workspace identity review, evidence and approval or rejection.
+- `webhooks.delete_endpoint_by_url()` removes an endpoint using its exact registered URL.
+- `pending_identity_review` document status, five identity-verification webhook event types and Python 3.15 support.
+
+### Fixed
+
+- Document readiness polling returns processed documents awaiting identity review and keeps server error text out of logs.
+- Template creation and pricing omit optional signer fields set to `None`.
+- Webhook signature verification rejects malformed non-ASCII signatures without an encoding error.
+
 ## [1.11.1] - 2026-10-12
 
 ### Added

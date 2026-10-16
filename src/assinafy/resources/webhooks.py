@@ -377,6 +377,23 @@ class WebhookResource(BaseResource):
         self._logger.info("Deleting webhook endpoint")
         self._call_void("Failed to delete webhook endpoint", lambda: self._http.delete(path))
 
+    def delete_endpoint_by_url(self, url: str, account_id: str | None = None) -> None:
+        """``DELETE /accounts/{account_id}/webhooks/endpoints?url=...`` — remove by URL.
+
+        ``url`` must match the registered URL exactly. Stops delivery and frees
+        its slot; HTTP 404 means no endpoint uses that URL in this workspace.
+        Uses workspace credentials or OAuth with ``webhooks:write``.
+
+        Query example: ``url=https%3A%2F%2Fexample.com%2Fwebhooks%2Fassinafy``.
+        Request body: none. The response ``data: []`` becomes ``None``.
+        """
+        _validate_webhook_url(url)
+        acc_id = self._account_id(account_id)
+        self._call_void(
+            "Failed to delete webhook endpoint by URL",
+            lambda: self._http.delete(f"accounts/{acc_id}/webhooks/endpoints", params={"url": url}),
+        )
+
     def get_endpoint_secret(self, endpoint_id: str, account_id: str | None = None) -> str:
         """``GET /accounts/{account_id}/webhooks/endpoints/{endpoint_id}/secret``.
 

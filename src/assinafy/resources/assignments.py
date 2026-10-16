@@ -255,9 +255,11 @@ class AssignmentResource(BaseResource):
          "expires_at": null, "message": null,
          "signers": [{"resource": "signer", "id": "signer-id",
                        "full_name": "Example Signer", "email": "signer@example.com",
-                       "whatsapp_phone_number": null, "has_accepted_terms": false,
+                       "whatsapp_phone_number": null, "government_id": null,
+                       "has_accepted_terms": false,
                        "verification_method": "Email",
                        "notification_methods": ["Email"], "step": 1,
+                       "identity_verification_status": null,
                        "notified": true, "completed": false,
                        "notification_history": [
                            {"event": "signature_request", "status": "sent",
@@ -296,6 +298,13 @@ class AssignmentResource(BaseResource):
     this SDK does not guess them. Everything around the certificate signature —
     creating the assignment, ``confirm_data``, cost estimation, and downloading
     the resulting ``pades`` artifact — is covered here.
+
+    ``IdDocumentFaceMatchBasic`` uses the hosted identity-document, face-match
+    and liveness flow exposed by ``signers.identity_verification`` and
+    ``signers.start_identity_verification``. It requires the account feature
+    and a valid CPF in the signer's ``government_id``; either notification
+    channel is supported. An InReview signer may sign, but certification waits
+    for :meth:`review_identity_verification` to approve every open review.
     """
 
     def list(
@@ -507,9 +516,11 @@ class AssignmentResource(BaseResource):
              "expires_at": "2030-08-03T21:00:00Z", "message": null,
              "signers": [{"resource": "signer", "id": "signer-id",
                            "full_name": "Example Signer", "email": "signer@example.com",
-                           "whatsapp_phone_number": null, "has_accepted_terms": false,
+                           "whatsapp_phone_number": null, "government_id": null,
+                           "has_accepted_terms": false,
                            "verification_method": "Email",
                            "notification_methods": ["Email"], "step": 1,
+                           "identity_verification_status": null,
                            "notified": true, "completed": false,
                            "notification_history": [
                                {"event": "signature_request", "status": "sent",
@@ -696,6 +707,129 @@ class AssignmentResource(BaseResource):
                 f"documents/{doc_id}/assignments/{asg_id}/whatsapp-notifications"
             ),
         )
+
+    def identity_verification(
+        self, document_id: str, assignment_id: str, signer_id: str
+    ) -> dict[str, Any]:
+        """``GET /documents/{document_id}/assignments/{assignment_id}/signers/{signer_id}/identity-verification``.
+
+        Workspace review of a signer's identity-document verification. Request
+        body: none. HTTP 404 means the assignment, signer or verification does
+        not exist. Evidence images are available only while status is InReview.
+        Direct provider approval has no evidence here; see the
+        ``signer_identity_verified`` document activity instead.
+
+        Complete response example (``data`` envelope unwrapped)::
+
+            {"id": "verification-id", "status": "InReview",
+             "provider": "AssinafyVerify",
+             "verification_method": "IdDocumentFaceMatchBasic",
+             "reason_codes": [{"code": "NAME_MISMATCH",
+                               "description": "Registered and document names differ"}],
+             "evidence_available": true,
+             "expected": {"name": "Example Signer", "cpf": "00000000000"},
+             "document": {"type": "CNH", "name": "EXAMPLE SIGNER",
+                          "cpf": "00000000000"},
+             "matches": {"cpf": true, "name": 0.52, "birth_date": null},
+             "checks": [{"name": "name", "result": "review", "score": 0.52,
+                         "reasons": ["NAME_MISMATCH"]}],
+             "images": ["document_front", "document_back", "face"],
+             "ruleset_version": "2026-10-12.2", "evidence_sha256": null,
+             "reviewed_by": null, "reviewed_at": null, "review_note": null,
+             "completed_at": null}
+
+        Statuses: Pending, InReview, Approved, Declined, Expired, Abandoned.
+        Evidence objects and their members may be null; unknown reason codes
+        are preserved. The summary contains no image bytes or biometrics.
+        """  # noqa: E501
+        path = self._identity_verification_path(document_id, assignment_id, signer_id)
+        return self._call_dict(
+            "Failed to fetch signer identity review", lambda: self._http.get(path)
+        )
+
+    def download_identity_verification_image(
+        self, document_id: str, assignment_id: str, signer_id: str, name: str
+    ) -> bytes:
+        """``GET /documents/{document_id}/assignments/{assignment_id}/signers/{signer_id}/identity-verification/images/{name}``.
+
+        Fetch evidence bytes for the workspace reviewer. ``name`` is one of
+        ``document_front``, ``document_back``, ``document_pdf`` or ``face`` and
+        must appear in the review's ``images`` list. Request body: none.
+        Returns JPEG/PNG bytes, or PDF bytes for a digital document. The API
+        sends ``Cache-Control: no-store``; keep evidence out of caches and logs.
+        All images return HTTP 404 once the review is decided, or when absent.
+        """  # noqa: E501
+        path = self._identity_verification_path(document_id, assignment_id, signer_id)
+        if not isinstance(name, str) or name not in {
+            "document_front",
+            "document_back",
+            "document_pdf",
+            "face",
+        }:
+            raise ValidationError("Invalid identity verification image name")
+        return self._call_binary(
+            "Failed to download signer identity review image",
+            lambda: self._http.get(f"{path}/images/{name}"),
+        )
+
+    def review_identity_verification(
+        self,
+        document_id: str,
+        assignment_id: str,
+        signer_id: str,
+        decision: str,
+        *,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        """``POST /documents/{document_id}/assignments/{assignment_id}/signers/{signer_id}/identity-verification/review``.
+
+        Decide an InReview verification while the document is pending_signature
+        or pending_identity_review. ``decision`` is Approved or Rejected; the
+        optional ``note`` is at most 2000 characters and is omitted when None.
+        Approval releases certification once all signers have signed and every
+        review is approved. Rejection cancels the document as rejected_by_user
+        and sends cancellation notices to signers and copy receivers. The note
+        is recorded in activity and sent to the provider, never to the signer.
+
+        Request body (JSON)::
+
+            {"decision": "Approved", "note": "Identity confirmed by the reviewer"}
+
+        Response: the complete :meth:`identity_verification` shape, for example::
+
+            {"id": "verification-id", "status": "Approved",
+             "provider": "AssinafyVerify",
+             "verification_method": "IdDocumentFaceMatchBasic",
+             "reason_codes": [], "evidence_available": true,
+             "expected": null, "document": null, "matches": null,
+             "checks": [], "images": [], "ruleset_version": null,
+             "evidence_sha256": null,
+             "reviewed_by": {"id": "user-id", "name": "Example Reviewer"},
+             "reviewed_at": "2026-10-17T12:00:00Z",
+             "review_note": "Identity confirmed by the reviewer",
+             "completed_at": "2026-10-17T12:00:00Z"}
+
+        HTTP 400 means an invalid decision or a review/document state that
+        cannot be decided; HTTP 404 means no matching verification exists.
+        """  # noqa: E501
+        path = self._identity_verification_path(document_id, assignment_id, signer_id)
+        if not isinstance(decision, str) or decision not in {"Approved", "Rejected"}:
+            raise ValidationError("decision must be Approved or Rejected")
+        if note is not None and (not isinstance(note, str) or len(note) > 2000):
+            raise ValidationError("note must be a string of at most 2000 characters")
+        body = clean_params({"decision": decision, "note": note})
+        return self._call_dict(
+            "Failed to decide signer identity review",
+            lambda: self._http.post(f"{path}/review", json=body),
+        )
+
+    def _identity_verification_path(
+        self, document_id: str, assignment_id: str, signer_id: str
+    ) -> str:
+        doc_id = self._path_id(document_id, "Document ID")
+        asg_id = self._path_id(assignment_id, "Assignment ID")
+        sid = self._path_id(signer_id, "Signer ID")
+        return f"documents/{doc_id}/assignments/{asg_id}/signers/{sid}/identity-verification"
 
     def resend_notification(
         self,

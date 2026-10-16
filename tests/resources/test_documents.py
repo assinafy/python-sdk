@@ -271,6 +271,30 @@ class TestDocumentResource:
 
 
 class TestWaitUntilReady:
+    def test_identity_review_is_processed_without_being_certificated(self) -> None:
+        class ReviewHttp(MockHttp):
+            def get(self, url: str, **kwargs: object) -> object:
+                return make_response(
+                    make_envelope({"id": "doc-1", "status": "pending_identity_review"})
+                )
+
+        result = DocumentResource(ReviewHttp(), "acc").wait_until_ready("doc-1", timeout=0.01)
+        assert result["status"] == "pending_identity_review"
+
+    def test_polling_logs_do_not_include_server_error_messages(self) -> None:
+        from unittest.mock import Mock
+
+        class ErrorHttp(MockHttp):
+            def get(self, url: str, **kwargs: object) -> object:
+                raise ApiError("signer-access-code=private-code", 503)
+
+        logger = Mock()
+        resource = DocumentResource(ErrorHttp(), "acc", logger)
+        with pytest.raises(AssinafyError, match="Timeout"):
+            resource.wait_until_ready("doc-1", timeout=0.01)
+        assert logger.warning.called
+        assert "private-code" not in repr(logger.mock_calls)
+
     def test_returns_document_once_ready(self) -> None:
         class ReadyHttp(MockHttp):
             def get(self, url: str, **kwargs: object) -> object:

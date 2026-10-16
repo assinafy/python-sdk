@@ -58,7 +58,7 @@ recurso compartilhados são documentados uma vez e referenciados pelos métodos 
 
 ## Requisitos
 
-- Python 3.10+; para produção, prefira Python 3.14, com manutenção ativa.
+- Python 3.10+; para produção, prefira Python 3.15, com manutenção ativa.
   Python não possui uma edição LTS; 3.10 permanece aceito por compatibilidade.
 - `httpx` (instalado automaticamente)
 - TLS 1.2 ou superior: o cliente recusa TLS 1.0 e 1.1
@@ -188,9 +188,10 @@ nenhum dos dois, ambos assumem `Email`.
 | `Email` *(padrão)* | Código de uso único (OTP) por e-mail, exigido antes de assinar | Gratuito |
 | `Whatsapp` | Código de uso único (OTP) por WhatsApp | Verificação gratuita; a notificação que ela exige custa 0,45 crédito, só em planos pagos |
 | `DigitalCertificate` | O signatário assina com o **próprio certificado ICP-Brasil (A1/A3)**, pela extensão de navegador Web PKI, gerando uma assinatura **PAdES qualificada** | 0,5 crédito, mais a notificação |
+| `IdDocumentFaceMatchBasic` | Foto do documento de identidade, comparação facial e prova de vida em sessão hospedada; exige o recurso na conta e CPF válido em `government_id` | Tarifa por signatário, mais a notificação; consulte a estimativa |
 
 Combinações permitidas: `Email` → notifica por `Email`; `Whatsapp` → notifica por `Whatsapp`;
-`DigitalCertificate` → notifica por `Email` **ou** `Whatsapp`. Apenas um método de notificação por
+`DigitalCertificate` e `IdDocumentFaceMatchBasic` → notificam por `Email` **ou** `Whatsapp`. Apenas um método de notificação por
 signatário, e uma combinação inválida gera `ValidationError` antes da requisição.
 
 ### Certificado digital ICP-Brasil (A1/A3)
@@ -235,6 +236,76 @@ documento OpenAPI, então o contrato de requisição e resposta delas não é pu
 chama — conduza esse passo pelo fluxo de assinatura hospedado pela Assinafy. Todo o resto está
 coberto: criar o assignment, `confirm_data`, estimativa de custo e o download do artefato `pades`
 depois que o fluxo termina.
+
+### Verificação biométrica de identidade
+
+Use `IdDocumentFaceMatchBasic` ao criar assignments ou atribuir papéis de templates;
+as duas estimativas de custo também aceitam esse método. A conta precisa do recurso
+ID Document + Face Match, e o signatário precisa de CPF válido em `government_id`.
+
+```python
+custo = client.assignments.estimate_cost(document_id, {
+    "signers": [{"verification_method": "IdDocumentFaceMatchBasic",
+                 "notification_methods": ["Email"]}],
+})
+assignment = client.assignments.create(document_id, {
+    "signers": [{"id": signer_id,
+                 "verification_method": "IdDocumentFaceMatchBasic",
+                 "notification_methods": ["Email"]}],
+})
+
+# Na sessão do signatário, após obter consentimento explícito para biometria:
+estado = client.signers.identity_verification(signer_access_code)
+if estado["can_start"] and consentimento_biometrico:
+    sessao = client.signers.start_identity_verification(
+        signer_access_code, consent=True,
+    )
+    url_captura = sessao["url"]  # Redirecione sem alterar, incluindo o fragmento.
+```
+
+`identity_verification()` retorna `{"can_start": false, "status": "Pending",
+"url": "https://verify.assinafy.com.br/c/session-id#t=example-token",
+"expires_at": "2026-10-17T12:00:00Z", "completed_at": null}`.
+O início retorna `{"id": "verification-id", "url": "https://verify.assinafy.com.br/c/session-id#t=example-token",
+"expires_at": "2026-10-17T12:00:00Z"}`. A URL é uma credencial: nunca registre em logs
+nem armazene no navegador. A URL de uma sessão Pending pode ser reaberta; somente
+uma sessão Expired pode ser substituída. Pending, InReview, Approved, Declined e
+Abandoned não permitem reinício. Declined/Abandoned exigem novo documento e
+assignment; reiniciar uma sessão expirada não gera nova cobrança.
+
+O signatário continua confirmando dados e assinando durante InReview. Após todas
+as assinaturas, `pending_identity_review` segura a certificação até a conta aprovar
+todas as revisões. Trate `signer_identity_review_required` no receptor de webhooks
+e permita que um revisor autorizado da conta consulte o resumo e as imagens:
+
+```python
+revisao = client.assignments.identity_verification(document_id, assignment_id, signer_id)
+if revisao["status"] == "InReview" and "face" in revisao["images"]:
+    imagem = client.assignments.download_identity_verification_image(
+        document_id, assignment_id, signer_id, "face",
+    )
+# Após a decisão do revisor da conta:
+revisao = client.assignments.review_identity_verification(
+    document_id, assignment_id, signer_id, "Approved", note="Identidade confirmada",
+)
+```
+
+O resumo contém `id`, `status`, `provider`, `verification_method`, `reason_codes`,
+`evidence_available`, `expected`, `document`, `matches`, `checks`, `images`,
+`ruleset_version`, `evidence_sha256`, `reviewed_by`, `reviewed_at`, `review_note`
+e `completed_at`. As evidências podem estar ausentes ou nulas. A aprovação direta
+pelo provedor tem evidências na atividade `signer_identity_verified`.
+As imagens são `document_front`, `document_back`, `document_pdf` e `face`, disponíveis
+somente durante InReview; retornam bytes JPEG/PNG/PDF sem cache e HTTP 404 após a
+decisão. Mantenha as evidências fora de caches e logs.
+
+As decisões são `Approved` ou `Rejected`; `note` é opcional, tem no máximo 2000
+caracteres, fica na atividade e vai ao provedor, sem ser mostrada ao signatário.
+A rejeição cancela o documento como `rejected_by_user` e envia avisos de
+cancelamento aos signatários e destinatários de cópia. Assine os eventos
+`signer_identity_verified`, `signer_identity_verification_failed`,
+`signer_identity_review_required`, `signer_identity_review_approved` e
+`signer_identity_review_rejected` conforme necessário.
 
 ## O ciclo de vida da assinatura
 
@@ -288,7 +359,8 @@ document = client.documents.wait_until_ready(document["id"])
 ```
 
 `wait_until_ready` consulta `documents.get` até o status chegar a `metadata_ready`,
-`pending_signature` ou `certificated`; levanta erro em um status de falha terminal e não repete um
+`pending_signature`, `pending_identity_review` ou `certificated`; a revisão de identidade ainda
+pode segurar a certificação. Levanta erro em um status de falha terminal e não repete um
 `404`, que esperar nunca resolveria. Renomeie o documento aqui, se precisar — a API tranca o nome
 assim que existe um assignment:
 
@@ -1142,6 +1214,7 @@ client.webhooks.list_dispatches({"delivered": False, "page": 1, "per_page": 20})
 # client.webhooks.get_endpoint_secret(endpoint["id"])
 # client.webhooks.rotate_endpoint_secret(endpoint["id"])
 # client.webhooks.delete_endpoint(endpoint["id"])
+# client.webhooks.delete_endpoint_by_url("https://example.com/webhooks/assinafy")
 # client.webhooks.retry_dispatch(dispatch_id)
 
 # Chamadas do endpoint mais antigo, para integrações anteriores a múltiplos endpoints.
@@ -1156,7 +1229,10 @@ limite levanta `ApiError` com status `403`, e cada endpoint precisa de uma `url`
 `create_endpoint()` exige `url`, `email` e `events`, e aceita `name`, `is_active` (padrão `True`) e
 `signing_enabled` (padrão `False`). `update_endpoint()` altera apenas os campos enviados. Ativar
 `signing_enabled` gera um segredo quando o endpoint não tem um; desativar descarta o segredo.
-`delete_endpoint()` interrompe a entrega e libera a vaga.
+`delete_endpoint()` interrompe a entrega e libera a vaga. `delete_endpoint_by_url(url)`
+faz o mesmo pela URL exata cadastrada, enviada como query sem corpo de requisição;
+retorna `None` no sucesso e HTTP `404` quando não há endpoint correspondente na conta.
+Aplicações OAuth precisam de `webhooks:write` para as duas formas de exclusão.
 
 **Endpoint mais antigo.** `get()`, `register()` e `inactivate()` atuam sobre o endpoint mais antigo
 da conta (`register()` cria um quando não existe nenhum). `register()` preenche um `events` ou
@@ -1240,7 +1316,7 @@ Os formatos estáveis de nível superior de cada recurso são:
   "Signer": {
     "resource": "signer", "id": "signer-id", "full_name": "Signatário de Exemplo",
     "email": "signatario@example.com", "whatsapp_phone_number": null,
-    "has_accepted_terms": false
+    "government_id": null, "has_accepted_terms": false
   },
   "Document": {
     "resource": "document", "id": "document-id", "account_id": "account-id",
@@ -1258,8 +1334,9 @@ Os formatos estáveis de nível superior de cada recurso são:
     "signers": [{
       "resource": "signer", "id": "signer-id", "full_name": "Signatário de Exemplo",
       "email": "signatario@example.com", "whatsapp_phone_number": null,
-      "has_accepted_terms": false, "verification_method": "Email",
+      "government_id": null, "has_accepted_terms": false, "verification_method": "Email",
       "notification_methods": ["Email"], "step": 1, "notified": true,
+      "identity_verification_status": null,
       "completed": false, "notification_history": [{
         "event": "signature_request", "status": "sent", "error_code": null,
         "error_message": null, "sent_at": "2026-08-26T12:00:00Z",

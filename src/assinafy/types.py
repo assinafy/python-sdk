@@ -15,6 +15,7 @@ DocumentStatus = Literal[
     "metadata_processing",
     "metadata_ready",
     "pending_signature",
+    "pending_identity_review",
     "expired",
     "certificating",
     "certificated",
@@ -28,7 +29,7 @@ DOCUMENT_ARTIFACT_NAMES = frozenset(get_args(DocumentArtifactName))
 
 AssignmentMethod = Literal["virtual", "collect"]
 
-VerificationMethod = Literal["Email", "Whatsapp", "DigitalCertificate"]
+VerificationMethod = Literal["Email", "Whatsapp", "DigitalCertificate", "IdDocumentFaceMatchBasic"]
 VERIFICATION_METHODS = frozenset(get_args(VerificationMethod))
 
 NotificationMethod = Literal["Email", "Whatsapp"]
@@ -64,6 +65,11 @@ WebhookEventType = Literal[
     "signer_created",
     "signer_email_verified",
     "signer_whatsapp_verified",
+    "signer_identity_verified",
+    "signer_identity_verification_failed",
+    "signer_identity_review_required",
+    "signer_identity_review_approved",
+    "signer_identity_review_rejected",
     "signer_data_confirmed",
     "signer_viewed_document",
     "signer_signed_document",

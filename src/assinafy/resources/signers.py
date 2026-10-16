@@ -36,7 +36,8 @@ class SignerResource(BaseResource):
         ``whatsapp_phone_number`` (E.164, e.g. ``+5548999990000``) depending on
         the verification/notification channels you plan to use, and
         ``government_id`` (CPF or CNPJ) when the signer will use the
-        ``DigitalCertificate`` verification method.
+        ``DigitalCertificate`` verification method, or a valid CPF for
+        ``IdDocumentFaceMatchBasic`` (identity document, face match and liveness).
 
         Example request body (JSON)::
 
@@ -204,7 +205,8 @@ class SignerResource(BaseResource):
             {"resource": "signer", "id": "1031ff86...", "full_name": "John Doe",
              "email": "john@example.com", "whatsapp_phone_number": null,
              "government_id": null, "has_accepted_terms": true, "has_signature": true,
-             "has_initial": false, "is_signature_reusable": false}
+             "has_initial": false, "is_signature_reusable": false,
+             "verification_method": "Email"}
 
         Request body: none.
         """
@@ -212,6 +214,68 @@ class SignerResource(BaseResource):
         return self._call_dict(
             "Failed to fetch signer self",
             lambda: self._http.get("signers/self", params=query),
+        )
+
+    def identity_verification(self, signer_access_code: str) -> dict[str, Any]:
+        """``GET /signers/identity-verification`` — get biometric verification state.
+
+        Query: ``signer-access-code``; no workspace credentials or request body.
+        The API backfills pending decisions from the provider. ``can_start`` is
+        true before a session exists or after it expires. Pending, InReview,
+        Approved, Declined and Abandoned sessions cannot be restarted here.
+        Declined/Abandoned require a new document and assignment. InReview lets
+        the signer continue signing while the account reviews the evidence.
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"can_start": false, "status": "Pending",
+             "url": "https://verify.assinafy.com.br/c/session-id#t=example-token",
+             "expires_at": "2026-10-17T12:00:00Z", "completed_at": null}
+
+        ``url`` is null outside Pending. It is a bearer credential: open it
+        unchanged, including its fragment; never log it or store it in the browser.
+        Timestamps may be null when the provider does not supply them.
+        """
+        query = self._signer_query(signer_access_code)
+        return self._call_dict(
+            "Failed to fetch signer identity verification",
+            lambda: self._http.get("signers/identity-verification", params=query),
+        )
+
+    def start_identity_verification(
+        self, signer_access_code: str, *, consent: bool
+    ) -> dict[str, Any]:
+        """``POST /signers/identity-verification`` — consent and open a capture session.
+
+        Query: ``signer-access-code``; no workspace credentials. The application
+        must obtain explicit biometric-processing consent before passing True.
+        One live session is allowed per signer; only an Expired session can be
+        replaced. Restarting does not bill again: pricing is per signer at
+        assignment creation. Other existing session states return HTTP 400.
+
+        Request body (JSON)::
+
+            {"consent": true}
+
+        Example response (``data`` envelope unwrapped)::
+
+            {"id": "verification-id",
+             "url": "https://verify.assinafy.com.br/c/session-id#t=example-token",
+             "expires_at": "2026-10-17T12:00:00Z"}
+
+        Redirect to ``url`` unchanged, including the fragment. It is a bearer
+        credential: never log it or store it in the browser. ``expires_at`` may
+        be null. Capture uses the provider's hosted flow; no biometric uploads
+        pass through the SDK.
+        """
+        query = self._signer_query(signer_access_code)
+        if consent is not True:
+            raise ValidationError("consent must be True for biometric processing")
+        return self._call_dict(
+            "Failed to start signer identity verification",
+            lambda: self._http.post(
+                "signers/identity-verification", params=query, json={"consent": True}
+            ),
         )
 
     def accept_terms(self, signer_access_code: str) -> dict[str, Any]:

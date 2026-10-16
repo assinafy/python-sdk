@@ -108,7 +108,9 @@ class WebhookVerifier:
         signed = f"{message_id}.{timestamp}.".encode() + raw
         expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest())
         return any(
-            version == "v1" and hmac.compare_digest(expected, candidate.encode("utf-8"))
+            version == "v1"
+            and candidate.isascii()
+            and hmac.compare_digest(expected, candidate.encode("ascii"))
             for version, _, candidate in (entry.partition(",") for entry in signatures.split())
         )
 

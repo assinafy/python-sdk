@@ -127,6 +127,8 @@ class TestAssinafyClient:
             ("GET", "public/documents/doc"),
             ("PUT", "public/documents/doc/send-token"),
             ("GET", "signers/self"),
+            ("GET", "signers/identity-verification"),
+            ("POST", "signers/identity-verification"),
             ("GET", "signers/signer/document"),
             ("GET", "sign"),
             ("POST", "documents/doc/assignments/assignment"),

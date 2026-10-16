@@ -146,6 +146,7 @@ class TestVerifyDelivery:
             {"webhook-signature": "v1,bm90LWl0"},
             {"webhook-signature": "v2," + _SW_HEADERS["webhook-signature"][3:]},
             {"webhook-signature": "v1,ção"},
+            {"webhook-signature": "v1,\ud800"},
             {"webhook-id": "msg_other"},
             {"webhook-timestamp": "1614265331"},
             {"webhook-timestamp": "not-a-number"},
