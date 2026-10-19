@@ -229,6 +229,14 @@ demais para abrir essa trava.
 O endpoint comum de assinatura **rejeita** signatários por certificado: a assinatura deles é
 produzida por um handshake de dois passos com a extensão Web PKI.
 
+Por isso, `DigitalCertificate` exige `method: "virtual"`. Um assignment `collect` contém campos
+posicionados, mas o fluxo de certificado conclui apenas o item virtual do signatário; esse documento
+nunca poderia ser concluído. `assignments.create()` e `assignments.estimate_cost()` rejeitam a
+combinação antes da requisição com
+`ValidationError.errors["code"] == "digital_certificate_requires_virtual_method"`. Um template com
+campos posicionados também gera um assignment `collect`, então seus papéis não podem usar
+`DigitalCertificate`.
+
 O navegador conduz a operação Web PKI com o certificado escolhido pelo signatário.
 
 As duas rotas estão implantadas em produção e no sandbox, mas **não** constam como operações no

@@ -269,28 +269,19 @@ class TestAssignmentResource:
         )
         assert captured_body[0] == {"method": "virtual", "signers": [{}]}
 
-    def test_estimate_cost_sends_signers_for_collect_too(self) -> None:
-        captured_body: list[object] = []
-
-        class MockHttp:
-            def post(self, url: str, **kwargs: object) -> object:
-                captured_body.append(kwargs.get("json"))
-                return make_response(make_envelope({}))
-
-        AssignmentResource(MockHttp(), "acc").estimate_cost(
-            "doc",
-            {
-                "method": "collect",
-                "signers": [{"verification_method": "DigitalCertificate"}],
-                "entries": [{"page_id": "page-1", "fields": []}],
-            },
-        )
-        # collect is priced per signer as well, so the channels must reach the API.
-        assert captured_body[0] == {
+    @pytest.mark.parametrize("operation", ["create", "estimate_cost"])
+    def test_collect_rejects_digital_certificate_with_stable_code(self, operation: str) -> None:
+        resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
+        payload = {
             "method": "collect",
+            "signers": [{"id": "signer-1", "verification_method": "DigitalCertificate"}],
             "entries": [{"page_id": "page-1", "fields": []}],
-            "signers": [{"verification_method": "DigitalCertificate"}],
         }
+
+        with pytest.raises(ValidationError, match="virtual") as exc_info:
+            getattr(resource, operation)("doc", payload)
+
+        assert exc_info.value.errors == {"code": "digital_certificate_requires_virtual_method"}
 
     @pytest.mark.parametrize("payload", [{}, {"method": "virtual"}, {"method": "collect"}])
     def test_estimate_cost_requires_at_least_one_signer(self, payload: dict[str, object]) -> None:

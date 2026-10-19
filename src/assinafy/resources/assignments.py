@@ -96,6 +96,13 @@ def build_assignment_payload(
     )
     if signers:
         normalised = [_normalise_signer_ref(ref, allow_signers_without_id) for ref in signers]
+        if method != "virtual" and any(
+            signer.get("verification_method") == "DigitalCertificate" for signer in normalised
+        ):
+            raise ValidationError(
+                'DigitalCertificate signers require method="virtual"',
+                {"code": "digital_certificate_requires_virtual_method"},
+            )
         if not allow_signers_without_id:
             _validate_signer_steps(normalised)
         body["signers"] = normalised
@@ -289,15 +296,21 @@ class AssignmentResource(BaseResource):
     define fields for those objects. Virtual/legacy items may return an empty
     or non-object ``display_settings`` value; collect items use the object shown.
 
-    ``DigitalCertificate`` is a published assignment verification method, and
-    :meth:`sign` rejects those signers by design: the API routes them to
-    ``POST /signers/certificate/start`` + ``/complete``, a two-step handshake
-    with the signer's Web PKI browser extension. Those two routes are deployed
-    on both production and sandbox but are **not** listed as operations in the
-    OpenAPI document, so their body and response contract is unpublished and
-    this SDK does not guess them. Everything around the certificate signature —
-    creating the assignment, ``confirm_data``, cost estimation, and downloading
-    the resulting ``pades`` artifact — is covered here.
+    ``DigitalCertificate`` is a published assignment verification method, but
+    it requires ``method="virtual"``. The certificate flow completes the
+    signer's virtual item, while :meth:`sign` rejects certificate signers, so a
+    collect assignment cannot be completed. :meth:`create` and
+    :meth:`estimate_cost` reject that combination with
+    ``ValidationError.errors["code"] ==
+    "digital_certificate_requires_virtual_method"``. The API routes virtual
+    certificate signers to ``POST /signers/certificate/start`` + ``/complete``,
+    a two-step handshake with the signer's Web PKI browser extension. Those two
+    routes are deployed on both production and sandbox but are **not** listed as
+    operations in the OpenAPI document, so their body and response contract is
+    unpublished and this SDK does not guess them. Everything around the
+    certificate signature — creating a virtual assignment, ``confirm_data``,
+    cost estimation, and downloading the resulting ``pades`` artifact — is
+    covered here.
 
     ``IdDocumentFaceMatchBasic`` uses the hosted identity-document, face-match
     and liveness flow exposed by ``signers.identity_verification`` and
@@ -407,6 +420,11 @@ class AssignmentResource(BaseResource):
         checks geometry and field keys; page bounds require the dimensions from
         ``documents.get()`` and must be checked by the caller.
 
+        ``DigitalCertificate`` signers require ``method="virtual"``. A collect
+        assignment raises :class:`~assinafy.errors.ValidationError` with the
+        stable ``errors["code"]`` value
+        ``"digital_certificate_requires_virtual_method"`` before any request.
+
         Example response (``data`` envelope unwrapped)::
 
             {
@@ -462,6 +480,10 @@ class AssignmentResource(BaseResource):
         estimate contract. Collect estimate ``entries`` are objects with no
         published member schema, so their keys are forwarded; the placement
         validation used by :meth:`create` does not apply to pricing descriptors.
+        ``DigitalCertificate`` signers require ``method="virtual"``; a collect
+        estimate raises :class:`~assinafy.errors.ValidationError` with
+        ``errors["code"] == "digital_certificate_requires_virtual_method"``
+        before any request.
 
         Example request body (JSON)::
 

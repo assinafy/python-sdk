@@ -2,6 +2,15 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [2.0.1] - 2026-10-19
+
+### Fixed
+
+- Assignment creation and cost estimates reject `DigitalCertificate` signers
+  when `method` is `collect`, because certificate signing requires virtual
+  assignment items. The validation error exposes the stable code
+  `digital_certificate_requires_virtual_method`.
+
 ## [2.0.0] - 2026-10-16
 
 ### Added

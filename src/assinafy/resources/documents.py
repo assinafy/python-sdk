@@ -437,7 +437,9 @@ class DocumentResource(BaseResource):
         ``role_id`` plus ``id``/``verification_method``/...). The API requires
         contiguous signing ``step`` values and a DigitalCertificate signer to
         be alone in its step; copy-receiver roles ignore ``step``. At most one
-        notification method is allowed per template signer.
+        notification method is allowed per template signer. A template role
+        with placed fields produces a collect assignment and therefore cannot
+        use ``DigitalCertificate``, which requires a virtual assignment.
 
         ``options`` may include string ``name``/``message``, RFC 3339
         ``expires_at``, ``editor_fields`` entries shaped as
@@ -498,7 +500,10 @@ class DocumentResource(BaseResource):
 
         Unlike :meth:`create_from_template`, contact information is not required
         here — only ``role_id`` and optionally ``verification_method`` /
-        ``notification_methods`` per signer.
+        ``notification_methods`` per signer. Do not select
+        ``DigitalCertificate`` for a role with placed fields: that template
+        produces a collect assignment, while certificate signing requires a
+        virtual assignment.
 
         Example request body (JSON)::
 

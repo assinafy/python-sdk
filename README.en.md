@@ -228,6 +228,15 @@ covers both in one call, and `accept_terms()` is never gated. Sending
 The ordinary signing endpoint **rejects** certificate signers: their signature
 is produced by a two-step handshake with the Web PKI browser extension.
 
+Therefore, `DigitalCertificate` requires `method: "virtual"`. A `collect`
+assignment contains placed fields, but the certificate flow completes only the
+signer's virtual item, so that document could never complete.
+`assignments.create()` and `assignments.estimate_cost()` reject the combination
+before sending a request with
+`ValidationError.errors["code"] == "digital_certificate_requires_virtual_method"`.
+A template with placed fields also produces a `collect` assignment, so its
+roles cannot use `DigitalCertificate`.
+
 The browser completes the Web PKI operation using the signer's selected certificate.
 
 Both routes are deployed on production and sandbox, but they are **not**
