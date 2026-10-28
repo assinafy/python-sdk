@@ -19,7 +19,8 @@ QUERY_PARAM_ALIASES = {
     "signer_access_code": "signer-access-code",
 }
 _RFC3339_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]+)?(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$"
 )
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
@@ -110,6 +111,26 @@ def validate_datetime(value: Any, name: str, *, allow_none: bool = False) -> Non
         raise ValidationError(f"{name} must be an RFC 3339 timestamp") from err
 
 
+def validate_expiration(value: Any, name: str = "expires_at", *, allow_none: bool = False) -> None:
+    """Accept RFC 3339, a UTC datetime without offset, or a UTC end-of-day date.
+
+    The API interprets date-only expirations as 23:59 UTC and checks that the
+    expiration is at least one hour in the future. Preserve the caller's value.
+    """
+    if value is None and allow_none:
+        return
+    candidate = value
+    if isinstance(value, str):
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            candidate = value + "T23:59:00Z"
+        elif re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?",
+            value,
+        ):
+            candidate = value + "Z"
+    validate_datetime(candidate, name)
+
+
 def load_file_source(source: dict[str, Any]) -> tuple[bytes, str]:
     """Resolve a ``multipart/form-data`` upload source to ``(bytes, file_name)``.
 
@@ -183,7 +204,7 @@ def validate_wait_options(timeout: float, poll_interval: float) -> None:
 
 
 def build_signer_payload(payload: dict[str, Any], require_full_name: bool) -> dict[str, Any]:
-    """Build shared signer contact fields, omitting None."""
+    """Build signer fields, omitting None; updates accept empty contact fields to clear them."""
     if not isinstance(payload, dict):
         raise ValidationError("Signer payload must be a mapping")
     allowed = {"full_name", "email", "whatsapp_phone_number", "government_id"}
@@ -196,14 +217,20 @@ def build_signer_payload(payload: dict[str, Any], require_full_name: bool) -> di
     if full_name is not None and (not isinstance(full_name, str) or not full_name.strip()):
         raise ValidationError("full_name must be a non-empty string")
     email = payload.get("email")
-    if email is not None:
+    if email is not None and (require_full_name or email != ""):
         validate_email(email)
     phone = payload.get("whatsapp_phone_number")
-    if phone is not None and (not isinstance(phone, str) or not phone.strip()):
+    if (
+        phone is not None
+        and (require_full_name or phone != "")
+        and (not isinstance(phone, str) or not phone.strip())
+    ):
         raise ValidationError("whatsapp_phone_number must be a non-empty string")
     government_id = payload.get("government_id")
-    if government_id is not None and (
-        not isinstance(government_id, str) or not government_id.strip()
+    if (
+        government_id is not None
+        and (require_full_name or government_id != "")
+        and (not isinstance(government_id, str) or not government_id.strip())
     ):
         raise ValidationError("government_id must be a non-empty string")
     return clean_params(

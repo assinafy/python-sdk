@@ -2,6 +2,38 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [2.1.0] - 2026-10-28
+
+### Added
+
+- `client.contracts` lists, reads and updates contract terms, reads related
+  instruments, renews contracts and terminates them. Contract payloads preserve
+  explicit nulls and support `updated_at` preconditions and guarded renewals.
+- `ContractStatus`, `ContractRelationType`, eight contract lifecycle webhook
+  events and four contract notification preferences.
+- Template creation accepts signer email, name and WhatsApp phone as an
+  alternative to an existing signer ID.
+- `documents.activities()` accepts pagination and sorting parameters while
+  retaining its list return type; `webhooks.list_endpoints()` accepts a URL filter.
+
+### Fixed
+
+- Assignment and template expiration accept date-only values and UTC timestamps
+  without offsets. Timestamp validation rejects invalid timezone offsets.
+- Signer updates accept empty contact fields to clear email, WhatsApp phone
+  and government ID; `None` continues to omit those fields.
+- Collect assignments reject duplicate signer IDs and mismatched field ownership.
+- New webhook endpoints require HTTPS; signature verification rejects oversized
+  timestamps without raising an overflow error.
+- The live smoke runner reports client-close failures, leaves held or legacy
+  HTTP webhook configurations unchanged, and includes contract reads.
+
+### Changed
+
+- Integration examples describe asynchronous template assignments, contract
+  tracking, generated webhook secrets and OAuth permissions for webhook rotation
+  and biometric review.
+
 ## [2.0.1] - 2026-10-19
 
 ### Fixed

@@ -290,6 +290,22 @@ class TestSignerResource:
 
         assert http.last_kwargs["json"] == {"government_id": "00000000000"}
 
+    @pytest.mark.parametrize("field", ["email", "whatsapp_phone_number", "government_id"])
+    def test_update_can_clear_contact_fields_without_changing_none_omission(
+        self, field: str
+    ) -> None:
+        http = MockHttp()
+        resource = SignerResource(http, "acc")
+
+        resource.update("signer-1", {field: ""})
+        assert http.last_kwargs["json"] == {field: ""}
+
+        resource.update("signer-1", {"full_name": "Example Signer", field: None})
+        assert http.last_kwargs["json"] == {"full_name": "Example Signer"}
+
+        with pytest.raises(ValidationError):
+            resource.create({"full_name": "Example Signer", field: ""})
+
     def test_confirm_data_uses_documented_endpoint(self) -> None:
         http = MockHttp()
         resource = SignerResource(http, "acc")

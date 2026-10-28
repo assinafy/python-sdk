@@ -29,7 +29,10 @@ class SignerDocumentResource(BaseResource):
 
         Returns the complete unwrapped
         :class:`~assinafy.resources.documents.DocumentResource` payload for the
-        document the signer is currently expected to act on.
+        document the signer is currently expected to act on. ``current_signer``
+        contains their verification/notification methods and completion state.
+        The assignment contains their own items and omits ``signers``,
+        ``signing_urls``, ``copy_receivers`` and ``summary``.
 
         Request body: none.
 
@@ -40,7 +43,16 @@ class SignerDocumentResource(BaseResource):
              "artifacts": {"original": "https://api.example/document/original"},
              "is_closed": false, "signing_url": "https://app.example/sign/document-id",
              "decline_reason": null, "declined_by": null, "tags": [],
-             "assignment": null, "pages": [],
+             "assignment": {"id": "assignment-id", "document_id": "document-id",
+                            "created_at": "2026-06-03T03:54:16Z",
+                            "sender_email": "sender@example.com", "method": "virtual",
+                            "expires_at": null, "message": null, "items": []},
+             "current_signer": {"resource": "signer", "id": "signer-id",
+                                "full_name": "Example Signer", "email": "signer@example.com",
+                                "whatsapp_phone_number": null, "government_id": null,
+                                "has_accepted_terms": true, "verification_method": "Email",
+                                "notification_methods": ["Email"], "completed": false},
+             "verification_code": null, "verification_url": null, "pages": [],
              "created_at": "2026-06-03T03:54:16Z",
              "updated_at": "2026-06-03T03:54:17Z"}
         """
@@ -64,6 +76,9 @@ class SignerDocumentResource(BaseResource):
         is required and is the only credential sent; an invalid code returns
         401. Use :meth:`list_as_workspace` to list with the workspace API key or
         bearer token instead.
+        ``signer_id`` must be the code's signer (otherwise HTTP 403). Only
+        documents whose signing step has been reached are listed, and their
+        assignments omit ``signing_urls``.
         Returns ``{"data": [Document, ...], "meta": {...}}`` where each item
         has the complete :class:`~assinafy.resources.documents.DocumentResource`
         shape and ``meta`` contains the four documented pagination integers.
@@ -78,6 +93,7 @@ class SignerDocumentResource(BaseResource):
              "is_closed": false, "signing_url": "https://app.example/sign/document-id",
              "decline_reason": null, "declined_by": null, "tags": [],
              "assignment": null, "pages": [],
+             "verification_code": null, "verification_url": null,
              "created_at": "2026-06-03T03:54:16Z",
              "updated_at": "2026-06-03T03:54:17Z"}],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
@@ -105,7 +121,14 @@ class SignerDocumentResource(BaseResource):
 
             {"data": [{"resource": "document", "id": "document-id",
               "account_id": "account-id", "name": "contract.pdf",
-              "status": "pending_signature", "...": "..."}],
+              "template_id": null, "status": "metadata_ready",
+              "artifacts": {"original": "https://api.example/document/original"},
+              "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+              "decline_reason": null, "declined_by": null, "tags": [],
+              "assignment": null, "pages": [],
+              "verification_code": null, "verification_url": null,
+              "created_at": "2026-06-03T03:54:16Z",
+              "updated_at": "2026-06-03T03:54:17Z"}],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
         """
         return self._list_documents(signer_id, params, None)
@@ -142,6 +165,9 @@ class SignerDocumentResource(BaseResource):
         Returns ``{"data": [Document, ...]}`` where every
         item has the complete
         :class:`~assinafy.resources.documents.DocumentResource` shape.
+        ``signer_id`` must match the access code's signer (HTTP 403 otherwise).
+        Only reached signing steps are included; ``signing_urls`` are omitted
+        from each assignment.
 
         Request body: none.
 
@@ -153,6 +179,7 @@ class SignerDocumentResource(BaseResource):
              "is_closed": false, "signing_url": "https://app.example/sign/document-id",
              "decline_reason": null, "declined_by": null, "tags": [],
              "assignment": null, "pages": [],
+             "verification_code": null, "verification_url": null,
              "created_at": "2026-06-03T03:54:16Z",
              "updated_at": "2026-06-03T03:54:17Z"}]}
         """
@@ -178,7 +205,14 @@ class SignerDocumentResource(BaseResource):
 
             {"data": [{"resource": "document", "id": "document-id",
               "account_id": "account-id", "name": "contract.pdf",
-              "status": "pending_signature", "...": "..."}]}
+              "template_id": null, "status": "metadata_ready",
+              "artifacts": {"original": "https://api.example/document/original"},
+              "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+              "decline_reason": null, "declined_by": null, "tags": [],
+              "assignment": null, "pages": [],
+              "verification_code": null, "verification_url": null,
+              "created_at": "2026-06-03T03:54:16Z",
+              "updated_at": "2026-06-03T03:54:17Z"}]}
         """
         return self._search_documents(signer_id, clean_params({"search": search}))
 
@@ -196,7 +230,10 @@ class SignerDocumentResource(BaseResource):
     ) -> None:
         """``PUT /signers/documents/sign-multiple?signer-access-code=...``.
 
-        Signs several documents in one call (each must be ready for this signer).
+        Signs several virtual documents in one call. Each must be pending
+        signature and ready for this signer at the current signing step.
+        Invalid document state or method returns HTTP 400; unknown document
+        IDs return HTTP 404.
 
         Example request body (JSON)::
 

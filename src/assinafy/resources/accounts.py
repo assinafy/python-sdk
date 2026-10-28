@@ -33,7 +33,8 @@ class AccountResource(BaseResource):
               "is_delete_allowed": true,
               "created_at": "2026-06-03T03:54:16Z"}]
 
-        Request body: none.
+        Request body: none. OAuth returns only the connected workspace and
+        needs no particular scope. Use its ID for the connection's other calls.
         """
         return self._call_plain_list("Failed to list accounts", lambda: self._http.get("accounts"))
 
@@ -65,7 +66,9 @@ class AccountResource(BaseResource):
         """``GET /accounts/{account_id}`` — return one workspace.
 
         Returns the complete account payload documented on
-        :class:`AccountResource`.
+        :class:`AccountResource`, plus ``limits`` for the current plan.
+        ``limits.webhook_endpoints`` is 1 or 3; other limit keys may be added.
+        This field is absent from account lists. OAuth requires ``account:read``.
 
         Request body: none.
 
@@ -74,7 +77,8 @@ class AccountResource(BaseResource):
             {"resource": "account", "id": "account-id", "name": "Acme Inc.",
              "primary_color": "aabbcc", "secondary_color": "112233",
              "notification_sender_type": "User", "roles": ["owner"],
-             "is_delete_allowed": true, "created_at": "2026-06-03T03:54:16Z"}
+             "is_delete_allowed": true, "limits": {"webhook_endpoints": 1},
+             "created_at": "2026-06-03T03:54:16Z"}
         """
         acc_id = self._account_id(account_id)
         return self._call_dict(

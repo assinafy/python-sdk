@@ -293,6 +293,27 @@ class TestWebhookEndpoints:
         assert WebhookResource(http, "acc").list_endpoints() == [_ENDPOINT]
         assert http.calls == [("GET", "accounts/acc/webhooks/endpoints", None)]
 
+    def test_list_endpoints_preserves_exact_url_filter_and_account_argument(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"status": 200, "data": [_ENDPOINT]})
+
+        url = "http://example.com/legacy?x=1&next=%2Fcallback"
+        with httpx.Client(
+            base_url="https://example.test/v1/", transport=httpx.MockTransport(handler)
+        ) as client:
+            resource = WebhookResource(client, "default")
+            assert resource.list_endpoints("other", url=url) == [_ENDPOINT]
+            resource.list_endpoints()
+            with pytest.raises(ValidationError):
+                resource.list_endpoints(url="")
+        assert requests[0].url.path == "/v1/accounts/other/webhooks/endpoints"
+        assert dict(requests[0].url.params) == {"url": url}
+        assert not requests[1].url.params
+        assert len(requests) == 2
+
     def test_create_endpoint_sends_documented_body(self) -> None:
         http = _RecordingHttp(_ENDPOINT)
         body = {
@@ -310,6 +331,7 @@ class TestWebhookEndpoints:
         [
             {"url": "https://example.com/hook", "email": "ops@example.com"},
             {"url": "ftp://example.com", "email": "ops@example.com", "events": []},
+            {"url": "http://example.com", "email": "ops@example.com", "events": []},
             {"url": "https://example.com", "email": "ops@example.com", "events": [], "x": 1},
             {
                 "url": "https://example.com",
@@ -340,6 +362,42 @@ class TestWebhookEndpoints:
             ("PUT", "accounts/acc/webhooks/endpoints/ep1", {"is_active": False}),
             ("DELETE", "accounts/acc/webhooks/endpoints/ep1", None),
         ]
+
+    def test_existing_http_endpoint_can_still_be_updated_and_deleted_by_url(self) -> None:
+        http = _RecordingHttp(_ENDPOINT)
+        resource = WebhookResource(http, "acc")
+        resource.update_endpoint("ep1", {"url": "http://example.com/legacy"})
+        resource.register(
+            {
+                "url": "http://example.com/legacy",
+                "email": "ops@example.com",
+                "events": [],
+                "is_active": False,
+            }
+        )
+        http.data = []
+        resource.delete_endpoint_by_url("http://example.com/legacy")
+        assert [call[0] for call in http.calls] == ["PUT", "PUT", "DELETE"]
+
+    def test_create_and_enable_signing_preserve_generated_secret_and_endpoint_state(self) -> None:
+        response = {
+            **_ENDPOINT,
+            "resource": "activity_event_subscription",
+            "secret": "whsec_c2VjcmV0",
+            "is_held": False,
+            "held_since": None,
+        }
+        resource = WebhookResource(_RecordingHttp(response), "acc")
+        created = resource.create_endpoint(
+            {
+                "url": "https://example.com/hook",
+                "email": "ops@example.com",
+                "events": ["document_ready"],
+                "signing_enabled": True,
+            }
+        )
+        assert created == response
+        assert resource.update_endpoint("ep1", {"signing_enabled": True}) == response
 
     def test_update_endpoint_requires_a_field_and_a_safe_id(self) -> None:
         http = _RecordingHttp(_ENDPOINT)

@@ -13,8 +13,8 @@ from ..utils import (
     QUERY_PARAM_ALIASES,
     clean_params,
     load_file_source,
-    validate_datetime,
     validate_email,
+    validate_expiration,
     validate_signer_methods,
     validate_wait_options,
 )
@@ -28,7 +28,16 @@ _READY_STATUSES = frozenset(
 _FAILED_STATUSES = frozenset({"failed", "rejected_by_signer", "rejected_by_user", "expired"})
 _TEMPLATE_OPTIONS = frozenset({"name", "message", "expires_at", "editor_fields", "tags"})
 _TEMPLATE_SIGNER_FIELDS = frozenset(
-    {"role_id", "id", "verification_method", "notification_methods", "step"}
+    {
+        "role_id",
+        "id",
+        "email",
+        "name",
+        "whatsapp_phone_number",
+        "verification_method",
+        "notification_methods",
+        "step",
+    }
 )
 _TEMPLATE_ESTIMATE_SIGNER_FIELDS = frozenset(
     {"role_id", "verification_method", "notification_methods"}
@@ -44,11 +53,18 @@ class DocumentResource(BaseResource):
         {"resource": "document", "id": "document-id", "account_id": "account-id",
          "template_id": null, "name": "contract.pdf", "status": "metadata_ready",
          "artifacts": {"original": "https://api.example/document/original"},
+         "verification_code": null, "verification_url": null,
          "is_closed": false, "signing_url": "https://app.example/sign/document-id",
          "decline_reason": null, "declined_by": null, "tags": [],
          "assignment": null, "pages": [],
          "created_at": "2026-06-03T03:54:16Z",
          "updated_at": "2026-06-03T03:54:17Z"}
+
+    ``verification_code`` and ``verification_url`` identify the public
+    certification check and are null before certification; older certificated
+    documents can lack a verification code. ``resource`` is present in single
+    resource responses. Lists and single-document reads include ``assignment``
+    and ``pages``; search omits both, and upload includes only ``pages``.
     """
 
     def upload(
@@ -72,6 +88,7 @@ class DocumentResource(BaseResource):
              "account_id": "account-id", "template_id": null, "name": "sdk.pdf",
              "status": "uploaded",
              "artifacts": {"original": "https://.../download/original"},
+             "verification_code": null, "verification_url": null,
              "is_closed": false, "signing_url": "https://app.../sign/1031ff86...",
              "decline_reason": null, "declined_by": null, "tags": [],
              "created_at": "2026-06-05T20:50:43Z",
@@ -106,7 +123,8 @@ class DocumentResource(BaseResource):
         """``GET /accounts/{account_id}/documents`` — list workspace documents.
 
         ``params`` accepts ``page``, ``per_page`` (sent as ``per-page``),
-        ``search``, ``sort`` (``name`` or ``updated_at``), ``status``, ``method``,
+        ``search``, ``sort`` (``name`` or ``updated_at``, prefixed by ``-`` for
+        descending; default ``-updated_at``), ``status``, ``method``,
         and ``tags`` (comma-separated tag IDs). Returns
         ``{"data": [...], "meta": {...}}`` where ``meta`` is built from the
         documented ``x-pagination-*`` response headers.
@@ -123,7 +141,8 @@ class DocumentResource(BaseResource):
                  "decline_reason": null, "declined_by": null,
                  "tags": [{"id": "1031ff85...", "name": "Contracts",
                            "color": null}],
-                 "assignment": null,
+                 "assignment": null, "pages": [],
+                 "verification_code": null, "verification_url": null,
                  "created_at": "2026-06-05T20:50:33Z",
                  "updated_at": "2026-06-05T20:50:41Z"}
              ],
@@ -167,7 +186,11 @@ class DocumentResource(BaseResource):
         """``GET /documents/{document_id}`` — fetch a single document.
 
         The single-document response embeds ``assignment`` (or ``null``) and
-        ``pages`` once metadata processing completes.
+        ``pages`` once metadata processing completes. Workspace reads can
+        additionally include ``has_contract`` when contract tracking is enabled:
+        true means contract terms are available on this document or the contract
+        it amends. An absent key means unknown, including when the lookup fails.
+        ``decline_reason`` is visible only to the document's creator.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -177,6 +200,9 @@ class DocumentResource(BaseResource):
              "artifacts": {"original": "https://.../download/original",
                            "thumbnail": "https://.../thumbnail"},
              "is_closed": false, "tags": [], "assignment": null,
+             "template_id": null, "signing_url": "https://app.example/sign/document-id",
+             "decline_reason": null, "declined_by": null,
+             "verification_code": null, "verification_url": null, "has_contract": false,
              "pages": [{"id": "1031ff87...", "number": 1, "height": 1651,
                         "width": 1275,
                         "download_url": "https://.../pages/1031ff87.../download"}],
@@ -212,6 +238,9 @@ class DocumentResource(BaseResource):
              "artifacts": {"original": "https://.../download/original",
                            "thumbnail": "https://.../thumbnail"},
              "is_closed": false, "tags": [],
+             "signing_url": "https://app.example/sign/document-id",
+             "decline_reason": null, "declined_by": null,
+             "verification_code": null, "verification_url": null,
              "created_at": "2026-06-05T20:50:43Z",
              "updated_at": "2026-06-05T20:50:49Z"}
         """
@@ -237,7 +266,8 @@ class DocumentResource(BaseResource):
         A compact counterpart to :meth:`list`: it returns documents **without**
         the expanded ``assignment`` / ``pages`` fields, which makes it cheaper
         for autocomplete/typeahead. ``params`` accepts ``search`` (partial match
-        on document name / signer name / signer email), ``status``, and the
+        on document name / signer name / signer email), ``status``, ``sort``
+        (``name``/``updated_at`` with optional ``-`` for descending), and the
         usual ``page`` / ``per_page`` (sent as ``per-page``) pagination keys.
         Returns ``{"data": [...], "meta": {...}}`` when the API returns the
         ``x-pagination-*`` headers.
@@ -253,6 +283,7 @@ class DocumentResource(BaseResource):
                  "is_closed": false,
                  "signing_url": "https://app.../sign/103b08a1...",
                  "decline_reason": null, "declined_by": null, "tags": [],
+                 "verification_code": null, "verification_url": null,
                  "created_at": "2026-06-05T20:50:43Z",
                  "updated_at": "2026-06-05T20:50:49Z"}
              ]}
@@ -291,6 +322,7 @@ class DocumentResource(BaseResource):
              "artifacts": {"original": "https://api.example/document/original"},
              "is_closed": false, "signing_url": "https://app.example/sign/document-id",
              "decline_reason": null, "declined_by": null, "tags": [],
+             "verification_code": null, "verification_url": null,
              "assignment": null, "pages": [],
              "created_at": "2026-06-03T03:54:16Z",
              "updated_at": "2026-06-03T03:54:17Z"}
@@ -387,8 +419,16 @@ class DocumentResource(BaseResource):
             lambda: self._http.get(f"documents/{doc_id}/pages/{pid}/download"),
         )
 
-    def activities(self, document_id: str) -> builtins.list[dict[str, Any]]:
+    def activities(
+        self, document_id: str, params: dict[str, Any] | None = None
+    ) -> builtins.list[dict[str, Any]]:
         """``GET /documents/{document_id}/activities`` — event activity log.
+
+        Returns one page, newest first, with 20 activities by default. ``params``
+        accepts ``page``, ``per_page`` (sent as ``per-page``), and ``sort``;
+        ``sort="id"`` selects oldest first. Request successive pages until an
+        empty list is returned to read the full history. Each activity's
+        ``payload`` contains an event-specific snapshot.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -401,9 +441,10 @@ class DocumentResource(BaseResource):
         Request body: none.
         """
         doc_id = self._path_id(document_id, "Document ID")
+        query = clean_params(params if params is not None else {}, QUERY_PARAM_ALIASES)
         return self._call_plain_list(
             "Failed to fetch document activities",
-            lambda: self._http.get(f"documents/{doc_id}/activities"),
+            lambda: self._http.get(f"documents/{doc_id}/activities", params=query),
         )
 
     def delete(self, document_id: str) -> None:
@@ -433,36 +474,52 @@ class DocumentResource(BaseResource):
     ) -> dict[str, Any]:
         """``POST /accounts/{account_id}/templates/{template_id}/documents``.
 
-        ``signers`` is the documented list of role assignments (each entry needs
-        ``role_id`` plus ``id``/``verification_method``/...). The API requires
+        ``signers`` assigns the template's signing roles. Each entry requires
+        ``role_id`` and either an existing signer ``id`` or ``email``. With
+        ``email``, the API reuses that workspace signer or creates one using
+        ``name`` and optional ``whatsapp_phone_number``. When both are sent,
+        ``id`` takes precedence. Every Signer role needs an entry; CopyReceiver
+        entries are optional, and Editor roles are filled through
+        ``editor_fields`` only. The API requires
         contiguous signing ``step`` values and a DigitalCertificate signer to
         be alone in its step; copy-receiver roles ignore ``step``. At most one
         notification method is allowed per template signer. A template role
         with placed fields produces a collect assignment and therefore cannot
         use ``DigitalCertificate``, which requires a virtual assignment.
 
-        ``options`` may include string ``name``/``message``, RFC 3339
-        ``expires_at``, ``editor_fields`` entries shaped as
+        ``options`` may include string ``name``/``message``, ISO 8601
+        ``expires_at`` (a missing offset means UTC; a date means 23:59 UTC that
+        day, at least one hour in the future), ``editor_fields`` entries shaped as
         ``{"field_id": "...", "value": "..."}``, and a list of tag names.
+        Every placed Editor field needs a non-empty string value.
         Missing tag names are auto-created and merged with the template's
         default document tags.
 
         Example request body (JSON)::
 
-            {"signers": [{"role_id": "role-1", "id": "1031ff86...",
-                          "verification_method": "Email"}],
-             "name": "NDA - John Doe", "message": "Please sign."}
+            {"signers": [{"role_id": "role-1", "email": "signer@example.com",
+                          "name": "Example Signer", "verification_method": "Email",
+                          "notification_methods": ["Email"], "step": 1}],
+             "name": "NDA - Example Signer", "message": "Please sign.",
+             "expires_at": "2030-12-31T23:59:59Z",
+             "editor_fields": [{"field_id": "field-id", "value": "Contract terms"}],
+             "tags": ["Contracts"]}
 
-        Returns the created document object (``data`` envelope unwrapped).
+        Returns the uploaded document with ``assignment: null``. Assignment
+        creation runs in the background: poll :meth:`get` for
+        ``pending_signature`` or listen for ``assignment_created``. On failure
+        the document becomes ``failed`` and emits ``document_processing_failed``
+        with the reason; nothing is charged.
 
         Example response (``data`` envelope unwrapped)::
 
             {"resource": "document", "id": "document-id", "account_id": "account-id",
-             "template_id": "template-id", "name": "contract.pdf", "status": "metadata_ready",
+             "template_id": "template-id", "name": "contract.pdf", "status": "uploaded",
              "artifacts": {"original": "https://api.example/document/original"},
              "is_closed": false, "signing_url": "https://app.example/sign/document-id",
              "decline_reason": null, "declined_by": null, "tags": [],
              "assignment": null, "pages": [],
+             "verification_code": null, "verification_url": null,
              "created_at": "2026-06-03T03:54:16Z",
              "updated_at": "2026-06-03T03:54:17Z"}
         """
@@ -470,7 +527,7 @@ class DocumentResource(BaseResource):
         acc_id = self._account_id(account_id)
         if not isinstance(signers, list) or not signers:
             raise ValidationError("At least one signer is required")
-        _validate_template_signers(signers, require_id=True)
+        _validate_template_signers(signers)
         if options is not None and not isinstance(options, dict):
             raise ValidationError("Template options must be a mapping")
         option_values = _validate_template_options(options or {})
@@ -527,7 +584,7 @@ class DocumentResource(BaseResource):
         acc_id = self._account_id(account_id)
         if not isinstance(signers, list) or not signers:
             raise ValidationError("At least one signer is required")
-        _validate_template_signers(signers, require_id=False, estimate=True)
+        _validate_template_signers(signers, estimate=True)
         body = {"signers": [clean_params(signer) for signer in signers]}
         return self._call_dict(
             "Failed to estimate cost from template",
@@ -725,6 +782,7 @@ class DocumentResource(BaseResource):
         """``DELETE /accounts/{account_id}/documents/{document_id}/tags/{tag_id}``.
 
         Detaches one tag from a document. The tag resource itself is not deleted.
+        Request body: none.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -761,9 +819,7 @@ def _validate_tag_ids(tags: list[str], allow_empty: bool) -> list[str]:
     return tags
 
 
-def _validate_template_signers(
-    signers: list[dict[str, Any]], require_id: bool, *, estimate: bool = False
-) -> None:
+def _validate_template_signers(signers: list[dict[str, Any]], *, estimate: bool = False) -> None:
     allowed = _TEMPLATE_ESTIMATE_SIGNER_FIELDS if estimate else _TEMPLATE_SIGNER_FIELDS
     for signer in signers:
         if not isinstance(signer, dict):
@@ -771,10 +827,21 @@ def _validate_template_signers(
         unknown = signer.keys() - allowed
         if unknown:
             raise ValidationError(f"Unknown template signer fields: {', '.join(sorted(unknown))}")
-        if not isinstance(signer.get("role_id"), str) or not signer["role_id"]:
+        if not isinstance(signer.get("role_id"), str) or not signer["role_id"].strip():
             raise ValidationError("Template signer role_id is required")
-        if require_id and (not isinstance(signer.get("id"), str) or not signer["id"]):
-            raise ValidationError("Template signer id is required")
+        if not estimate:
+            signer_id = signer.get("id")
+            email = signer.get("email")
+            if signer_id is None and email is None:
+                raise ValidationError("Template signer id or email is required")
+            if signer_id is not None and (not isinstance(signer_id, str) or not signer_id.strip()):
+                raise ValidationError("Template signer id must be a non-empty string")
+            if email is not None:
+                validate_email(email)
+            for key in ("name", "whatsapp_phone_number"):
+                value = signer.get(key)
+                if value is not None and (not isinstance(value, str) or not value.strip()):
+                    raise ValidationError(f"Template signer {key} must be a non-empty string")
         verification = signer.get("verification_method")
         notifications = signer.get("notification_methods")
         validate_signer_methods(verification, notifications)
@@ -795,7 +862,7 @@ def _validate_template_options(options: dict[str, Any]) -> dict[str, Any]:
         raise ValidationError("Template message must be a string")
     expires_at = options.get("expires_at")
     if expires_at is not None:
-        validate_datetime(expires_at, "expires_at")
+        validate_expiration(expires_at, "expires_at")
     tags = options.get("tags")
     if tags is not None and (
         not isinstance(tags, list)
@@ -811,6 +878,7 @@ def _validate_template_options(options: dict[str, Any]) -> dict[str, Any]:
             or not isinstance(field["field_id"], str)
             or not field["field_id"].strip()
             or not isinstance(field["value"], str)
+            or not field["value"]
             for field in editor_fields
         )
     ):

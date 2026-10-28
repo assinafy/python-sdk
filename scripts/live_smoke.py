@@ -20,7 +20,8 @@ original value in ``finally``.
 
 Webhook mutation is disabled unless both ``ASSINAFY_WEBHOOK_TEST_URL`` and
 ``ASSINAFY_WEBHOOK_TEST_EMAIL`` are set and the existing subscription can be
-restored exactly. The script never prints API payloads or environment values.
+restored exactly. Held endpoints and legacy HTTP URLs are left unchanged.
+The script never prints API payloads or environment values.
 """
 
 from __future__ import annotations
@@ -178,11 +179,21 @@ def _make_minimal_png() -> bytes:
 def _restorable_webhook(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
+    if value.get("is_held") or value.get("held_since") is not None:
+        return None
     events = value.get("events")
     is_active = value.get("is_active")
     url = value.get("url")
     email = value.get("email")
-    if not isinstance(events, list) or not isinstance(is_active, bool) or not url or not email:
+    if (
+        not isinstance(events, list)
+        or any(not isinstance(event, str) or not event for event in events)
+        or not isinstance(is_active, bool)
+        or not isinstance(url, str)
+        or not url.startswith("https://")
+        or not isinstance(email, str)
+        or not email
+    ):
         return None
     return {"events": list(events), "is_active": is_active, "url": url, "email": email}
 
@@ -246,6 +257,7 @@ def main() -> int:
     temporary_account_id: str | None = None
     preference_restore: dict[NotificationPreferenceCode, bool] | None = None
     preference_mutation_attempted = False
+    close_attempted = False
     client = AssinafyClient(api_key=api_key, account_id=account_id, base_url=base_url)
 
     try:
@@ -298,6 +310,29 @@ def main() -> int:
             lambda: client.documents.list({"per_page": 5}),
             failures,
         )
+        contracts = optional_404_step(
+            "contracts.list(per_page=5)",
+            lambda: client.contracts.list({"per_page": 5}),
+            failures,
+        )
+        contract_rows = contracts.get("data") if isinstance(contracts, dict) else None
+        first_contract = (
+            contract_rows[0] if isinstance(contract_rows, list) and contract_rows else None
+        )
+        contract_document_id = (
+            first_contract.get("document_id") if isinstance(first_contract, dict) else None
+        )
+        if isinstance(contract_document_id, str) and contract_document_id:
+            step(
+                "contracts.get()",
+                lambda: client.contracts.get(contract_document_id),
+                failures,
+            )
+            step(
+                "contracts.related()",
+                lambda: client.contracts.related(contract_document_id),
+                failures,
+            )
         step(
             "signers.list(per_page=5)",
             lambda: client.signers.list({"per_page": 5}),
@@ -373,6 +408,8 @@ def main() -> int:
             print("\n=== authentication.get_api_key() ===\n  SKIP [access token not configured]")
 
         if read_only:
+            step("client.close()", client.close, failures)
+            close_attempted = True
             return 1 if failures else 0
 
         if failures:
@@ -808,11 +845,8 @@ def main() -> int:
                 lambda: client.accounts.delete(temporary_account_id),
                 failures,
             )
-        try:
-            client.close()
-        except Exception as err:  # noqa: BLE001
-            print(f"\n=== client.close() ===\n  FAIL [{type(err).__name__}]")
-            failures.append("client.close()")
+        if not close_attempted:
+            step("client.close()", client.close, failures)
 
     if failures:
         print("\nLive smoke failed; see step labels above.")

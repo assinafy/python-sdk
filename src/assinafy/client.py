@@ -14,6 +14,7 @@ from .errors import AssinafyError, ValidationError
 from .resources.accounts import AccountResource
 from .resources.assignments import AssignmentResource, build_assignment_payload
 from .resources.authentication import AuthenticationResource
+from .resources.contracts import ContractResource
 from .resources.documents import DocumentResource
 from .resources.fields import FieldResource
 from .resources.oauth import OAuthResource
@@ -173,6 +174,7 @@ class AssinafyClient:
         self.accounts = AccountResource(self._http, account_id, self._logger)
         self.users = UserResource(self._http, account_id, self._logger)
         self.documents = DocumentResource(self._http, account_id, self._logger)
+        self.contracts = ContractResource(self._http, account_id, self._logger)
         self.signers = SignerResource(self._http, account_id, self._logger)
         self.signer_documents = SignerDocumentResource(self._http, account_id, self._logger)
         self.assignments = AssignmentResource(self._http, account_id, self._logger)

@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 import pytest
 
+from assinafy import NotificationPreferenceCode
 from assinafy.errors import ValidationError
 from assinafy.resources.users import UserResource
 
@@ -19,6 +20,10 @@ PREFERENCES = {
     "DocumentProcessingFailed": True,
     "TemplateProcessingFailed": False,
     "SignerWhatsappFailed": True,
+    "ContractRenewalNotice": True,
+    "ContractExpiring": True,
+    "ContractExpired": True,
+    "ContractRenewed": True,
 }
 
 
@@ -109,3 +114,23 @@ class TestUserResource:
                 resource.stats("monthly", "August 2026")
         finally:
             client.close()
+
+    @pytest.mark.parametrize(
+        "code",
+        ["ContractRenewalNotice", "ContractExpiring", "ContractExpired", "ContractRenewed"],
+    )
+    def test_contract_notification_preferences_are_sent_and_returned(
+        self, code: NotificationPreferenceCode
+    ) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"status": 200, "data": {**PREFERENCES, code: False}})
+
+        resource, client = _resource(httpx.MockTransport(handler))
+        try:
+            assert resource.update_notification_preferences({code: False})[code] is False
+        finally:
+            client.close()
+        assert json.loads(requests[0].content) == {code: False}

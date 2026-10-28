@@ -12,6 +12,7 @@ from .errors import ApiError, AssinafyError, NetworkError, ValidationError
 from .resources.accounts import AccountResource
 from .resources.assignments import AssignmentResource
 from .resources.authentication import AuthenticationResource
+from .resources.contracts import ContractResource
 from .resources.documents import DocumentResource
 from .resources.fields import FieldResource
 from .resources.oauth import OAuthResource
@@ -24,6 +25,8 @@ from .resources.webhooks import WebhookResource
 from .support.webhook_verifier import WebhookVerifier
 from .types import (
     AssignmentMethod,
+    ContractRelationType,
+    ContractStatus,
     DocumentArtifactName,
     DocumentStatus,
     Logger,
@@ -45,6 +48,9 @@ __all__ = [
     "AssinafyClient",
     "AssinafyError",
     "AuthenticationResource",
+    "ContractRelationType",
+    "ContractResource",
+    "ContractStatus",
     "DocumentArtifactName",
     "DocumentResource",
     "DocumentStatus",

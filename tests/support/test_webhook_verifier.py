@@ -150,6 +150,8 @@ class TestVerifyDelivery:
             {"webhook-id": "msg_other"},
             {"webhook-timestamp": "1614265331"},
             {"webhook-timestamp": "not-a-number"},
+            {"webhook-timestamp": "9" * 400},
+            {"webhook-timestamp": "-" + "9" * 400},
             {"webhook-id": ""},
         ],
     )

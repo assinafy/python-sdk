@@ -269,6 +269,16 @@ class TestDocumentResource:
         resource.verify("hash-1")
         assert http.last_url == "documents/hash-1/verify"
 
+    def test_activities_accepts_pagination_and_sort_without_changing_return_type(self) -> None:
+        http = MockHttp()
+        resource = DocumentResource(http, "acc")
+
+        assert resource.activities("doc-1", {"page": 2, "per_page": 50, "sort": "id"}) == []
+        assert http.last_url == "documents/doc-1/activities"
+        assert http.last_kwargs["params"] == {"page": 2, "per-page": 50, "sort": "id"}
+        with pytest.raises(ValidationError, match="mapping"):
+            resource.activities("doc-1", [])  # type: ignore[arg-type]
+
 
 class TestWaitUntilReady:
     def test_identity_review_is_processed_without_being_certificated(self) -> None:
@@ -427,11 +437,15 @@ class TestTemplateDocuments:
                 [{"role_id": "r1", "id": "s1", "notification_methods": ["Email", "Whatsapp"]}],
                 None,
             ),
-            ([{"role_id": "r1", "id": "s1"}], {"expires_at": "2030-12-31"}),
+            ([{"role_id": "r1", "id": "s1"}], {"expires_at": "2030-02-30"}),
             ([{"role_id": "r1", "id": "s1"}], {"tags": [""]}),
             (
                 [{"role_id": "r1", "id": "s1"}],
                 {"editor_fields": [{"field_id": "field-1"}]},
+            ),
+            (
+                [{"role_id": "r1", "id": "s1"}],
+                {"editor_fields": [{"field_id": "field-1", "value": ""}]},
             ),
             ([{"role_id": "r1", "id": "s1"}], {"signers": []}),
         ],
@@ -463,6 +477,44 @@ class TestTemplateDocuments:
         DocumentResource(http, "acc").create_from_template("template-1", signers)
 
         assert http.last_kwargs["json"] == {"signers": signers}
+
+    @pytest.mark.parametrize("existing_id", [None, "signer-1"])
+    def test_create_from_template_supports_email_signers(self, existing_id: str | None) -> None:
+        http = MockHttp()
+        signer = {
+            "role_id": "role-1",
+            "id": existing_id,
+            "email": "signer@example.com",
+            "name": "Example Signer",
+            "whatsapp_phone_number": "+5548999990000",
+        }
+
+        DocumentResource(http, "acc").create_from_template("template-1", [signer])
+
+        assert http.last_url == "accounts/acc/templates/template-1/documents"
+        assert http.last_kwargs["json"] == {
+            "signers": [{key: value for key, value in signer.items() if value is not None}]
+        }
+        assert signer["id"] == existing_id
+
+    @pytest.mark.parametrize(
+        "signer",
+        [
+            {"role_id": "role-1", "email": "not-an-email"},
+            {"role_id": "role-1", "email": "signer@example.com", "name": ""},
+            {"role_id": "role-1", "email": "signer@example.com", "whatsapp_phone_number": 1},
+            {"role_id": "role-1", "id": " "},
+            {"role_id": " ", "email": "signer@example.com"},
+        ],
+    )
+    def test_template_signer_contact_validation_happens_before_http(
+        self, signer: dict[str, object]
+    ) -> None:
+        with pytest.raises(ValidationError):
+            DocumentResource(object(), "acc").create_from_template(  # type: ignore[arg-type]
+                "template-1",
+                [signer],  # type: ignore[list-item]
+            )
 
     def test_estimate_cost_from_template_posts_documented_body(self) -> None:
         http = MockHttp()

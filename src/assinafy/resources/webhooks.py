@@ -38,14 +38,17 @@ class WebhookResource(BaseResource):
     The older subscription calls (:meth:`register`, :meth:`get`,
     :meth:`inactivate`) still work and act on the account's oldest endpoint.
 
-    Every endpoint method returns (or lists) this endpoint shape, ``data``
-    envelope unwrapped::
+    Endpoint records have this shape, ``data`` envelope unwrapped; ``resource``
+    is present in single-resource responses. Create/update can additionally
+    include a newly generated ``secret``::
 
-        {"id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
+        {"resource": "activity_event_subscription",
+         "id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
          "url": "https://example.com/webhooks/assinafy",
          "email": "ops@example.com",
          "events": ["document_ready", "signer_signed_document"],
-         "is_active": true, "signing_enabled": true,
+         "is_active": true, "is_held": false, "held_since": null,
+         "signing_enabled": true,
          "created_at": "2026-10-01T12:00:00Z",
          "updated_at": "2026-10-01T12:00:00Z"}
     """
@@ -66,7 +69,10 @@ class WebhookResource(BaseResource):
         collapse a custom event list). If no subscription exists yet, ``events``
         defaults to a curated subset (:data:`_DEFAULT_EVENTS`) and ``is_active``
         defaults to ``True``. Pass an explicit ``events=[]`` to genuinely clear
-        all events (it is not treated as "omitted").
+        all events (it is not treated as "omitted"). New or changed URLs must
+        use HTTPS and resolve to a public address; unchanged legacy HTTP URLs
+        remain accepted. The API validates this distinction. OAuth requires
+        ``webhooks:write``; filling omitted values also needs ``account:read``.
 
         Example request body (JSON)::
 
@@ -81,7 +87,7 @@ class WebhookResource(BaseResource):
 
             {
               "events": ["document_ready", "signer_signed_document"],
-              "is_active": true,
+              "is_active": true, "is_held": false, "held_since": null,
               "url": "https://example.com/webhooks/assinafy",
               "email": "ops@example.com",
               "updated_at": "2026-06-05T20:50:55Z"
@@ -117,14 +123,15 @@ class WebhookResource(BaseResource):
     def get(self, account_id: str | None = None) -> dict[str, Any] | None:
         """``GET /accounts/{account_id}/webhooks/subscriptions`` — read the oldest endpoint.
 
-        Accounts with several endpoints use :meth:`list_endpoints`. Returns
+        OAuth requires ``account:read``. Accounts with several endpoints use
+        :meth:`list_endpoints`. Returns
         ``None`` when the API answers 404; otherwise the configured fields.
 
         Example response (``data`` envelope unwrapped)::
 
             {
               "events": ["document_ready", "document_prepared"],
-              "is_active": true,
+              "is_active": true, "is_held": false, "held_since": null,
               "url": "https://example.com/webhooks/assinafy",
               "email": "ops@example.com",
               "updated_at": "2026-06-05T20:50:55Z"
@@ -143,14 +150,15 @@ class WebhookResource(BaseResource):
 
         Soft-disables the account's oldest endpoint (sets ``is_active`` to
         ``false``) while preserving its ``url``/``events``; re-enable it by
-        calling :meth:`register` again. To remove an endpoint and free its slot,
+        calling :meth:`register` with ``is_active=True``. Request body: none.
+        OAuth requires ``webhooks:write``. To remove an endpoint and free its slot,
         use :meth:`delete_endpoint`.
 
         Example response (``data`` envelope unwrapped)::
 
             {
               "events": ["document_ready", "document_prepared"],
-              "is_active": false,
+              "is_active": false, "is_held": false, "held_since": null,
               "url": "https://example.com/webhooks/assinafy",
               "email": "ops@example.com",
               "updated_at": "2026-06-05T20:50:55Z"
@@ -175,7 +183,7 @@ class WebhookResource(BaseResource):
                "description": "Triggered when the last Signer signs the Document"}
             ]
 
-        Request body: none.
+        Request body: none. OAuth requires ``documents:read``.
         """
         return self._call_plain_list(
             "Failed to list webhook event types",
@@ -194,7 +202,9 @@ class WebhookResource(BaseResource):
         strings), ``endpoint_id`` (restrict to one endpoint), ``from`` / ``to``
         (Unix-second timestamps), and standard pagination keys (``page``,
         ``per_page``, sent as ``per-page``). Returns
-        ``{"data": [...], "meta": {...}}``.
+        ``{"data": [...], "meta": {...}}``. OAuth requires ``documents:read``.
+        History is retained for seven days; ``will_retry`` reports whether
+        another attempt follows this entry.
 
         Example response (``data`` envelope unwrapped, ``meta`` from
         ``x-pagination-*`` headers)::
@@ -207,7 +217,9 @@ class WebhookResource(BaseResource):
                  "payload": {"event": "document_ready", "id": 456,
                              "object": {"id": "abc123", "type": "Document"},
                              "subject": {"id": "def456", "type": "User"}},
-                 "delivered": true, "http_status": 200, "response_body": "OK",
+                 "delivered": true, "webhook_id": "message-id", "attempt": 1,
+                 "kind": "scheduled", "will_retry": false,
+                 "http_status": 200, "response_body": "OK",
                  "error": null, "created_at": "2026-06-05T20:50:55Z",
                  "updated_at": "2026-06-05T20:50:56Z"}
              ],
@@ -232,7 +244,9 @@ class WebhookResource(BaseResource):
         Forces redelivery of a single webhook dispatch (useful after the
         circuit breaker pauses delivery). ``dispatch_id`` is the hex-string
         ``id`` from :meth:`list_dispatches`. Returns the newly created webhook
-        entry (same shape as a ``list_dispatches`` item).
+        entry (same shape as a ``list_dispatches`` item). A successful delivery
+        lifts the endpoint's hold. OAuth requires ``webhooks:write``.
+        Request body: none.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -240,7 +254,9 @@ class WebhookResource(BaseResource):
              "id": "a1b2c3d4e5f6...", "event": "document_ready",
              "activity_id": 456, "endpoint_id": "65f1c2a9b3e4d5f60718293a4b5c6d7e",
              "endpoint": "https://example.com/webhook", "payload": null,
-             "delivered": true, "http_status": 200, "response_body": "OK",
+             "delivered": true, "webhook_id": "message-id", "attempt": 2,
+             "kind": "manual", "will_retry": false,
+             "http_status": 200, "response_body": "OK",
              "error": null, "created_at": "2026-06-05T20:50:55Z",
              "updated_at": "2026-06-05T20:50:56Z"}
         """
@@ -251,11 +267,16 @@ class WebhookResource(BaseResource):
             lambda: self._http.post(f"accounts/{acc_id}/webhooks/{did}/retry"),
         )
 
-    def list_endpoints(self, account_id: str | None = None) -> list[dict[str, Any]]:
+    def list_endpoints(
+        self, account_id: str | None = None, *, url: str | None = None
+    ) -> list[dict[str, Any]]:
         """``GET /accounts/{account_id}/webhooks/endpoints`` — list endpoints, oldest first.
 
-        Request body: none. Each item has the endpoint shape shown on the
-        class docstring.
+        Request body: none. Optional ``url`` filters by the exact registered
+        URL, including a legacy HTTP URL. Query example:
+        ``url=https%3A%2F%2Fexample.com%2Fwebhooks%2Fassinafy``.
+        OAuth requires ``account:read``. Each item has the endpoint shape
+        shown on the class docstring; signing secrets are never listed.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -263,14 +284,19 @@ class WebhookResource(BaseResource):
               "url": "https://example.com/webhooks/assinafy",
               "email": "ops@example.com",
               "events": ["document_ready", "signer_signed_document"],
-              "is_active": true, "signing_enabled": true,
+              "is_active": true, "is_held": false, "held_since": null,
+              "signing_enabled": true,
               "created_at": "2026-10-01T12:00:00Z",
               "updated_at": "2026-10-01T12:00:00Z"}]
         """
+        if url is not None:
+            _validate_webhook_url(url)
         acc_id = self._account_id(account_id)
         return self._call_plain_list(
             "Failed to list webhook endpoints",
-            lambda: self._http.get(f"accounts/{acc_id}/webhooks/endpoints"),
+            lambda: self._http.get(
+                f"accounts/{acc_id}/webhooks/endpoints", params=clean_params({"url": url})
+            ),
         )
 
     def create_endpoint(
@@ -285,8 +311,12 @@ class WebhookResource(BaseResource):
         optional. An account can have 1 endpoint, or up to 3 on paid plans;
         creating one past the limit raises :class:`~assinafy.errors.ApiError`
         with status ``403``, and a ``url`` another endpoint already uses raises
-        status ``400``. With ``signing_enabled`` a secret is generated; read it
-        with :meth:`get_endpoint_secret`.
+        status ``400``. The URL must use HTTPS and resolve to a public address;
+        the API checks address eligibility and does not follow delivery redirects.
+        With ``signing_enabled`` a secret is generated and returned once as
+        ``secret``. Store it securely: list/get omit it, and OAuth applications
+        cannot use :meth:`get_endpoint_secret`. They can obtain a replacement
+        with :meth:`rotate_endpoint_secret`. OAuth requires ``webhooks:write``.
 
         Example request body (JSON)::
 
@@ -297,15 +327,19 @@ class WebhookResource(BaseResource):
 
         Example response (``data`` envelope unwrapped)::
 
-            {"id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
+            {"resource": "activity_event_subscription",
+             "id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
              "url": "https://example.com/webhooks/assinafy",
              "email": "ops@example.com",
              "events": ["document_ready", "signer_signed_document"],
-             "is_active": true, "signing_enabled": true,
+             "is_active": true, "is_held": false, "held_since": null,
+             "signing_enabled": true, "secret": "whsec_c2VjcmV0",
              "created_at": "2026-10-01T12:00:00Z",
              "updated_at": "2026-10-01T12:00:00Z"}
         """
         _validate_webhook_fields(payload, _ENDPOINT_FIELDS, required=("url", "email", "events"))
+        if urlsplit(payload["url"]).scheme != "https":
+            raise ValidationError("New webhook endpoints require an HTTPS URL")
         acc_id = self._account_id(account_id)
         body = dict(payload)
         self._logger.info("Creating webhook endpoint")
@@ -317,13 +351,16 @@ class WebhookResource(BaseResource):
     def get_endpoint(self, endpoint_id: str, account_id: str | None = None) -> dict[str, Any]:
         """``GET /accounts/{account_id}/webhooks/endpoints/{endpoint_id}`` — read one endpoint.
 
-        Request body: none. Returns the endpoint shape shown on the class
+        Request body: none. OAuth requires ``account:read``. Signing secrets
+        are never included. Returns the endpoint shape shown on the class
         docstring (``data`` envelope unwrapped)::
 
-            {"id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
+            {"resource": "activity_event_subscription",
+             "id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
              "url": "https://example.com/webhooks/assinafy",
              "email": "ops@example.com", "events": ["document_ready"],
-             "is_active": true, "signing_enabled": false,
+             "is_active": true, "is_held": false, "held_since": null,
+             "signing_enabled": false,
              "created_at": "2026-10-01T12:00:00Z",
              "updated_at": "2026-10-01T12:00:00Z"}
         """
@@ -342,18 +379,25 @@ class WebhookResource(BaseResource):
         ``events``, ``name``, ``is_active`` and ``signing_enabled``. Turning
         ``signing_enabled`` on generates a secret when the endpoint has none
         and keeps the current one otherwise; turning it off discards the
-        secret.
+        secret. A newly generated secret appears once as ``secret`` in this
+        response; save it securely, including for OAuth applications. Otherwise
+        that key is absent. New or changed URLs require HTTPS and a public
+        address; an unchanged legacy HTTP URL is still accepted by the API.
+        Sending ``is_active: true`` or changing the URL lifts a delivery hold.
+        OAuth requires ``webhooks:write``.
 
         Example request body (JSON)::
 
-            {"events": ["document_ready"], "is_active": false}
+            {"signing_enabled": true, "is_active": false}
 
         Example response (``data`` envelope unwrapped)::
 
-            {"id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
+            {"resource": "activity_event_subscription",
+             "id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
              "url": "https://example.com/webhooks/assinafy",
              "email": "ops@example.com", "events": ["document_ready"],
-             "is_active": false, "signing_enabled": true,
+             "is_active": false, "is_held": false, "held_since": null,
+             "signing_enabled": true, "secret": "whsec_c2VjcmV0",
              "created_at": "2026-10-01T12:00:00Z",
              "updated_at": "2026-10-02T09:30:00Z"}
         """
@@ -401,12 +445,13 @@ class WebhookResource(BaseResource):
         (``whsec_`` followed by the base64-encoded key), taken from the
         response ``{"secret": "whsec_..."}``. Pass it to
         :class:`~assinafy.support.webhook_verifier.WebhookVerifier` and keep it
-        out of logs. The API answers ``400`` when signing is disabled, and the
-        operation is not available to OAuth applications. Request body: none.
+        out of logs. The API answers ``400`` when signing is disabled. OAuth
+        applications receive secrets on creation/enabling or rotation instead
+        and cannot call this read operation. Request body: none.
 
         Example response (``data`` envelope unwrapped)::
 
-            {"secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}
+            "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
         """
         path = self._endpoint_path(endpoint_id, account_id) + "/secret"
         return self._secret("Failed to fetch webhook endpoint secret", lambda: self._http.get(path))
@@ -417,12 +462,13 @@ class WebhookResource(BaseResource):
         Replaces the signing secret and returns the new one. The old secret
         stops working immediately: deliveries sent after the rotation are
         signed only with the new secret, so update the receiver right away. The
-        API answers ``400`` when signing is disabled, and the operation is not
-        available to OAuth applications. Request body: none.
+        API answers ``400`` when signing is disabled. OAuth applications can
+        rotate with ``webhooks:write``. Request body: none. The wire response
+        ``{"secret": "whsec_..."}`` is reduced to its secret string.
 
         Example response (``data`` envelope unwrapped)::
 
-            {"secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}
+            "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
         """
         path = self._endpoint_path(endpoint_id, account_id) + "/secret/rotate"
         self._logger.info("Rotating webhook endpoint secret")

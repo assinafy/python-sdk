@@ -105,10 +105,10 @@ class TestBuildAssignmentPayload:
 
     @pytest.mark.parametrize(
         "expires_at",
-        ["2030-12-31", "not-a-date", "2030-02-30T00:00:00Z", 1],
+        ["2030-02-30", "not-a-date", "2030-02-30T00:00:00Z", 1],
     )
     def test_rejects_invalid_expiration(self, expires_at: object) -> None:
-        with pytest.raises(ValidationError, match="RFC 3339"):
+        with pytest.raises(ValidationError, match="expires_at"):
             build_assignment_payload(  # type: ignore[arg-type]
                 {"signers": ["a"], "expires_at": expires_at}
             )
@@ -158,7 +158,7 @@ class TestAssignmentResource:
                 {"method": "collect", "entries": [{"page_id": "page-1", "fields": []}]},
             )
 
-    def test_list_adds_default_account_context_for_sandbox_compatibility(self) -> None:
+    def test_list_adds_default_account_context(self) -> None:
         captured_url: list[str] = []
         captured_params: list[object] = []
 
@@ -448,7 +448,7 @@ class TestAssignmentResource:
         resource.reset_expiration("doc-1", "a", None)
         assert captured_body[0] == {"expires_at": None}
 
-    @pytest.mark.parametrize("expires_at", ["", "2030-12-31", 1])
+    @pytest.mark.parametrize("expires_at", ["", "2030-02-30", 1])
     def test_reset_expiration_rejects_invalid_value(self, expires_at: object) -> None:
         resource = AssignmentResource(object(), "acc")  # type: ignore[arg-type]
         with pytest.raises(ValidationError, match="expires_at"):

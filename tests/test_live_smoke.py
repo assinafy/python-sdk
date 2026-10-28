@@ -36,10 +36,12 @@ class FakeClient:
         self,
         *,
         templates: dict[str, Any] | None = None,
+        contracts: dict[str, Any] | None = None,
         webhook: dict[str, Any] | None = None,
         fail_methods: set[str] | None = None,
     ) -> None:
         self.templates_result = templates or {"data": []}
+        self.contracts_result = contracts or {"data": []}
         self.webhook = webhook
         self.fail_methods = fail_methods or set()
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
@@ -50,6 +52,7 @@ class FakeClient:
             "accounts",
             "assignments",
             "authentication",
+            "contracts",
             "documents",
             "fields",
             "signer_documents",
@@ -74,6 +77,8 @@ class FakeClient:
             raise RuntimeError("PRIVATE_EXCEPTION_VALUE")
         if name == "templates.list":
             return self.templates_result
+        if name == "contracts.list":
+            return self.contracts_result
         if name == "templates.get":
             data = self.templates_result.get("data")
             return data[0] if isinstance(data, list) and data else {}
@@ -290,6 +295,43 @@ def test_read_only_mode_needs_no_emails_and_never_mutates(
     assert "documents.upload" not in names
     assert "users.update_notification_preferences" not in names
     assert client.closed is True
+
+
+def test_read_only_close_failure_returns_failure_without_printing_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    close_calls: list[bool] = []
+
+    class CloseFailureClient(FakeClient):
+        def close(self) -> None:
+            close_calls.append(True)
+            self.closed = True
+            raise RuntimeError("PRIVATE_CLOSE_ERROR")
+
+    _set_safe_env(monkeypatch)
+    monkeypatch.setenv("ASSINAFY_READ_ONLY", "1")
+    client = CloseFailureClient()
+    _install_client(monkeypatch, client)
+    assert live_smoke.main() == 1
+    assert client.closed is True
+    assert close_calls == [True]
+    assert "PRIVATE_CLOSE_ERROR" not in capsys.readouterr().out
+
+
+def test_read_only_contract_checks_use_only_listed_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_safe_env(monkeypatch)
+    monkeypatch.setenv("ASSINAFY_READ_ONLY", "1")
+    client = FakeClient(contracts={"data": [{"document_id": "PRIVATE_CONTRACT_DOCUMENT"}]})
+    _install_client(monkeypatch, client)
+    assert live_smoke.main() == 0
+    calls = [(name, args) for name, args, _ in client.calls if name.startswith("contracts.")]
+    assert calls == [
+        ("contracts.list", ({"per_page": 5},)),
+        ("contracts.get", ("PRIVATE_CONTRACT_DOCUMENT",)),
+        ("contracts.related", ("PRIVATE_CONTRACT_DOCUMENT",)),
+    ]
 
 
 def test_missing_created_id_aborts_dependent_writes_and_cleans_up(
@@ -523,6 +565,31 @@ def test_webhook_opt_in_restores_exact_original_after_failure(
         "PRIVATE_TIMESTAMP",
     ):
         assert private_value not in output
+
+
+@pytest.mark.parametrize(
+    "state", [{"is_held": True}, {"held_since": 1790000000}, {"url": "http://example.test/hook"}]
+)
+def test_webhook_opt_in_skips_subscriptions_that_cannot_be_restored(
+    monkeypatch: pytest.MonkeyPatch, state: dict[str, Any]
+) -> None:
+    _set_safe_env(monkeypatch)
+    monkeypatch.setenv("ASSINAFY_WEBHOOK_TEST_URL", "https://example.test/smoke")
+    monkeypatch.setenv("ASSINAFY_WEBHOOK_TEST_EMAIL", "ops@example.test")
+    client = FakeClient(
+        webhook={
+            "events": [],
+            "is_active": True,
+            "url": "https://example.test/hook",
+            "email": "ops@example.test",
+            **state,
+        }
+    )
+    _install_client(monkeypatch, client)
+    assert live_smoke.main() == 0
+    names = [name for name, _, _ in client.calls]
+    assert "webhooks.register" not in names
+    assert "webhooks.inactivate" not in names
 
 
 def test_unexpected_failure_still_runs_all_cleanup(

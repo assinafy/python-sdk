@@ -7,7 +7,7 @@ brasileira de assinatura eletrônica de documentos.
 
 O SDK é síncrono, construído sobre `httpx`, e oferece os recursos da API Assinafy:
 contas, usuários, autenticação, OAuth, documentos, signatários, documentos do signatário,
-assignments, definições de campo, templates, tags e webhooks. Todo método público nomeia o verbo e o
+assignments, definições de campo, templates, tags, contratos e webhooks. Todo método público nomeia o verbo e o
 caminho que chama e documenta o corpo da requisição e a resposta já desembrulhada; os formatos de
 recurso compartilhados são documentados uma vez e referenciados pelos métodos que os devolvem.
 
@@ -27,6 +27,7 @@ recurso compartilhados são documentados uma vez e referenciados pelos métodos 
   - [6. Acompanhe o progresso](#6-acompanhe-o-progresso)
   - [7. Baixe o documento assinado](#7-baixe-o-documento-assinado)
   - [Partindo de um template](#partindo-de-um-template)
+- [Gestão de contratos (CLM)](#gestão-de-contratos-clm)
 - [OAuth para aplicações de marketplace](#oauth-para-aplicações-de-marketplace)
   - [1. Registre a aplicação](#1-registre-a-aplicação)
   - [2. Leve o usuário até a Assinafy](#2-leve-o-usuário-até-a-assinafy)
@@ -307,6 +308,9 @@ As imagens são `document_front`, `document_back`, `document_pdf` e `face`, disp
 somente durante InReview; retornam bytes JPEG/PNG/PDF sem cache e HTTP 404 após a
 decisão. Mantenha as evidências fora de caches e logs.
 
+Aplicações OAuth podem ler o resumo com `documents:read`; imagens e decisões
+exigem API key ou sessão de usuário do workspace e retornam 403 para OAuth.
+
 As decisões são `Approved` ou `Rejected`; `note` é opcional, tem no máximo 2000
 caracteres, fica na atividade e vai ao provedor, sem ser mostrada ao signatário.
 A rejeição cancela o documento como `rejected_by_user` e envia avisos de
@@ -537,7 +541,7 @@ endpoint = client.webhooks.create_endpoint({
     "name": "ERP",
     "signing_enabled": True,
 })
-secret = client.webhooks.get_endpoint_secret(endpoint["id"])  # "whsec_..."
+secret = endpoint["secret"]  # "whsec_..."
 ```
 
 Entregas assinadas seguem a especificação [Standard Webhooks](https://www.standardwebhooks.com).
@@ -605,12 +609,13 @@ que você criou, e na ordem inversa das dependências.
 ### Partindo de um template
 
 Quando o layout do documento é fixo, crie-o a partir de um template e pule os estágios 2 e 4 — o
-posicionamento de campos e os papéis já vivem no template:
+posicionamento de campos e os papéis já vivem no template. O exemplo usa um
+template sem campos Editor posicionados:
 
 ```python
 templates = client.templates.list({"search": "NDA"})
 template = client.templates.get(templates["data"][0]["id"])
-roles = template["roles"]
+roles = [role for role in template["roles"] if role["assignment_type"] != "Editor"]
 
 client.documents.estimate_cost_from_template(
     template["id"],
@@ -635,11 +640,110 @@ document = client.documents.create_from_template(
 )
 ```
 
-Signatários de template tomam uma entrada por papel do template, aceitam no máximo um método de
-notificação cada, e seguem as mesmas regras de `step` contíguo dos assignments (papéis de cópia
-ignoram `step`). `options` também aceita `expires_at`, `editor_fields`
+Signatários de template recebem uma entrada por papel de assinatura; entradas de cópia são opcionais.
+Papéis Editor usam `editor_fields` e ficam fora de `signers`. Cada entrada aceita
+`id` existente ou `email` com `name` e `whatsapp_phone_number` opcionais; `id` tem
+precedência. Cada signatário recebe um canal de notificação. A API valida os
+passos no contexto dos papéis; destinatários de cópia ignoram `step`.
+A criação retorna `uploaded` com `assignment: null`; a geração e o assignment
+são assíncronos. Aguarde `assignment_created` (ou `document_processing_failed`),
+depois chame `documents.get(document["id"])`. `wait_until_ready()` garante a
+preparação visual, não a criação do assignment. `options` também aceita `expires_at`, `editor_fields`
 (pares `{"field_id": ..., "value": ...}` gravados no documento gerado) e `tags` — nomes de tag que
 não existem são criados automaticamente e mesclados às tags padrão do template.
+Para templates com campos Editor, obtenha um valor da aplicação para cada campo
+posicionado em `template["pages"][i]["fields"]` e envie seu `field_id` em
+`editor_fields`. Por exemplo, acrescente `"editor_fields": [{"field_id": editor_field_id,
+"value": "Termos acordados"}]` às opções após coletar o valor daquele campo.
+
+## Gestão de contratos (CLM)
+
+`client.contracts` acompanha os termos de um documento existente no workspace.
+Envie o PDF primeiro e depois defina os termos; o acompanhamento não muda o fluxo
+de upload ou assinatura. Escritas exigem plano com gestão de contratos.
+Aplicações OAuth usam `documents:read` para ler e `documents:write` para escrever.
+
+```python
+document = client.documents.upload({"file_path": "./contrato.pdf"})
+contract = client.contracts.update(document["id"], {
+    "status": "active", "counterparty_name": "Empresa de Exemplo",
+    "value": 1200.50, "currency": "BRL",
+    "start_date": "2030-01-01", "end_date": "2030-12-31",
+    "auto_renew": False, "renewal_term_months": 12, "notice_period_days": 30,
+    "metadata": {"department": "sales"},
+    "external_references": [{"system": "crm", "id": "contract-1"}],
+})
+contract = client.contracts.get(document["id"])
+contract = client.contracts.update(document["id"], {
+    "notice_period_days": 60, "updated_at": contract["updated_at"],
+})
+page = client.contracts.list({
+    "status": "active,expired", "ending_within_days": 45,
+    "sort": "end_date", "expand": "document", "page": 1, "per_page": 20,
+})
+```
+
+O contrato sem envelope contém `resource`, `document_id`, `status`,
+`counterparty_name`, `counterparty_taxpayer_id`, `value`, `currency`, `start_date`,
+`end_date`, `auto_renew`, `renewal_term_months`, `notice_period_days`, `term`,
+`owner_id`, `metadata`, `external_references`, `created_at` e `updated_at`.
+Leituras individuais incluem `amendments`; `expand=document` inclui o documento
+nas listas. Datas usam `YYYY-MM-DD`; valores monetários têm até duas casas decimais.
+As docstrings mostram payloads completos e os limites de cada campo.
+
+Só os atributos enviados mudam. Nos payloads de contrato, **`None` envia JSON null**:
+limpa o termo, redefine `auto_renew` para false e redefine a moeda para BRL enquanto
+há valor. Referências externas substituem a lista inteira; `[]` ou `None` a limpa.
+Enviar `updated_at` faz uma escrita desatualizada retornar HTTP 409. Leia novamente
+e resolva o conflito na aplicação. `ApiError.response_data` preserva os itens
+`errors` do servidor (`field`, `code`, `message`). Termos ausentes retornam 404.
+
+Para registrar uma alteração por instrumento assinado, envie outro documento e
+vincule-o antes de solicitar suas assinaturas pelo fluxo normal:
+
+```python
+amendment = client.documents.upload({"file_path": "./aditivo.pdf"})
+link = client.contracts.update(amendment["id"], {
+    "parent_document_id": document["id"], "relation_type": "amendment", "value": 1300,
+})
+family = client.contracts.related(amendment["id"])
+```
+
+O vínculo retorna `resource: document_contract_amendment`, IDs do documento e do
+pai, `document_name`, `relation_type`, `number`, `status`, `document_status`,
+`apply_error`, `currency`, `terms`, `changes`, `applied_at`, `created_at` e
+`updated_at`. A alteração só se aplica quando o instrumento está `certificated`,
+na ordem de assinatura. Vínculos `renewal` alteram apenas `end_date`/`value`;
+`termination`, apenas `end_date`. Vínculos pendentes podem ser editados: `None`
+remove uma chave da alteração e `parent_document_id: None` desvincula o
+instrumento. Vínculos já aplicados são somente leitura.
+
+Para mudanças diretas, use o período atual ou uma nova data final como proteção
+contra renovação duplicada. O SDK nunca repete a chamada automaticamente:
+
+```python
+contract = client.contracts.get(document["id"])
+contract = client.contracts.renew(document["id"], {
+    "term": contract["term"], "updated_at": contract["updated_at"],
+})
+contract = client.contracts.terminate(document["id"], {
+    "reason": "Substituído por um novo acordo", "updated_at": contract["updated_at"],
+})
+```
+
+A renovação reabre contratos expirados, mas recusa contratos encerrados. A rotina
+horária usa o calendário de Brasília para avisos de renovação, alertas de 45/30
+dias, expiração ou renovação automática no dia seguinte ao vencimento. Ela pausa
+quando o plano perde o recurso e retoma o acompanhamento quando ele volta.
+Assine `document_contract_updated`, `document_contract_renewal_notice`,
+`document_contract_expiring`, `document_contract_expired`,
+`document_contract_renewed`, `document_contract_terminated`,
+`document_contract_amended` e `document_contract_amendment_updated`.
+Recupere eventos perdidos paginando `contracts.list({"sort": "-updated_at"})`
+até a última sincronização. Consulte o histórico com
+`documents.activities(document_id, {"page": 2, "per_page": 20})`;
+o retorno existente em lista é mantido. Preferências de notificação incluem
+`ContractRenewalNotice`, `ContractExpiring`, `ContractExpired` e `ContractRenewed`.
 
 ## OAuth para aplicações de marketplace
 
@@ -663,7 +767,6 @@ O recurso é uma fábrica, e não um atributo, porque uma aplicação OAuth tem 
 
 ```python
 import os
-import os
 from assinafy import AssinafyClient
 
 # Um cliente sem credenciais basta para todo o fluxo até a troca do código.
@@ -678,7 +781,7 @@ são decisões da sua aplicação, e as seções abaixo dizem exatamente onde el
 
 ### 1. Registre a aplicação
 
-No app da Assinafy (<https://app.assinafy.com.br>) abra **Integrações → Apps OAuth → Novo aplicativo**. Você precisa ser proprietário do workspace que será dono da aplicação, e o plano dele
+No app da Assinafy (<https://app.assinafy.com.br>) abra **Configurações → Aplicações OAuth → Nova aplicação**. Você precisa ser proprietário do workspace que será dono da aplicação, e o plano dele
 precisa incluir aplicações OAuth.
 
 | Campo | O que colocar |
@@ -1000,7 +1103,9 @@ preferences = client.users.update_notification_preferences({
 ```
 
 `update_notification_preferences` mescla um mapa parcial; chaves omitidas mantêm seus valores, e a
-resposta é sempre o mapa completo de nove chaves.
+resposta é sempre o mapa completo de treze chaves. Aplicações OAuth de terceiros
+recebem 403 nesses endpoints de usuário; use `oauth.userinfo()` para identidade
+e `accounts.stats()` para indicadores do workspace.
 
 ### Documentos
 
@@ -1070,6 +1175,9 @@ client.tags.delete(tag["id"])
 ```
 
 ### Signatários
+
+Na atualização, uma string vazia limpa e-mail, telefone WhatsApp ou documento de identidade.
+`None` mantém a convenção do SDK de omitir o campo.
 
 ```python
 signer = client.signers.create({
@@ -1188,13 +1296,13 @@ client.fields.list({"include_standard": True})
 client.fields.get(field["id"])
 client.fields.update(field["id"], {"name": "CPF atualizado"})
 client.fields.update(field["id"], {"regex": None})  # remove o regex
-client.fields.validate(field["id"], "390.533.447-05", signer_access_code=signer_access_code)
+client.fields.validate(field["id"], "000.000.000-00", signer_access_code=signer_access_code)
 client.fields.validate_multiple(
-    [{"field_id": field["id"], "value": "390.533.447-05"}],
+    [{"field_id": field["id"], "value": "000.000.000-00"}],
     signer_access_code=signer_access_code,
 )
-client.fields.validate_as_workspace(field["id"], "390.533.447-05")  # API key ou token
-client.fields.validate_multiple_as_workspace([{"field_id": field["id"], "value": "390.533.447-05"}])
+client.fields.validate_as_workspace(field["id"], "000.000.000-00")  # API key ou token
+client.fields.validate_multiple_as_workspace([{"field_id": field["id"], "value": "000.000.000-00"}])
 client.fields.list_types()
 client.fields.delete(field["id"])
 ```
@@ -1208,6 +1316,7 @@ entrada de criação.
 ```python
 client.webhooks.list_event_types()
 client.webhooks.list_endpoints()
+client.webhooks.list_endpoints(url="https://example.com/webhooks/assinafy")
 client.webhooks.get_endpoint(endpoint_id)
 client.webhooks.list_dispatches({"delivered": False, "page": 1, "per_page": 20})
 
@@ -1234,6 +1343,7 @@ client.webhooks.get()
 
 **Endpoints.** Uma conta pode registrar 1 endpoint, ou até 3 nos planos pagos; criar um além do
 limite levanta `ApiError` com status `403`, e cada endpoint precisa de uma `url` diferente.
+URLs novas ou alteradas exigem HTTPS; URLs HTTP legadas continuam legíveis e removíveis.
 `create_endpoint()` exige `url`, `email` e `events`, e aceita `name`, `is_active` (padrão `True`) e
 `signing_enabled` (padrão `False`). `update_endpoint()` altera apenas os campos enviados. Ativar
 `signing_enabled` gera um segredo quando o endpoint não tem um; desativar descarta o segredo.
@@ -1249,8 +1359,10 @@ silenciosamente nem colapse sua lista de eventos; passe `events=[]` para limpar 
 
 **Segredos de assinatura.** `get_endpoint_secret()` devolve o segredo `whsec_...` do endpoint e
 `rotate_endpoint_secret()` o substitui. A rotação vale imediatamente, então atualize o receptor na
-hora. Ambos respondem `400` enquanto a assinatura estiver desativada e não estão disponíveis para
-aplicações OAuth.
+hora. Ambos respondem `400` enquanto a assinatura estiver desativada. Aplicações
+OAuth não podem ler o segredo existente, mas podem rotacioná-lo com `webhooks:write`.
+Criação e atualização devolvem `secret` quando ele é gerado; guarde-o com segurança
+na configuração inicial, sem uma chamada separada de leitura do segredo.
 
 **Verificando entregas.** Uma entrega assinada traz os headers `webhook-id`, `webhook-timestamp` e
 `webhook-signature`. `verify_delivery()` calcula o HMAC-SHA256 do Standard Webhooks sobre
@@ -1274,8 +1386,12 @@ Webhooks.
 **Interpretando payloads.** Todo corpo de webhook compartilha o envelope documentado: `id`, `event`,
 `message`, `payload` (parâmetros do evento), `origin`, `created_at`, `subject` (a entidade que
 agiu), `object` (a entidade sobre a qual se agiu) e `account_id`. Cada endpoint recebe cada evento
-de forma independente, com até 2 tentativas; `webhook-id` é idêntico em toda tentativa ao mesmo
-endpoint.
+de forma independente, com até seis tentativas a intervalos de cerca de dez minutos.
+Falhas de conexão, timeout, HTTP 408/429 e 5xx são repetidas; outros status são finais.
+`webhook-id` é estável entre tentativas: persista-o para deduplicar após verificar
+a assinatura. Dez entregas com falha suspendem o endpoint (`is_held`, `held_since`);
+sondagens ocorrem após 3, 15 e 60 minutos, depois a cada seis horas. Uma sondagem
+ou repetição manual bem-sucedida, alteração de URL ou `is_active: True` libera a suspensão.
 
 ```python
 event = verifier.extract_event(raw_body)
@@ -1312,7 +1428,7 @@ Os formatos estáveis de nível superior de cada recurso são:
   "Account": {
     "resource": "account", "id": "account-id", "name": "Acme Inc.",
     "primary_color": "aabbcc", "secondary_color": "112233",
-    "notification_sender_type": "User", "roles": ["owner"],
+    "notification_sender_type": "User", "roles": ["owner"], "limits": {"webhook_endpoints": 1},
     "is_delete_allowed": true, "created_at": "2026-06-03T03:54:16Z"
   },
   "User": {
@@ -1331,12 +1447,14 @@ Os formatos estáveis de nível superior de cada recurso são:
     "template_id": null, "name": "contrato.pdf", "status": "metadata_ready",
     "artifacts": {"original": "https://api.example/document/original"},
     "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+    "verification_code": null, "verification_url": null, "has_contract": false,
     "decline_reason": null, "declined_by": null, "tags": [],
     "assignment": null, "pages": [], "created_at": "2026-06-03T03:54:16Z",
     "updated_at": "2026-06-03T03:54:17Z"
   },
   "Assignment": {
-    "resource": "assignment", "id": "assignment-id",
+    "resource": "assignment", "id": "assignment-id", "document_id": "document-id",
+    "created_at": "2026-06-03T03:54:16Z",
     "sender_email": "remetente@example.com", "method": "virtual",
     "expires_at": null, "message": null,
     "signers": [{
@@ -1391,14 +1509,14 @@ Os formatos estáveis de nível superior de cada recurso são:
     "updated_at": "2026-06-03T03:54:17Z"
   },
   "WebhookSubscription": {
-    "events": ["document_ready"], "is_active": true,
+    "events": ["document_ready"], "is_active": true, "is_held": false, "held_since": null,
     "url": "https://example.com/webhooks/assinafy", "email": "ops@example.com",
     "updated_at": "2026-06-03T03:54:17Z"
   },
   "WebhookEndpoint": {
-    "id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
+    "resource": "activity_event_subscription", "id": "endpoint-id", "name": "ERP",
     "url": "https://example.com/webhooks/assinafy", "email": "ops@example.com",
-    "events": ["document_ready"], "is_active": true, "signing_enabled": true,
+    "events": ["document_ready"], "is_active": true, "is_held": false, "held_since": null, "signing_enabled": true,
     "created_at": "2026-10-01T12:00:00Z", "updated_at": "2026-10-01T12:00:00Z"
   }
 }
@@ -1411,6 +1529,9 @@ Contratos de template, preferências de notificação, KPIs, verificação, entr
 contratos específicos de operação estão documentados junto aos métodos públicos correspondentes;
 métodos que devolvem recursos compartilhados referenciam os formatos canônicos acima. O SDK preserva
 campos extras do servidor, de modo que mudanças aditivas na API permanecem utilizáveis.
+
+`has_contract` é opcional nas leituras de documento pelo workspace; ausência
+significa desconhecido. `limits` aparece na leitura individual da conta.
 
 ## Erros
 

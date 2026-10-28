@@ -9,8 +9,8 @@ from ..types import SignerReference
 from ..utils import (
     QUERY_PARAM_ALIASES,
     clean_params,
-    validate_datetime,
     validate_decline_reason,
+    validate_expiration,
     validate_signer_methods,
 )
 from .base import BaseResource
@@ -69,7 +69,7 @@ def build_assignment_payload(
         raise ValidationError("message must be a string")
     expires_at = payload.get("expires_at")
     if expires_at is not None:
-        validate_datetime(expires_at, "expires_at")
+        validate_expiration(expires_at, "expires_at")
     copy_receivers = payload.get("copy_receivers")
     if copy_receivers is not None and (
         not isinstance(copy_receivers, list)
@@ -108,6 +108,15 @@ def build_assignment_payload(
         body["signers"] = normalised
     if entries is not None and not allow_signers_without_id:
         _validate_collect_entries(entries)
+        if method == "collect":
+            signer_ids = [signer["id"] for signer in body.get("signers", [])]
+            field_signers = {field["signer_id"] for entry in entries for field in entry["fields"]}
+            if len(signer_ids) != len(set(signer_ids)):
+                raise ValidationError("Collect signer IDs must be unique")
+            if field_signers != set(signer_ids):
+                raise ValidationError(
+                    "Every collect signer must own a field; field owners must be listed"
+                )
     return body
 
 
@@ -257,7 +266,8 @@ class AssignmentResource(BaseResource):
 
     Assignment-returning methods expose this complete top-level shape::
 
-        {"resource": "assignment", "id": "assignment-id",
+        {"resource": "assignment", "id": "assignment-id", "document_id": "document-id",
+         "created_at": "2026-06-03T03:54:16Z",
          "sender_email": "sender@example.com", "method": "virtual",
          "expires_at": null, "message": null,
          "signers": [{"resource": "signer", "id": "signer-id",
@@ -295,6 +305,8 @@ class AssignmentResource(BaseResource):
     ``copy_receivers`` entries are objects, but the current OpenAPI does not
     define fields for those objects. Virtual/legacy items may return an empty
     or non-object ``display_settings`` value; collect items use the object shown.
+    ``document_id`` is null after document deletion; ``sender_email`` is null
+    after the sender deletes their user account.
 
     ``DigitalCertificate`` is a published assignment verification method, but
     it requires ``method="virtual"``. The certificate flow completes the
@@ -327,15 +339,12 @@ class AssignmentResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /assignments`` — list the account's assignments.
 
-        The published contract documents ``page`` and ``per_page`` (sent as
-        ``per-page``) and scopes results to *the authenticated credential's
-        current account*. The published document lists no account parameter,
-        but the API answers ``400`` ("an account context is required") to an
-        API-key request without one, so the SDK forwards the explicit or
-        client-default account as an ``accountId`` context parameter and omits
-        it for account-less token clients. Passing an ``account_id`` for a
-        different workspace does not re-scope this endpoint — use a credential
-        belonging to that workspace instead.
+        ``params`` accepts ``page``, ``per_page`` (sent as ``per-page``) and
+        ``sort``: ``created_at`` (default, oldest first), ``expires_at`` or
+        ``id``; prefix with ``-`` for descending order. The explicit or
+        client-default account is sent as ``accountId``, required unless the
+        request uses an OAuth token. OAuth results are scoped to the token's
+        workspace. Each assignment includes its ``document_id``.
         Returns
         ``{"data": [...], "meta": {...}}`` when the API returns ``x-pagination-*``
         headers.
@@ -343,7 +352,8 @@ class AssignmentResource(BaseResource):
         Example response (``data`` envelope unwrapped)::
 
             {"data": [
-                {"id": "103033c9...", "sender_email": "owner@example.com",
+                {"id": "103033c9...", "document_id": "document-id",
+                 "created_at": "2026-06-03T03:54:16Z", "sender_email": "owner@example.com",
                  "method": "virtual", "expires_at": null,
                  "message": "Please sign this contract",
                  "signers": [
@@ -381,7 +391,9 @@ class AssignmentResource(BaseResource):
         ``copy_receivers``, and (collect-only) ``entries``. Each ``signers``
         entry may carry ``verification_method``, ``notification_methods`` and a
         ``step`` (sequential signing order). See :func:`build_assignment_payload`
-        for full normalization rules.
+        for full normalization rules. ``expires_at`` accepts an ISO 8601
+        timestamp (a missing offset means UTC) or a date (23:59 UTC that day).
+        The server requires an expiration at least one hour in the future.
 
         Example request body (JSON)::
 
@@ -419,6 +431,8 @@ class AssignmentResource(BaseResource):
         ``fontFamily`` and ``backgroundColor`` are optional. Local validation
         checks geometry and field keys; page bounds require the dimensions from
         ``documents.get()`` and must be checked by the caller.
+        Each collect signer must appear once in ``signers`` and own at least
+        one field; all field owners must be among those signers.
 
         ``DigitalCertificate`` signers require ``method="virtual"``. A collect
         assignment raises :class:`~assinafy.errors.ValidationError` with the
@@ -430,6 +444,8 @@ class AssignmentResource(BaseResource):
             {
               "resource": "assignment",
               "id": "assignment-id",
+              "document_id": "document-id",
+              "created_at": "2026-06-03T03:54:16Z",
               "sender_email": "owner@example.com",
               "method": "virtual",
               "expires_at": null,
@@ -520,9 +536,12 @@ class AssignmentResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /documents/{document_id}/assignments/{assignment_id}/reset-expiration``.
 
-        ``expires_at`` must be an ISO 8601 timestamp (e.g.
-        ``2030-08-03T21:00:00Z``) or ``None`` to clear the expiration. The key is
-        always sent so the server can apply the change.
+        ``expires_at`` accepts an ISO 8601 timestamp (e.g.
+        ``2030-08-03T21:00:00Z``), a date, or ``None`` to clear the expiration.
+        An offset is honored; without one the timestamp is UTC, and a date
+        means 23:59 UTC that day. The API requires at least one hour in the
+        future and rejects changes after the document closes. The key is always
+        sent so the server can apply the change.
 
         Example request body (JSON)::
 
@@ -533,7 +552,8 @@ class AssignmentResource(BaseResource):
 
         Example response (``data`` envelope unwrapped)::
 
-            {"resource": "assignment", "id": "assignment-id",
+            {"resource": "assignment", "id": "assignment-id", "document_id": "document-id",
+             "created_at": "2026-06-03T03:54:16Z",
              "sender_email": "sender@example.com", "method": "virtual",
              "expires_at": "2030-08-03T21:00:00Z", "message": null,
              "signers": [{"resource": "signer", "id": "signer-id",
@@ -570,7 +590,7 @@ class AssignmentResource(BaseResource):
         """
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")
-        validate_datetime(expires_at, "expires_at", allow_none=True)
+        validate_expiration(expires_at, "expires_at", allow_none=True)
         return self._call_dict(
             "Failed to update assignment expiration",
             lambda: self._http.put(
@@ -591,9 +611,10 @@ class AssignmentResource(BaseResource):
         verification flow; an invalid/expired code returns 401, and a 409 is
         returned while a virtual assignment's document is still being prepared.
 
-        The unwrapped response uses the complete
-        :class:`~assinafy.resources.documents.DocumentResource` payload, with
-        its ``assignment`` and ``pages`` fields expanded for the signer view.
+        The unwrapped document includes ``current_signer`` with their
+        ``verification_method``, ``notification_methods`` and ``completed``
+        state. Its assignment contains only this signer's items and omits
+        ``signers``, ``signing_urls``, ``copy_receivers`` and ``summary``.
         ``has_accepted_terms`` must be boolean when provided.
 
         A ``DigitalCertificate`` signer must have confirmed their data **and**
@@ -614,7 +635,18 @@ class AssignmentResource(BaseResource):
              "artifacts": {"original": "https://api.example/document/original"},
              "is_closed": false, "signing_url": "https://app.example/sign/document-id",
              "decline_reason": null, "declined_by": null, "tags": [],
-             "assignment": null, "pages": [],
+             "assignment": {"id": "assignment-id", "document_id": "document-id",
+                            "created_at": "2026-06-03T03:54:16Z",
+                            "sender_email": "sender@example.com", "method": "virtual",
+                            "expires_at": null, "message": null,
+                            "items": [{"id": "item-id", "field": {"type": "virtual"},
+                                       "completed": false}]},
+             "current_signer": {"resource": "signer", "id": "signer-id",
+                                "full_name": "Example Signer", "email": "signer@example.com",
+                                "whatsapp_phone_number": null, "government_id": null,
+                                "has_accepted_terms": true, "verification_method": "Email",
+                                "notification_methods": ["Email"], "completed": false},
+             "verification_code": null, "verification_url": null, "pages": [],
              "created_at": "2026-06-03T03:54:16Z",
              "updated_at": "2026-06-03T03:54:17Z"}
         """
@@ -645,7 +677,10 @@ class AssignmentResource(BaseResource):
             [{"itemId": "615605f8...", "fieldId": "61521202...",
               "pageId": "615213ed...", "value": "John Doe"}]
 
-        The documented success payload is an empty object (``data: {}``).
+        Returns an object with the signing result; ``{}`` is a valid success
+        payload. Repeating a completed signature changes nothing and returns
+        the current assignment. DigitalCertificate signers must use the hosted
+        certificate flow instead; this endpoint returns HTTP 400 for them.
         """
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")
@@ -740,6 +775,8 @@ class AssignmentResource(BaseResource):
         not exist. Evidence images are available only while status is InReview.
         Direct provider approval has no evidence here; see the
         ``signer_identity_verified`` document activity instead.
+        OAuth applications can read this summary with ``documents:read``;
+        evidence images and review decisions require a person in Assinafy.
 
         Complete response example (``data`` envelope unwrapped)::
 
@@ -780,6 +817,8 @@ class AssignmentResource(BaseResource):
         Returns JPEG/PNG bytes, or PDF bytes for a digital document. The API
         sends ``Cache-Control: no-store``; keep evidence out of caches and logs.
         All images return HTTP 404 once the review is decided, or when absent.
+        OAuth applications receive HTTP 403; images are for a person reviewing
+        the verification in Assinafy.
         """  # noqa: E501
         path = self._identity_verification_path(document_id, assignment_id, signer_id)
         if not isinstance(name, str) or name not in {
@@ -812,6 +851,8 @@ class AssignmentResource(BaseResource):
         review is approved. Rejection cancels the document as rejected_by_user
         and sends cancellation notices to signers and copy receivers. The note
         is recorded in activity and sent to the provider, never to the signer.
+        OAuth applications receive HTTP 403: the certificate identifies the
+        person who reviewed, so the decision is made in Assinafy.
 
         Request body (JSON)::
 
@@ -864,6 +905,8 @@ class AssignmentResource(BaseResource):
         Resends a signer's signature-request notification and can send a real
         message. The notification channel is charged again; call
         :meth:`estimate_resend_cost` first when cost must be known.
+        The signer must be incomplete and the document pending signature.
+        Request body: none.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -886,18 +929,16 @@ class AssignmentResource(BaseResource):
     ) -> dict[str, Any]:
         """``POST /documents/{document_id}/assignments/{assignment_id}/signers/{signer_id}/estimate-resend-cost``.
 
-        Estimates the cost of resending a signer's notification.
+        Estimates the cost of resending a signer's notification. A reminder
+        uses no document. Request body: none. ``credit_balance`` is null when
+        account credits are unlimited.
 
         Example response (``data`` envelope unwrapped)::
 
-            {"documents": 1, "credits": 0.45, "needs_extra_document": false,
-             "extra_document_cost": 0, "total_credits": 0.45,
-             "breakdown": [{"code": "NotificationWhatsapp",
-                            "name": "Whatsapp Notification", "cost": 0.45,
-                            "quantity": 1, "unit_cost": 0.45}],
-             "document_balance": 66, "credit_balance": 0,
-             "has_sufficient_resources": true, "blocking_reason": null,
-             "message": null}
+            {"total": 0.45,
+             "breakdown": [{"code": "NotificationWhatsappResend",
+                            "name": "Whatsapp Notification Resend", "cost": 0.45}],
+             "credit_balance": 10, "has_sufficient_credits": true}
         """  # noqa: E501
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")

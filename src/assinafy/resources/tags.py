@@ -113,7 +113,7 @@ class TagResource(BaseResource):
         Set ``force=True`` to detach the tag from documents/templates before
         deletion, matching the documented ``force`` query parameter. ``force``
         is keyword-only; a positional boolean remains accepted for compatibility
-        with SDK versions before 1.6.
+        with SDK versions before 1.6. Request body: none.
 
         Example response (``data`` envelope unwrapped)::
 

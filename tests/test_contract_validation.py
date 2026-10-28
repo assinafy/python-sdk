@@ -321,3 +321,113 @@ def test_collect_presentation_requires_strings(field: str) -> None:
                 ],
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("signer_ids", "field_signers"),
+    [
+        (["signer-1", "signer-1"], ["signer-1"]),
+        (["signer-1", "signer-2"], ["signer-1"]),
+        (["signer-1"], ["unlisted-signer"]),
+        (["signer-1"], []),
+    ],
+)
+def test_collect_signers_must_be_unique_and_own_the_placed_fields(
+    signer_ids: list[str], field_signers: list[str]
+) -> None:
+    entries = [
+        {
+            "page_id": "page-id",
+            "fields": [
+                {
+                    "signer_id": signer_id,
+                    "field_id": "field-id",
+                    "display_settings": {
+                        "left": 0,
+                        "top": 0,
+                        "width": 100,
+                        "height": 40,
+                        "fontSize": 12,
+                    },
+                }
+                for signer_id in field_signers
+            ],
+        }
+    ]
+    with AssinafyClient() as client:
+        client._http._transport = httpx.MockTransport(lambda request: pytest.fail("unexpected I/O"))
+        with pytest.raises(ValidationError, match="[Cc]ollect"):
+            client.assignments.create(
+                "document-id", {"method": "collect", "signers": signer_ids, "entries": entries}
+            )
+
+
+def test_collect_allows_multiple_fields_owned_by_one_signer() -> None:
+    entries = [
+        {
+            "page_id": "page-id",
+            "fields": [
+                {
+                    "signer_id": "signer-id",
+                    "field_id": field_id,
+                    "display_settings": {
+                        "left": 0,
+                        "top": 0,
+                        "width": 100,
+                        "height": 40,
+                        "fontSize": 12,
+                    },
+                }
+                for field_id in ("first-field", "second-field")
+            ],
+        }
+    ]
+    body = build_assignment_payload(
+        {
+            "method": "collect",
+            "signers": ["signer-id"],
+            "entries": entries,
+        }
+    )
+    assert body["entries"] == entries
+
+
+def test_collect_estimate_does_not_apply_field_ownership_rules() -> None:
+    payload = {"method": "collect", "signers": [{}, {}], "entries": [{"count": 3}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == payload
+        return httpx.Response(200, json={"status": 200, "data": {"total_credits": 0}})
+
+    with AssinafyClient() as client:
+        client._http._transport = httpx.MockTransport(handler)
+        assert client.assignments.estimate_cost("document-id", payload) == {"total_credits": 0}
+
+
+@pytest.mark.parametrize(
+    "expiration", ["2030-12-31", "2030-12-31T20:00:00", "2030-12-31T20:00:00-03:00"]
+)
+@pytest.mark.parametrize("operation", ["assignment", "reset", "template"])
+def test_documented_expiration_forms_are_sent_unchanged(expiration: str, operation: str) -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        assert json.loads(request.content)["expires_at"] == expiration
+        return httpx.Response(200, json={"status": 200, "data": {}})
+
+    with AssinafyClient(account_id="account-id") as client:
+        client._http._transport = httpx.MockTransport(handler)
+        if operation == "assignment":
+            client.assignments.create(
+                "document-id", {"signers": ["signer-id"], "expires_at": expiration}
+            )
+        elif operation == "reset":
+            client.assignments.reset_expiration("document-id", "assignment-id", expiration)
+        else:
+            client.documents.create_from_template(
+                "template-id",
+                [{"role_id": "role-id", "id": "signer-id"}],
+                {"expires_at": expiration},
+            )
+    assert len(seen) == 1

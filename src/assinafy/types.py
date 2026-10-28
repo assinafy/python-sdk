@@ -29,6 +29,12 @@ DOCUMENT_ARTIFACT_NAMES = frozenset(get_args(DocumentArtifactName))
 
 AssignmentMethod = Literal["virtual", "collect"]
 
+ContractStatus = Literal["draft", "active", "expired", "terminated"]
+CONTRACT_STATUSES = frozenset(get_args(ContractStatus))
+
+ContractRelationType = Literal["amendment", "renewal", "termination"]
+CONTRACT_RELATION_TYPES = frozenset(get_args(ContractRelationType))
+
 VerificationMethod = Literal["Email", "Whatsapp", "DigitalCertificate", "IdDocumentFaceMatchBasic"]
 VERIFICATION_METHODS = frozenset(get_args(VerificationMethod))
 
@@ -56,6 +62,14 @@ OAuthGrantType = Literal[
 OAuthTokenTypeHint = Literal["access_token", "refresh_token"]
 
 WebhookEventType = Literal[
+    "document_contract_updated",
+    "document_contract_renewal_notice",
+    "document_contract_expiring",
+    "document_contract_expired",
+    "document_contract_renewed",
+    "document_contract_terminated",
+    "document_contract_amended",
+    "document_contract_amendment_updated",
     "document_uploaded",
     "document_metadata_ready",
     "document_prepared",
@@ -84,6 +98,10 @@ WebhookEventType = Literal[
 SignerReference = str | dict[str, Any]
 
 NotificationPreferenceCode = Literal[
+    "ContractRenewalNotice",
+    "ContractExpiring",
+    "ContractExpired",
+    "ContractRenewed",
     "DocumentCompleted",
     "SignerDeclined",
     "DocumentCancelled",

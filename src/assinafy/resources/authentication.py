@@ -75,8 +75,18 @@ class AuthenticationResource(BaseResource):
             {"provider": "google", "token": "ya29.a0Af...",
              "has_accepted_terms": true}
 
-        Returns the same ``{access_token, user, accounts}`` shape as
-        :meth:`login` (``data`` envelope unwrapped).
+        Example response (``data`` envelope unwrapped)::
+
+            {"access_token": "synthetic-jwt",
+             "user": {"id": "user-id", "name": "Example User",
+                      "email": "user@example.com", "telephone": null,
+                      "government_id": null, "is_email_verified": true,
+                      "has_accepted_terms": true,
+                      "created_at": "2026-06-03T03:54:16Z",
+                      "to_be_deleted_at": null},
+             "accounts": [{"id": "account-id", "name": "Acme Inc.",
+                           "roles": ["owner"], "is_delete_allowed": true,
+                           "created_at": "2026-06-03T03:54:16Z"}]}
         """
         _validate_social_provider(provider)
         if not isinstance(has_accepted_terms, bool):
@@ -125,8 +135,18 @@ class AuthenticationResource(BaseResource):
 
             {"mfa_token": "synthetic-mfa-token", "code": "123456"}
 
-        Returns the same ``{access_token, user, accounts}`` shape as
-        :meth:`login` (``data`` envelope unwrapped).
+        Example response (``data`` envelope unwrapped)::
+
+            {"access_token": "synthetic-jwt",
+             "user": {"id": "user-id", "name": "Example User",
+                      "email": "user@example.com", "telephone": null,
+                      "government_id": null, "is_email_verified": true,
+                      "has_accepted_terms": true,
+                      "created_at": "2026-06-03T03:54:16Z",
+                      "to_be_deleted_at": null},
+             "accounts": [{"id": "account-id", "name": "Acme Inc.",
+                           "roles": ["owner"], "is_delete_allowed": true,
+                           "created_at": "2026-06-03T03:54:16Z"}]}
         """
         body = {
             "mfa_token": self._require_id(mfa_token, "MFA token"),

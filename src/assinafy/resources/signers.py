@@ -17,7 +17,7 @@ class SignerResource(BaseResource):
     """Signer endpoints — workspace CRUD plus signer-access-code flows.
 
     The account-scoped methods (``create``/``get``/``list``/``update``/
-    ``delete``) authenticate with the workspace API key. The signer-session
+    ``delete``) authenticate with the workspace API key or bearer token. The signer-session
     methods (``get_self``/``accept_terms``/``verify_email``/``confirm_data``/
     ``upload_signature``/``download_signature``) authenticate with a
     per-signer access code obtained through the verification flow.
@@ -116,10 +116,15 @@ class SignerResource(BaseResource):
         """``PUT /accounts/{account_id}/signers/{signer_id}`` — update a signer.
 
         Supported fields are ``full_name``, ``email``,
-        ``whatsapp_phone_number``, and ``government_id``. Verification
-        integrity rules apply server-side: ``email`` cannot be
+        ``whatsapp_phone_number``, and ``government_id``.
+        Send an empty string to clear ``email``, ``whatsapp_phone_number`` or
+        ``government_id``. The SDK omits ``None`` for compatibility; use ``""``
+        when clearing a field. ``full_name`` cannot be cleared.
+        Verification integrity rules apply server-side: ``email`` cannot be
         changed once email-verified for an in-flight document, and the same for
-        ``whatsapp_phone_number``.
+        ``whatsapp_phone_number``. Changes to an unverified channel invalidate
+        its in-flight access links and codes; resend the signature request to
+        deliver new ones. Completed documents do not block updates.
 
         Example request body (JSON)::
 

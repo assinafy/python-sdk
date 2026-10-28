@@ -28,7 +28,8 @@ class UserResource(BaseResource):
         API may wrap that user beside ``accounts``; this method preserves the
         returned data shape without discarding either representation.
 
-        Request body: none.
+        Request body: none. OAuth tokens receive ``403``; use
+        :meth:`~assinafy.resources.oauth.OAuthResource.userinfo` for OAuth identity.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -49,7 +50,9 @@ class UserResource(BaseResource):
         The response uses the complete KPI-row shape documented by
         :meth:`~assinafy.resources.accounts.AccountResource.stats`.
 
-        Request body: none.
+        Request body: none. OAuth tokens receive ``403``; use
+        :meth:`~assinafy.resources.accounts.AccountResource.stats` for the
+        connected workspace instead.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -84,9 +87,12 @@ class UserResource(BaseResource):
              "DocumentCancelled": true, "DocumentAboutToExpire": true,
              "DocumentExpired": true, "DocumentExpirationReset": true,
              "DocumentProcessingFailed": true,
-             "TemplateProcessingFailed": true, "SignerWhatsappFailed": true}
+             "TemplateProcessingFailed": true, "SignerWhatsappFailed": true,
+             "ContractRenewalNotice": true, "ContractExpiring": true,
+             "ContractExpired": true, "ContractRenewed": true}
 
-        Request body: none.
+        Request body: none. Third-party OAuth applications receive ``403``
+        regardless of scope; these preferences are personal user settings.
         """
         return cast(
             dict[NotificationPreferenceCode, bool],
@@ -102,10 +108,10 @@ class UserResource(BaseResource):
     ) -> dict[NotificationPreferenceCode, bool]:
         """``PUT /users/self/notification-preferences`` — merge a partial map.
 
-        Send one or more of the nine keys documented by
+        Send one or more of the thirteen keys documented by
         :meth:`notification_preferences`; values must be booleans. Omitted keys
         keep their values. The request is the supplied partial map; the
-        response is the complete nine-key map shown by
+        response is the complete thirteen-key map shown by
         :meth:`notification_preferences`.
 
         Example response (``data`` envelope unwrapped)::
@@ -114,9 +120,13 @@ class UserResource(BaseResource):
              "DocumentCancelled": true, "DocumentAboutToExpire": true,
              "DocumentExpired": true, "DocumentExpirationReset": true,
              "DocumentProcessingFailed": true,
-             "TemplateProcessingFailed": true, "SignerWhatsappFailed": true}
+             "TemplateProcessingFailed": true, "SignerWhatsappFailed": true,
+             "ContractRenewalNotice": true, "ContractExpiring": false,
+             "ContractExpired": true, "ContractRenewed": true}
 
-        Example JSON request: ``{"DocumentCompleted": false}``.
+        Example JSON request: ``{"ContractExpiring": false}``.
+        Third-party OAuth applications receive ``403`` regardless of scope;
+        changes apply to the user across all their workspaces.
         """
         if not isinstance(preferences, dict):
             raise ValidationError("Notification preferences must be a mapping")

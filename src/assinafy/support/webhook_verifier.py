@@ -68,14 +68,15 @@ class WebhookVerifier:
         *,
         tolerance: float = DEFAULT_TOLERANCE_SECONDS,
     ) -> bool:
-        """Verify a Standard Webhooks signature and reject replayed deliveries.
+        """Verify a Standard Webhooks signature within the allowed timestamp window.
 
         Computes ``base64(HMAC-SHA256(key, "{webhook-id}.{webhook-timestamp}.{body}"))``
         where ``key`` is the base64-decoded part of the secret after
         ``whsec_``, and accepts the request when any ``v1`` entry of
         ``webhook-signature`` matches in constant time and
         ``webhook-timestamp`` is within ``tolerance`` seconds of the local
-        clock. Header names are matched case-insensitively.
+        clock. Header names are matched case-insensitively. Deduplicate accepted
+        deliveries by ``webhook-id`` to prevent repeats within that window.
 
         ``payload`` must be the body exactly as received; re-serialized JSON
         does not verify. Returns ``False`` when no secret is configured, the
@@ -101,7 +102,8 @@ class WebhookVerifier:
             key = base64.b64decode(self._webhook_secret.removeprefix("whsec_"), validate=True)
         except (ValueError, binascii.Error):
             return False
-        if not key or abs(time.time() - sent_at) > tolerance:
+        now = time.time()
+        if not key or not now - tolerance <= sent_at <= now + tolerance:
             return False
 
         raw = payload.encode("utf-8") if isinstance(payload, str) else payload

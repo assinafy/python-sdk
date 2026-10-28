@@ -76,7 +76,7 @@ class OAuthResource(BaseResource):
     Args:
         http: The shared ``httpx.Client`` from the owning client.
         client_id: The application's ``client_id`` from the Assinafy app
-            (**Integrations → OAuth Apps**).
+            (**Settings → OAuth applications**).
         client_secret: Confidential applications only. Public applications
             authenticate with PKCE alone and are never issued a secret.
         logger: Optional :class:`~assinafy.types.Logger`-shaped object.

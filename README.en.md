@@ -7,7 +7,7 @@ Brazilian electronic-signature platform.
 
 The SDK is synchronous, built on `httpx`, and provides the Assinafy API resources: accounts, users, authentication, OAuth,
 documents, signers, signer documents, assignments, field definitions,
-templates, tags, and webhooks. Every public method names the verb and path it
+templates, tags, contracts, and webhooks. Every public method names the verb and path it
 calls and documents its request body and unwrapped response; shared resource
 shapes are documented once and referenced by the methods that return them.
 
@@ -27,6 +27,7 @@ shapes are documented once and referenced by the methods that return them.
   - [6. Track progress](#6-track-progress)
   - [7. Download the signed document](#7-download-the-signed-document)
   - [Starting from a template instead](#starting-from-a-template-instead)
+- [Contract lifecycle management (CLM)](#contract-lifecycle-management-clm)
 - [OAuth for marketplace applications](#oauth-for-marketplace-applications)
   - [1. Register the application](#1-register-the-application)
   - [2. Send the user to Assinafy](#2-send-the-user-to-assinafy)
@@ -307,7 +308,9 @@ The review summary includes `id`, `status`, `provider`, `verification_method`,
 provider approval has its evidence on the `signer_identity_verified` activity.
 Images are `document_front`, `document_back`, `document_pdf` and `face`, available
 only during InReview; they return raw JPEG/PNG/PDF bytes with no caching and HTTP
-404 once decided. Keep evidence out of caches and logs.
+404 once decided. Keep evidence out of caches and logs. OAuth apps may read the
+summary with `documents:read`; image downloads and review decisions require
+workspace API-key/user-session credentials and return 403 to OAuth apps.
 
 Decisions are `Approved` or `Rejected`; `note` is optional, at most 2000 characters,
 recorded in activity and sent to the provider, never shown to the signer.
@@ -544,7 +547,7 @@ endpoint = client.webhooks.create_endpoint({
     "name": "ERP",
     "signing_enabled": True,
 })
-secret = client.webhooks.get_endpoint_secret(endpoint["id"])  # "whsec_..."
+secret = endpoint["secret"]  # "whsec_..."
 ```
 
 Signed deliveries follow the [Standard Webhooks](https://www.standardwebhooks.com)
@@ -604,12 +607,13 @@ resources you created, and do so in reverse dependency order.
 ### Starting from a template instead
 
 When the document layout is fixed, create it from a template and skip stages 2
-and 4 — field placement and roles already live on the template:
+and 4 — field placement and roles already live on the template. This example
+uses a template without placed Editor fields:
 
 ```python
 templates = client.templates.list({"search": "NDA"})
 template = client.templates.get(templates["data"][0]["id"])
-roles = template["roles"]
+roles = [role for role in template["roles"] if role["assignment_type"] != "Editor"]
 
 client.documents.estimate_cost_from_template(
     template["id"],
@@ -634,12 +638,110 @@ document = client.documents.create_from_template(
 )
 ```
 
-Template signers take one entry per template role, allow at most one
-notification method each, and follow the same contiguous-`step` rules as
-assignments (copy-receiver roles ignore `step`). `options` may also carry
+Template signers take one entry per signing role; copy-receiver entries are optional.
+Editor roles use `editor_fields` and are excluded from `signers`. Each entry accepts
+an existing `id`, or `email` with optional `name` and `whatsapp_phone_number`;
+`id` takes precedence. At most one notification method is allowed. The API checks
+steps using template role context; copy-receiver roles ignore `step`.
+Creation returns `uploaded` with `assignment: null`; generation and assignment
+creation run asynchronously. Wait for `assignment_created` (or
+`document_processing_failed`), then call `documents.get(document["id"])`.
+`wait_until_ready()` guarantees rendering readiness, not assignment creation. `options` may also carry
 `expires_at`, `editor_fields` (`{"field_id": ..., "value": ...}` pairs baked
 into the generated document), and `tags` — tag names that do not exist are
-auto-created and merged with the template's default document tags.
+auto-created and merged with the template's default document tags. For a template
+with Editor fields, collect an application value for every placed Editor field
+from `template["pages"][i]["fields"]`, and send its `field_id` in `editor_fields`.
+For example, add `"editor_fields": [{"field_id": editor_field_id, "value": "Agreed terms"}]`
+to options once the application has collected that field's value.
+
+## Contract lifecycle management (CLM)
+
+`client.contracts` tracks terms on an existing workspace document. Upload the PDF
+first, then set its terms; tracking never changes the upload or signing flow.
+Writes require a plan with contract tracking. OAuth apps use `documents:read`
+for reads and `documents:write` for writes.
+
+```python
+document = client.documents.upload({"file_path": "./contract.pdf"})
+contract = client.contracts.update(document["id"], {
+    "status": "active", "counterparty_name": "Example Company",
+    "value": 1200.50, "currency": "BRL",
+    "start_date": "2030-01-01", "end_date": "2030-12-31",
+    "auto_renew": False, "renewal_term_months": 12, "notice_period_days": 30,
+    "metadata": {"department": "sales"},
+    "external_references": [{"system": "crm", "id": "contract-1"}],
+})
+contract = client.contracts.get(document["id"])
+contract = client.contracts.update(document["id"], {
+    "notice_period_days": 60, "updated_at": contract["updated_at"],
+})
+page = client.contracts.list({
+    "status": "active,expired", "ending_within_days": 45,
+    "sort": "end_date", "expand": "document", "page": 1, "per_page": 20,
+})
+```
+
+The unwrapped contract contains `resource`, `document_id`, `status`,
+`counterparty_name`, `counterparty_taxpayer_id`, `value`, `currency`, `start_date`,
+`end_date`, `auto_renew`, `renewal_term_months`, `notice_period_days`, `term`,
+`owner_id`, `metadata`, `external_references`, `created_at` and `updated_at`.
+Single reads include `amendments`; `expand=document` embeds the document in lists.
+Dates use `YYYY-MM-DD`; monetary values have at most two decimal places.
+Docstrings include full request/response examples and every field's limits.
+
+Only supplied attributes change. In contract payloads, **`None` sends JSON null**:
+it clears a term, resets `auto_renew` to false, and resets currency to BRL while a
+value exists. External references replace the whole list; `[]` or `None` clears
+it. A supplied `updated_at` rejects a stale write with HTTP 409. Re-read and let
+the application resolve the conflict. `ApiError.response_data` preserves the
+server's `errors` entries (`field`, `code`, `message`). Missing terms raise 404.
+
+To record a signed amendment, upload a separate document and link it before
+requesting its signatures through the normal signing flow:
+
+```python
+amendment = client.documents.upload({"file_path": "./amendment.pdf"})
+link = client.contracts.update(amendment["id"], {
+    "parent_document_id": document["id"], "relation_type": "amendment", "value": 1300,
+})
+family = client.contracts.related(amendment["id"])
+```
+
+Links return `resource: document_contract_amendment`, document and parent IDs,
+`document_name`, `relation_type`, `number`, `status`, `document_status`,
+`apply_error`, `currency`, `terms`, `changes`, `applied_at`, `created_at`,
+`updated_at`. The delta applies only when the instrument is certificated, in
+signing order. `renewal` links change only `end_date`/`value`; `termination` links
+only `end_date`. Pending links can be edited; `None` drops a delta key and
+`parent_document_id: None` unlinks the instrument. Applied links are read-only.
+
+For direct lifecycle changes, use the current term or an explicit later end date
+as the renewal guard. The SDK never retries automatically:
+
+```python
+contract = client.contracts.get(document["id"])
+contract = client.contracts.renew(document["id"], {
+    "term": contract["term"], "updated_at": contract["updated_at"],
+})
+contract = client.contracts.terminate(document["id"], {
+    "reason": "Replaced by a new agreement", "updated_at": contract["updated_at"],
+})
+```
+
+Renewal reopens expired contracts, but refuses terminated ones. An hourly job
+uses Brasília calendar days to send renewal notices and 45/30-day expiry
+warnings, expire contracts, or advance automatic renewals the day after their
+end date. It pauses while the plan lacks tracking and catches up when it returns.
+Subscribe to `document_contract_updated`, `document_contract_renewal_notice`,
+`document_contract_expiring`, `document_contract_expired`,
+`document_contract_renewed`, `document_contract_terminated`,
+`document_contract_amended`, `document_contract_amendment_updated`.
+Recover missed events by paging `contracts.list({"sort": "-updated_at"})` back to
+the last sync. Read history with `documents.activities(document_id,
+{"page": 2, "per_page": 20})`; the existing list return type is preserved.
+User notification preferences include `ContractRenewalNotice`, `ContractExpiring`,
+`ContractExpired`, and `ContractRenewed`.
 
 ## OAuth for marketplace applications
 
@@ -680,7 +782,7 @@ they land.
 
 ### 1. Register the application
 
-In the Assinafy app (<https://app.assinafy.com.br>) open **Integrations → OAuth Apps → New application**. You must own the workspace that will own the
+In the Assinafy app (<https://app.assinafy.com.br>) open **Settings → OAuth applications → New application**. You must own the workspace that will own the
 application, and its plan must include OAuth applications.
 
 | Field | What to put |
@@ -1014,7 +1116,9 @@ preferences = client.users.update_notification_preferences({
 ```
 
 `update_notification_preferences` merges a partial map; omitted keys keep their
-values, and the response is always the complete nine-key map.
+values, and the response is always the complete thirteen-key map.
+Third-party OAuth apps receive 403 on these user endpoints; use `oauth.userinfo()`
+for identity and `accounts.stats()` for workspace KPIs.
 
 ### Documents
 
@@ -1085,6 +1189,9 @@ client.tags.delete(tag["id"])
 ```
 
 ### Signers
+
+On update, an empty string clears email, WhatsApp phone or government ID.
+`None` retains the SDK convention of omitting that field.
 
 ```python
 signer = client.signers.create({
@@ -1225,6 +1332,7 @@ server-controlled response fields, not create input.
 ```python
 client.webhooks.list_event_types()
 client.webhooks.list_endpoints()
+client.webhooks.list_endpoints(url="https://example.com/webhooks/assinafy")
 client.webhooks.get_endpoint(endpoint_id)
 client.webhooks.list_dispatches({"delivered": False, "page": 1, "per_page": 20})
 
@@ -1251,7 +1359,8 @@ client.webhooks.get()
 
 **Endpoints.** An account can register 1 endpoint, or up to 3 on paid plans;
 creating one past the limit raises `ApiError` with status `403`, and each
-endpoint needs a different `url`. `create_endpoint()` requires `url`, `email`
+endpoint needs a different `url`. New or changed URLs require HTTPS; existing
+legacy HTTP URLs remain readable and removable unchanged. `create_endpoint()` requires `url`, `email`
 and `events`, and accepts `name`, `is_active` (default `True`) and
 `signing_enabled` (default `False`). `update_endpoint()` changes only the fields
 sent. Turning `signing_enabled` on generates a secret when the endpoint has
@@ -1270,7 +1379,9 @@ partial call cannot silently reactivate it or collapse its event list; pass
 **Signing secrets.** `get_endpoint_secret()` returns the endpoint's `whsec_...`
 secret and `rotate_endpoint_secret()` replaces it. Rotation takes effect
 immediately, so update the receiver right away. Both answer `400` while signing
-is disabled and are not available to OAuth applications.
+is disabled. OAuth apps cannot read an existing secret, but can rotate it with
+`webhooks:write`. Create/update responses include `secret` when one is generated;
+store it securely at onboarding without a separate read-secret call.
 
 **Verifying deliveries.** A signed delivery carries `webhook-id`,
 `webhook-timestamp` and `webhook-signature` headers. `verify_delivery()`
@@ -1296,8 +1407,13 @@ Standard Webhooks deliveries.
 **Parsing payloads.** Every webhook body shares the documented envelope: `id`,
 `event`, `message`, `payload` (event-specific params), `origin`, `created_at`,
 `subject` (the entity that acted), `object` (the entity acted on), and
-`account_id`. Each endpoint receives each event independently, with up to 2
-attempts; `webhook-id` is identical on every attempt to the same endpoint.
+`account_id`. Each endpoint receives each event independently, with up to six
+attempts about ten minutes apart. Connection failures, timeouts, HTTP 408/429 and
+5xx are retried; other statuses are final. `webhook-id` stays the same across
+attempts, so persist it for deduplication after signature verification. Ten failed
+deliveries hold an endpoint (`is_held`, `held_since`); probes run after 3, 15, 60
+minutes, then every six hours. A successful probe/manual retry, URL edit, or
+`is_active: True` releases the hold.
 
 ```python
 event = verifier.extract_event(raw_body)
@@ -1334,7 +1450,7 @@ The complete stable top-level resource payloads are:
   "Account": {
     "resource": "account", "id": "account-id", "name": "Acme Inc.",
     "primary_color": "aabbcc", "secondary_color": "112233",
-    "notification_sender_type": "User", "roles": ["owner"],
+    "notification_sender_type": "User", "roles": ["owner"], "limits": {"webhook_endpoints": 1},
     "is_delete_allowed": true, "created_at": "2026-06-03T03:54:16Z"
   },
   "User": {
@@ -1353,12 +1469,14 @@ The complete stable top-level resource payloads are:
     "template_id": null, "name": "contract.pdf", "status": "metadata_ready",
     "artifacts": {"original": "https://api.example/document/original"},
     "is_closed": false, "signing_url": "https://app.example/sign/document-id",
+    "verification_code": null, "verification_url": null, "has_contract": false,
     "decline_reason": null, "declined_by": null, "tags": [],
     "assignment": null, "pages": [], "created_at": "2026-06-03T03:54:16Z",
     "updated_at": "2026-06-03T03:54:17Z"
   },
   "Assignment": {
-    "resource": "assignment", "id": "assignment-id",
+    "resource": "assignment", "id": "assignment-id", "document_id": "document-id",
+    "created_at": "2026-06-03T03:54:16Z",
     "sender_email": "sender@example.com", "method": "virtual",
     "expires_at": null, "message": null,
     "signers": [{
@@ -1413,18 +1531,21 @@ The complete stable top-level resource payloads are:
     "updated_at": "2026-06-03T03:54:17Z"
   },
   "WebhookSubscription": {
-    "events": ["document_ready"], "is_active": true,
+    "events": ["document_ready"], "is_active": true, "is_held": false, "held_since": null,
     "url": "https://example.com/webhooks/assinafy", "email": "ops@example.com",
     "updated_at": "2026-06-03T03:54:17Z"
   },
   "WebhookEndpoint": {
-    "id": "65f1c2a9b3e4d5f60718293a4b5c6d7e", "name": "ERP",
+    "resource": "activity_event_subscription", "id": "endpoint-id", "name": "ERP",
     "url": "https://example.com/webhooks/assinafy", "email": "ops@example.com",
-    "events": ["document_ready"], "is_active": true, "signing_enabled": true,
+    "events": ["document_ready"], "is_active": true, "is_held": false, "held_since": null, "signing_enabled": true,
     "created_at": "2026-10-01T12:00:00Z", "updated_at": "2026-10-01T12:00:00Z"
   }
 }
 ```
+
+`has_contract` is optional on workspace document reads; absence means unknown.
+Account `limits` is returned by the single-account read.
 
 Field resource values are returned verbatim. The documented value is `"field"`;
 `"field_definition"` is also supported.

@@ -1,6 +1,7 @@
 from .accounts import AccountResource
 from .assignments import AssignmentResource
 from .authentication import AuthenticationResource
+from .contracts import ContractResource
 from .documents import DocumentResource
 from .fields import FieldResource
 from .oauth import OAuthResource
@@ -15,6 +16,7 @@ __all__ = [
     "AccountResource",
     "AssignmentResource",
     "AuthenticationResource",
+    "ContractResource",
     "DocumentResource",
     "FieldResource",
     "OAuthResource",
