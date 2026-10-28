@@ -93,3 +93,48 @@ jobs:
 
       - name: Publish via PyPI Trusted Publishing
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish-pypi
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Extract release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          match = re.search(
+              rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |\Z)",
+              Path("CHANGELOG.md").read_text(encoding="utf-8"),
+              re.MULTILINE | re.DOTALL,
+          )
+          if not match or not (notes := match[1].strip()):
+              raise SystemExit("Release version must have a non-empty changelog entry")
+          Path(os.environ["RUNNER_TEMP"], "release-notes.md").write_text(
+              notes + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
