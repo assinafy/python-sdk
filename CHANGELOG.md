@@ -2,6 +2,15 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [2.1.1] - 2026-11-02
+
+### Changed
+
+- The Portuguese README now provides a compact end-to-end guide for signing,
+  verification methods, templates, OAuth connections and webhook handling.
+- CI and release workflows use current commit-pinned setup, artifact and PyPI
+  publishing actions.
+
 ## [2.1.0] - 2026-10-28
 
 ### Added
