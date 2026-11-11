@@ -262,6 +262,32 @@ def test_invalid_arguments_fail_before_io(args: tuple[str, tuple[Any, ...]]) -> 
     assert requests == []
 
 
+@pytest.mark.parametrize("envelope_id", [None, "", " ", "../other"])
+@pytest.mark.parametrize(
+    ("operation", "args"),
+    [
+        ("get", ()),
+        ("update", ({"message": None},)),
+        ("delete", ()),
+        ("cancel", ()),
+        ("resend_notification", ("signer",)),
+        ("add_document", ({"id": "doc", "signer_ids": ["signer"]},)),
+        ("remove_document", ("doc",)),
+        ("activities", ()),
+        ("download", ()),
+    ],
+)
+def test_required_envelope_id_is_validated_before_io(
+    envelope_id: Any, operation: str, args: tuple[Any, ...]
+) -> None:
+    with httpx.Client(
+        base_url="https://api.example.test/v1/",
+        transport=httpx.MockTransport(lambda request: pytest.fail("unexpected I/O")),
+    ) as http:
+        with pytest.raises(ValidationError, match="envelope_id"):
+            getattr(EnvelopeResource(http, "account"), operation)(envelope_id, *args)
+
+
 def test_server_refusal_retains_code_without_retry() -> None:
     calls: list[httpx.Request] = []
 

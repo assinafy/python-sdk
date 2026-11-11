@@ -1259,7 +1259,8 @@ without the expanded `assignment`/`pages` fields. Deletion is only permitted
 while the document is in a deletable status.
 
 Document reads accept `expand="envelope"` or `expand="envelope_id"` (or a list
-of both); rename accepts the same expansions. `get`, `download`, `thumbnail` and
+of both); rename accepts `expand="assignment"`, `expand="pages"`, or both.
+`get`, `download`, `thumbnail` and
 `download_page` accept keyword `signer_access_code` for signer-authorized reads.
 `thumbnail(..., artifact="certificated")` and `download_page(...,
 artifact="certificated")` request signed renders with workspace credentials;

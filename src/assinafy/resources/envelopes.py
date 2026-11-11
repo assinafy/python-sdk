@@ -141,11 +141,12 @@ class EnvelopeResource(BaseResource):
     delivery: inspect each assignment's notification_history.
     """
 
-    def _path(self, envelope_id: str | None = None, account_id: str | None = None) -> str:
-        path = f"accounts/{self._account_id(account_id)}/envelopes"
-        return (
-            path if envelope_id is None else f"{path}/{self._path_id(envelope_id, 'envelope_id')}"
-        )
+    def _collection_path(self, account_id: str | None = None) -> str:
+        return f"accounts/{self._account_id(account_id)}/envelopes"
+
+    def _path(self, envelope_id: str, account_id: str | None = None) -> str:
+        envelope_id = self._path_id(envelope_id, "envelope_id")
+        return f"{self._collection_path(account_id)}/{envelope_id}"
 
     def list(
         self, params: dict[str, Any] | None = None, account_id: str | None = None
@@ -161,7 +162,7 @@ class EnvelopeResource(BaseResource):
             raise ValidationError("status must be open or closed")
         if "search" in query and not isinstance(query["search"], str):
             raise ValidationError("search must be text")
-        path = self._path(account_id=account_id)
+        path = self._collection_path(account_id)
         return self._call_list("envelopes.list", lambda: self._http.get(path, params=query))
 
     def get(self, envelope_id: str, account_id: str | None = None) -> dict[str, Any]:
@@ -202,7 +203,7 @@ class EnvelopeResource(BaseResource):
         409 IdempotencyKeyInUse means creation is in progress; CreditCeilingExceeded
         means the total exceeds the ceiling. The SDK never retries automatically.
         """
-        path = self._path(account_id=account_id)
+        path = self._collection_path(account_id)
         body = _create_payload(payload)
         headers = idempotency_headers(idempotency_key)
         return self._call_dict(
@@ -223,7 +224,7 @@ class EnvelopeResource(BaseResource):
         InsufficientDocuments or InsufficientCredits. Contact/page existence
         and race-dependent state must still pass at creation.
         """
-        path = f"{self._path(account_id=account_id)}/estimate-cost"
+        path = f"{self._collection_path(account_id)}/estimate-cost"
         if isinstance(payload, dict):
             payload = {k: v for k, v in payload.items() if k != "max_total_credits"}
         body = _create_payload(payload)

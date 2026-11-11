@@ -2,6 +2,13 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [2.2.1] - 2026-11-11
+
+### Fixed
+
+- Envelope operations reject missing IDs before sending a request.
+- Document rename examples describe the supported assignment and page expansions.
+
 ## [2.2.0] - 2026-11-11
 
 ### Added
