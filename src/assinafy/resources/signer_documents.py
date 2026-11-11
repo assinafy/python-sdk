@@ -5,7 +5,7 @@ from typing import Any
 
 from ..errors import ValidationError
 from ..types import DOCUMENT_ARTIFACT_NAMES, DocumentArtifactName
-from ..utils import QUERY_PARAM_ALIASES, clean_params, validate_decline_reason
+from ..utils import QUERY_PARAM_ALIASES, clean_params, normalize_expand, validate_decline_reason
 from .base import BaseResource
 
 
@@ -16,14 +16,17 @@ class SignerDocumentResource(BaseResource):
     code before sending anything, and the request carries only that code —
     never the client's API key or bearer token. Listing and searching a signer's
     documents with the workspace credentials is a separate, explicit call:
-    :meth:`list_as_workspace` and :meth:`search_as_workspace`. Artifact download
-    is public in the current contract and is sent without client credentials.
+    :meth:`list_as_workspace` and :meth:`search_as_workspace`. Original downloads
+    require the signer code; certified copies use a token from the sent link.
+    Both omit workspace credentials.
     """
 
     def current(
         self,
         signer_id: str,
         signer_access_code: str,
+        *,
+        expand: str | builtins.list[str] | None = None,
     ) -> dict[str, Any]:
         """``GET /signers/{signer_id}/document?signer-access-code=...``.
 
@@ -31,6 +34,18 @@ class SignerDocumentResource(BaseResource):
         :class:`~assinafy.resources.documents.DocumentResource` payload for the
         document the signer is currently expected to act on. ``current_signer``
         contains their verification/notification methods and completion state.
+        ``expand="envelope"`` adds the code's envelope ``{id, name}`` or null,
+        even if its own document was removed from the envelope. This endpoint
+        works before certificate/biometric signers confirm their data.
+        After the signer finishes all their documents for more than 30 minutes
+        (or the workspace is deleted), the code is closed. The response then
+        contains only ``id``, ``name``, ``status``, ``current_signer`` (id,
+        verification_method, notification_methods, completed),
+        ``is_signer_access_closed: true``, ``certified_copy`` and any requested
+        ``envelope``. ``certified_copy`` has ``available``, nullable
+        ``notification_method`` and nullable ``resends_left``. These status/copy
+        keys also accompany open-code reads. Other signer operations return
+        410 for a closed code; :meth:`request_certified_copy` remains available.
         The assignment contains their own items and omits ``signers``,
         ``signing_urls``, ``copy_receivers`` and ``summary``.
 
@@ -57,7 +72,9 @@ class SignerDocumentResource(BaseResource):
              "updated_at": "2026-06-03T03:54:17Z"}
         """
         sid = self._path_id(signer_id, "Signer ID")
-        query = self._signer_query(signer_access_code)
+        query = self._signer_query(
+            signer_access_code, expand=normalize_expand(expand, frozenset({"envelope"}))
+        )
         return self._call_dict(
             "Failed to fetch current signer document",
             lambda: self._http.get(f"signers/{sid}/document", params=query),
@@ -71,7 +88,8 @@ class SignerDocumentResource(BaseResource):
     ) -> dict[str, Any]:
         """``GET /signers/{signer_id}/documents?signer-access-code=...``.
 
-        ``params`` accepts the published ``page`` and ``per_page`` keys. Other
+        ``params`` accepts ``page``, ``per_page`` and ``envelope_id`` to filter
+        one envelope. Other
         keys are forwarded for deployment compatibility. The signer access code
         is required and is the only credential sent; an invalid code returns
         401. Use :meth:`list_as_workspace` to list with the workspace API key or
@@ -111,7 +129,7 @@ class SignerDocumentResource(BaseResource):
         Lists the documents of a signer that belongs to the client's workspace,
         authenticated with the configured API key or bearer token. No signer
         access code is sent; ``params`` must not contain one. ``params`` accepts
-        the published ``page`` and ``per_page`` (sent as ``per-page``) keys.
+        ``page``, ``per_page`` (sent as ``per-page``) and ``envelope_id`` keys.
         Returns the same ``{"data": [Document, ...], "meta": {...}}`` shape as
         :meth:`list`.
 
@@ -155,12 +173,15 @@ class SignerDocumentResource(BaseResource):
         signer_id: str,
         signer_access_code: str,
         search: str | None = None,
+        *,
+        envelope_id: str | None = None,
     ) -> dict[str, Any]:
         """``GET /signers/{signer_id}/documents/search?signer-access-code=...``.
 
         Lightweight, compact counterpart to :meth:`list` (no pagination
         parameters are documented for this endpoint). ``search`` is an optional
-        partial-match term. The signer access code is required and is the only
+        partial-match term; ``envelope_id`` optionally filters one envelope.
+        The signer access code is required and is the only
         credential sent; use :meth:`search_as_workspace` for workspace access.
         Returns ``{"data": [Document, ...]}`` where every
         item has the complete
@@ -183,21 +204,24 @@ class SignerDocumentResource(BaseResource):
              "created_at": "2026-06-03T03:54:16Z",
              "updated_at": "2026-06-03T03:54:17Z"}]}
         """
-        query = self._signer_query(signer_access_code, search=search)
+        env_id = None if envelope_id is None else self._path_id(envelope_id, "Envelope ID")
+        query = self._signer_query(signer_access_code, search=search, envelope_id=env_id)
         return self._search_documents(signer_id, query)
 
     def search_as_workspace(
         self,
         signer_id: str,
         search: str | None = None,
+        *,
+        envelope_id: str | None = None,
     ) -> dict[str, Any]:
         """``GET /signers/{signer_id}/documents/search`` with the workspace credentials.
 
         Searches the documents of a signer that belongs to the client's
         workspace, authenticated with the configured API key or bearer token;
         no signer access code is sent. ``search`` is an optional partial-match
-        term. Returns the same ``{"data": [Document, ...]}`` shape as
-        :meth:`search`.
+        term; ``envelope_id`` optionally filters one envelope. Returns the same
+        ``{"data": [Document, ...]}`` shape as :meth:`search`.
 
         Request body: none.
 
@@ -214,7 +238,10 @@ class SignerDocumentResource(BaseResource):
               "created_at": "2026-06-03T03:54:16Z",
               "updated_at": "2026-06-03T03:54:17Z"}]}
         """
-        return self._search_documents(signer_id, clean_params({"search": search}))
+        env_id = None if envelope_id is None else self._path_id(envelope_id, "Envelope ID")
+        return self._search_documents(
+            signer_id, clean_params({"search": search, "envelope_id": env_id})
+        )
 
     def _search_documents(self, signer_id: str, query: dict[str, Any]) -> dict[str, Any]:
         sid = self._path_id(signer_id, "Signer ID")
@@ -292,12 +319,18 @@ class SignerDocumentResource(BaseResource):
     ) -> bytes:
         """``GET /signers/{signer_id}/documents/{document_id}/download/{artifact}``.
 
-        This is a public signer-link endpoint, always sent without the client's
-        API key or bearer token. ``signer_access_code`` is optional and accepted
-        for backward compatibility; when given it must be non-blank.
-        Returns raw artifact bytes. Valid artifacts: ``original``,
-        ``certificated``, ``certificate-page``, ``pades``, and ``bundle``.
-        ``pades`` exists only for documents signed with an ICP-Brasil certificate.
+        The current API serves only ``artifact_name="original"`` with the
+        signer's access code while signing is open; other artifacts return
+        HTTP 403, and a closed code returns 410. Workspace credentials are
+        never sent. Without a code, legacy links redirect to the expired-link
+        page (302), surfaced as :class:`~assinafy.errors.ApiError`; the SDK does
+        not follow it and return HTML as a PDF.
+
+        The optional code and historical ``"certificated"`` default remain for
+        compatibility with older deployments. For current signing flows pass
+        a code and ``"original"`` explicitly. For the signed copy use
+        :meth:`request_certified_copy` and :meth:`download_certified_copy` with
+        the token delivered to the signer. Returns raw PDF bytes.
 
         Request body: none.
         """
@@ -312,6 +345,112 @@ class SignerDocumentResource(BaseResource):
             lambda: self._http.get(
                 f"signers/{sid}/documents/{doc_id}/download/{artifact}", params=query
             ),
+        )
+
+    def theme(self, signer_access_code: str) -> dict[str, Any]:
+        """``GET /sign/theme`` — workspace branding for a signing page.
+
+        Query: ``signer-access-code`` only; no request body or workspace
+        credentials. Available before verification and after document deletion.
+        Colors are six hexadecimal digits without ``#``. Response::
+
+            {"account_name": "Example Workspace", "primary_color": "aabbcc",
+             "secondary_color": "ffffff",
+             "logo": "https://api.assinafy.com.br/v1/sign/logo"}
+
+        ``logo`` is null when absent. Its URL contains no access code; use
+        :meth:`logo` to retrieve it with the signer code safely.
+        """
+        query = self._signer_query(signer_access_code)
+        return self._call_dict(
+            "Failed to fetch signing theme", lambda: self._http.get("sign/theme", params=query)
+        )
+
+    def logo(self, signer_access_code: str) -> bytes:
+        """``GET /sign/logo`` — raw workspace logo image bytes for the signer.
+
+        Query: ``signer-access-code`` only; no request body or workspace
+        credentials. Available before verification and after document deletion.
+        HTTP 404 means no logo exists. An unopened signing step returns 400.
+        """
+        query = self._signer_query(signer_access_code)
+        return self._call_binary(
+            "Failed to download signing logo", lambda: self._http.get("sign/logo", params=query)
+        )
+
+    def request_certified_copy(
+        self, signer_access_code: str, *, document_id: str | None = None
+    ) -> dict[str, Any]:
+        """``POST /sign/certified-copy`` — send the signer a fresh download link.
+
+        Query: ``signer-access-code`` only, including a closed code. Sends to
+        the original signing contact/channel, never a changed signer record.
+        No body by default; for another document in the code's envelope send::
+
+            {"document_id": "document-id"}
+
+        Response (``data`` envelope unwrapped)::
+
+            {"available": true, "notification_method": "Email",
+             "resends_left": null, "sent_to": "s***@example.com"}
+
+        The link lasts 30 minutes. Email allows one send per two minutes and
+        ten per 24 hours; WhatsApp allows one resend per signature request.
+        HTTP 429 enforces these limits; 409 means the signer/document is not
+        ready or there is no recorded contact. No automatic retries.
+        """
+        query = self._signer_query(signer_access_code)
+        body = (
+            {}
+            if document_id is None
+            else {"document_id": self._path_id(document_id, "Document ID")}
+        )
+        kwargs: dict[str, Any] = {"json": body} if body else {}
+        return self._call_dict(
+            "Failed to request certified copy",
+            lambda: self._http.post("sign/certified-copy", params=query, **kwargs),
+        )
+
+    def download_certified_copy(self, token: str, *, pades: bool = False) -> bytes:
+        """``GET /signers/downloads/{token}`` — download a sent certified PDF.
+
+        ``token`` comes from the link delivered to the signer; never log it.
+        No request body, query, workspace credentials or signer code. With
+        ``pades=True``, append the documented ``/pades`` suffix to download the
+        ICP-Brasil signatures instead (404 if absent). Returns PDF bytes.
+        Completion links last seven days; re-sent links last thirty minutes.
+        An unknown/expired link returns 302 to an expired-link page, surfaced
+        as :class:`~assinafy.errors.ApiError` without following the redirect.
+        Use :meth:`resend_certified_copy` for a known expired token.
+        """
+        link_token = self._path_id(token, "Download token")
+        if not isinstance(pades, bool):
+            raise ValidationError("pades must be boolean")
+        suffix = "/pades" if pades else ""
+        return self._call_binary(
+            "Failed to download certified copy",
+            lambda: self._http.get(f"signers/downloads/{link_token}{suffix}"),
+        )
+
+    def resend_certified_copy(self, token: str) -> dict[str, Any]:
+        """``POST /signers/downloads/{token}/resend`` — renew an expired sent link.
+
+        No request body or workspace credentials. The token may have expired;
+        never log it. Sends a new thirty-minute link to the signing contact on
+        its original channel, with the same limits as :meth:`request_certified_copy`.
+        Response (``data`` envelope unwrapped)::
+
+            {"available": false, "notification_method": "Whatsapp",
+             "resends_left": 0, "sent_to": "+55***0000"}
+
+        HTTP 404 means an unknown token; 409 means no copy can be sent (such
+        as a copy-receiver link, missing contact or uncertified document);
+        429 means the resend limit was reached. No automatic retries.
+        """
+        link_token = self._path_id(token, "Download token")
+        return self._call_dict(
+            "Failed to resend certified copy",
+            lambda: self._http.post(f"signers/downloads/{link_token}/resend"),
         )
 
 

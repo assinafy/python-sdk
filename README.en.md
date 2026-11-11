@@ -7,7 +7,7 @@ Brazilian electronic-signature platform.
 
 The SDK is synchronous, built on `httpx`, and provides the Assinafy API resources: accounts, users, authentication, OAuth,
 documents, signers, signer documents, assignments, field definitions,
-templates, tags, contracts, and webhooks. Every public method names the verb and path it
+templates, tags, contracts, envelopes, embedded signing, and webhooks. Every public method names the verb and path it
 calls and documents its request body and unwrapped response; shared resource
 shapes are documented once and referenced by the methods that return them.
 
@@ -27,6 +27,7 @@ shapes are documented once and referenced by the methods that return them.
   - [6. Track progress](#6-track-progress)
   - [7. Download the signed document](#7-download-the-signed-document)
   - [Starting from a template instead](#starting-from-a-template-instead)
+- [Envelopes and embedded signing](#envelopes-and-embedded-signing)
 - [Contract lifecycle management (CLM)](#contract-lifecycle-management-clm)
 - [OAuth for marketplace applications](#oauth-for-marketplace-applications)
   - [1. Register the application](#1-register-the-application)
@@ -202,7 +203,7 @@ certificate (an e-CPF, or an e-CNPJ naming them as legal representative); a CNPJ
 requires the company's e-CNPJ.
 
 ```python
-signer = client.signers.update(signer["id"], {"government_id": "00000000000"})
+signer = client.signers.update(signer["id"], {"government_id": "<signer-cpf-or-cnpj>"})
 
 estimate = client.assignments.estimate_cost(document["id"], {
     "method": "virtual",
@@ -400,6 +401,10 @@ if not estimate["has_sufficient_resources"]:
     raise SystemExit(estimate["blocking_reason"])
 ```
 
+To enforce the price at send time, pass `max_total_credits=estimate["total_credits"]`
+as a payload field to assignment creation or template options. The API rejects a
+higher current total with 409 `CreditCeilingExceeded` without sending or charging.
+
 The estimate body takes only pricing descriptors — the SDK strips signer IDs
 from the wire, since they are not part of the estimate contract.
 
@@ -501,8 +506,7 @@ me = client.signers.get_self(signer_access_code)
 client.signers.confirm_data(
     document["id"],
     signer_access_code,
-    {"full_name": "Example Signer", "email": "signer@example.com",
-     "government_id": "00000000000"},
+    {"email": "signer@example.com", "has_accepted_terms": True},
 )
 ```
 
@@ -646,7 +650,10 @@ steps using template role context; copy-receiver roles ignore `step`.
 Creation returns `uploaded` with `assignment: null`; generation and assignment
 creation run asynchronously. Wait for `assignment_created` (or
 `document_processing_failed`), then call `documents.get(document["id"])`.
-`wait_until_ready()` guarantees rendering readiness, not assignment creation. `options` may also carry
+`wait_until_ready()` guarantees rendering readiness, not assignment creation. `create_from_template(..., idempotency_key="example-order-001")` safely identifies
+one creation per template. Reuse returns the original document even if it failed;
+a deleted document returns 404, and an in-progress key returns 409
+`IdempotencyKeyInUse`. No retry is automatic. `options` may also carry
 `expires_at`, `editor_fields` (`{"field_id": ..., "value": ...}` pairs baked
 into the generated document), and `tags` — tag names that do not exist are
 auto-created and merged with the template's default document tags. For a template
@@ -654,6 +661,87 @@ with Editor fields, collect an application value for every placed Editor field
 from `template["pages"][i]["fields"]`, and send its `field_id` in `editor_fields`.
 For example, add `"editor_fields": [{"field_id": editor_field_id, "value": "Agreed terms"}]`
 to options once the application has collected that field's value.
+
+## Envelopes and embedded signing
+
+An envelope groups up to 20 processed, unassigned documents for up to 20 existing
+signers. Each document keeps its own assignment, status and signed artifacts.
+An envelope uses one document allowance; notifications and biometric checks are
+charged once per signer, certificate signatures once per document signed.
+
+```python
+payload = {
+    "name": "Agreement and annexes",
+    "signers": [{"id": signer_id, "verification_method": "Email"}],
+    "documents": [
+        {"id": document_id, "signer_ids": [signer_id]},
+        {"id": annex_id, "signer_ids": [signer_id]},
+    ],
+}
+estimate = client.envelopes.estimate_cost(payload)
+payload["max_total_credits"] = estimate["total_credits"]
+envelope = client.envelopes.create(payload, idempotency_key="example-order-001")
+client.envelopes.get(envelope["id"])
+client.envelopes.list({"status": "open", "per_page": 20})
+client.envelopes.activities(envelope["id"], {"sort": "-id"})
+```
+
+Use a new idempotency key for each intended envelope. Reusing a key recovers the
+first result regardless of body; an in-progress request returns 409
+`IdempotencyKeyInUse`. Spending over the ceiling returns 409
+`CreditCeilingExceeded`. No SDK request is automatically retried.
+
+The request supports `message`, signer `notification_methods`/`embedded`, and
+per-document `method`, `entries`, `expires_at` and `copy_receiver_ids`. Collect
+entries use the same page/field geometry as assignments. All signers must appear
+on a document; certificate signers are alone on each virtual document. Envelopes
+have no signing steps. Limits are 2000 fields and 100 copy receivers in total.
+The server checks membership, state and contact availability. Creation, estimation
+and adding documents need the Envelopes plan feature. A successful creation does
+not guarantee invitation delivery; inspect assignment `notification_history`.
+
+`update(id, {"message": None, "document_ids": [...]})` clears the message and
+reorders all current documents without sending notices. `add_document(id, entry)`
+adds a processed document for existing signers and notifies those signers.
+`remove_document(id, document_id)` cancels and removes an open document.
+`resend_notification(id, signer_id)` sends one envelope reminder and charges paid
+channels. `cancel(id)` returns `[{id, status, cancelled}]`, preserving documents
+already signed or closed. `delete(id)` requires all documents closed and leaves
+their artifacts intact. `download(id, "bundle")` returns ZIP bytes; original,
+certificated, certificate-page and pades are also supported.
+
+Envelope objects return `id`, `name`, nullable `message`, ordered `documents`
+(each with id/position/name/status/artifacts/signers), nullable `counts` by
+status, `signing_urls`, `created_at`, and `resource` on single-object responses.
+Lists return data/meta; `activities()` adds document_id/document_name to each
+activity. The full nested request/response shapes are in `EnvelopeResource`.
+
+To embed Email/WhatsApp signing, enable the Embed feature and register exact
+parent origins. OAuth applications cannot manage those origins or mint sessions.
+
+```python
+client.accounts.add_embed_origin("https://app.example.com")
+assignment = client.assignments.create(document_id, {
+    "signers": [{"id": signer_id, "verification_method": "Email", "embedded": True}],
+})
+session = client.assignments.create_embed_session(document_id, assignment["id"], signer_id)
+iframe_url = session["url"]
+```
+
+Load that URL in an iframe within five minutes; each opening requires a new
+session. Session URLs and signer access codes are credentials. The Assinafy page
+uses `embed.exchange(token, parent_origin)` once, returning signer_access_code,
+signer_id, document_id, verification_method and embed_origins. Calling exchange
+before loading the iframe spends its token. A 409 consumes it too; expired or
+reused tokens return 410. Check the parent message origin against the registered
+origin. Embedded signers have a null `signing_urls[].url`. Embedded biometric and
+certificate verification are unsupported. For an envelope, a session on one
+pending document exposes that signer's remaining documents.
+
+`accounts.list_embed_origins()`, `update_embed_origin(id, origin)` and
+`delete_embed_origin(id)` manage the allowlist (at most ten). Origins require
+HTTPS without paths, credentials, query or fragment; HTTP is allowed for
+localhost/127.0.0.1. Removing the last origin prevents new embed sessions.
 
 ## Contract lifecycle management (CLM)
 
@@ -1103,6 +1191,17 @@ account's active paid subscription as part of deletion. Creating the account
 first and setting `notification_sender_type` with `update()` is supported
 across deployed API versions.
 
+`accounts.get(expand="signing_features")` adds plan capability booleans for
+DigitalCertificate, VerificationIdDocumentFaceMatchBasic, WhatsappNotification,
+VerificationBypass and Embed. This does not bypass contact, balance or assignment
+rules. `accounts.usage()` returns plan, documents_renewal_date and
+balances.documents/balances.credits (each balance/limit/spent).
+
+`notification_policy()` returns editable, owners_receive_all and events;
+`update_notification_policy({"events": {"SignerViewed": True}})` merges a partial
+policy. Owners may update it; identity-review email remains mandatory even when
+its event is disabled. Usage and policy operations refuse third-party OAuth.
+
 ### Current user
 
 ```python
@@ -1117,6 +1216,11 @@ preferences = client.users.update_notification_preferences({
 
 `update_notification_preferences` merges a partial map; omitted keys keep their
 values, and the response is always the complete thirteen-key map.
+`push_preferences()` and `update_push_preferences({"SignerSigned": True})` use
+a separate eight-key map: SignerViewed, SignerSigned, DocumentCompleted,
+SignerDeclined, DocumentAboutToExpire, DocumentExpired,
+SignerIdentityReviewRequired and SignerWhatsappFailed. The workspace notification policy can suppress an
+otherwise enabled preference. These preferences do not register a push device.
 Third-party OAuth apps receive 403 on these user endpoints; use `oauth.userinfo()`
 for identity and `accounts.stats()` for workspace KPIs.
 
@@ -1153,6 +1257,13 @@ matching documents that carry all of them), and `sort` (`name` or
 `updated_at`). `search()` is the compact counterpart, returning documents
 without the expanded `assignment`/`pages` fields. Deletion is only permitted
 while the document is in a deletable status.
+
+Document reads accept `expand="envelope"` or `expand="envelope_id"` (or a list
+of both); rename accepts the same expansions. `get`, `download`, `thumbnail` and
+`download_page` accept keyword `signer_access_code` for signer-authorized reads.
+`thumbnail(..., artifact="certificated")` and `download_page(...,
+artifact="certificated")` request signed renders with workspace credentials;
+a pending render can return 503 with Retry-After.
 
 ### Templates
 
@@ -1225,7 +1336,7 @@ client.signers.verify_code(signer_access_code, "123456")
 client.signers.confirm_data(
     document_id,
     signer_access_code,
-    {"full_name": "John Doe", "email": "john@example.com", "government_id": "00000000000"},
+    {"email": "signer@example.com", "has_accepted_terms": True},
 )
 client.signers.upload_signature(signer_access_code, png_bytes, "signature")
 # Alternative: client.signers.upload_signature(signer_access_code, png_bytes, reuse=True)
@@ -1297,12 +1408,38 @@ client.signer_documents.search_as_workspace(signer_id, "contract")
 client.signer_documents.sign_multiple(["doc-1", "doc-2"], signer_access_code)
 # Mutually exclusive alternative:
 # client.signer_documents.decline_multiple(["doc-1"], "Unfavorable terms.", signer_access_code)
-client.signer_documents.download(signer_id, document_id, artifact_name="original")
+client.signer_documents.download(signer_id, document_id, signer_access_code, "original")
 ```
 
 Methods that take `signer_access_code` reject a missing or blank code and send
-only the code, never the API key or token. The download route is public. Its
-optional `signer_access_code` argument is available for deployments that require it.
+only the code, never the API key or token. Original downloads now require the
+code; the optional argument and legacy artifact defaults remain for compatibility,
+but a no-code legacy link redirects and other artifacts are refused. Redirects
+surface as ApiError without being followed.
+
+`list(..., params={"envelope_id": envelope_id})` and
+`search(..., envelope_id=envelope_id)` filter a signer's documents by envelope;
+the workspace variants accept the same filter.
+
+`current(..., expand="envelope")` and `assignments.get_for_signer(code,
+expand="envelope", document_id=other_document_id)` expose envelope navigation.
+After the signer finishes, full access lasts thirty minutes; later reads may
+return a closed summary and protected operations return 410. `theme(code)` and
+`logo(code)` return branding without workspace credentials.
+
+`request_certified_copy(code, document_id=optional_envelope_document)` sends a
+fresh thirty-minute link to the original signing contact. It returns available,
+notification_method, resends_left and masked sent_to. `download_certified_copy(token)`
+returns PDF bytes; `pades=True` retrieves the certificate artifact.
+`resend_certified_copy(token)` renews a known expired link. Completion links last
+seven days; resends last thirty minutes. Email limits are one send per two minutes
+and ten per day; WhatsApp permits one resend per signature request. These methods
+can send notifications; they never retry automatically.
+
+`signers.verify_code()` and `confirm_data()` return `{}` for empty success payloads,
+while retaining object results from earlier deployments. Confirmation sends email,
+whatsapp_phone_number and/or has_accepted_terms; set name/government_id through
+workspace signer updates before requesting a certificate or biometric signature.
 
 ### Field definitions
 
@@ -1322,6 +1459,9 @@ client.fields.validate_multiple_as_workspace([{"field_id": field["id"], "value":
 client.fields.list_types()
 client.fields.delete(field["id"])
 ```
+
+`validate()` and `validate_as_workspace()` preserve `None` as JSON null, as bulk
+validation does; inspect `success` to learn whether the field accepts the value.
 
 `create()` takes `type` (one of the values from `list_types()`) and `name`,
 optionally `regex` and `is_required`. `is_read_only` / `is_visible` are
@@ -1378,10 +1518,21 @@ partial call cannot silently reactivate it or collapse its event list; pass
 
 **Signing secrets.** `get_endpoint_secret()` returns the endpoint's `whsec_...`
 secret and `rotate_endpoint_secret()` replaces it. Rotation takes effect
-immediately, so update the receiver right away. Both answer `400` while signing
+immediately by default. `keep_previous=True` keeps the previous key signing for
+24 hours, with both signatures in each delivery; existing receivers can keep
+accepting the old one while the new secret is deployed. A further rotation
+replaces the retained key. `rotate_endpoint_secret_details()` returns
+`{secret, previous_secret_expires_at}` when the overlap is requested, while the
+original method continues returning a string. Both answer `400` while signing
 is disabled. OAuth apps cannot read an existing secret, but can rotate it with
 `webhooks:write`. Create/update responses include `secret` when one is generated;
 store it securely at onboarding without a separate read-secret call.
+
+`test_endpoint(endpoint_id)` sends one `webhook_test` delivery using the endpoint's
+signing settings, even to a
+held/inactive endpoint, returning the delivery record including duration_ms,
+http_status and delivered. It does not affect holds, is not subscribable, and is
+limited to ten calls per user per ten minutes. It can call a real receiver.
 
 **Verifying deliveries.** A signed delivery carries `webhook-id`,
 `webhook-timestamp` and `webhook-signature` headers. `verify_delivery()`
@@ -1443,7 +1594,8 @@ in each method's docstring. Binary methods return `bytes`; paginated methods
 return `{"data": [...], "meta": {"current_page", "per_page", "total",
 "last_page"}}` using the API's pagination headers.
 
-The complete stable top-level resource payloads are:
+Representative top-level resource payloads are shown below; public method and
+resource docstrings include their request fields, expansions and response variants:
 
 ```json
 {

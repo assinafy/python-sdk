@@ -20,6 +20,8 @@ class TestAssinafyClient:
     def test_accepts_api_key_credentials(self) -> None:
         client = AssinafyClient(api_key="k", account_id="acc")
         assert client.documents is not None
+        assert client.embed is not None
+        assert client.envelopes is not None
         assert client.signers is not None
         assert client.assignments is not None
         assert client.webhooks is not None
@@ -131,6 +133,13 @@ class TestAssinafyClient:
             ("POST", "signers/identity-verification"),
             ("GET", "signers/signer/document"),
             ("GET", "sign"),
+            ("GET", "sign/theme"),
+            ("GET", "sign/logo"),
+            ("POST", "sign/certified-copy"),
+            ("POST", "embed/sessions/session-token/exchange"),
+            ("GET", "signers/downloads/download-token"),
+            ("GET", "signers/downloads/download-token/pades"),
+            ("POST", "signers/downloads/download-token/resend"),
             ("POST", "documents/doc/assignments/assignment"),
             ("PUT", "documents/doc/assignments/assignment/reject"),
             ("PUT", "signers/documents/sign-multiple"),
@@ -190,6 +199,21 @@ class TestAssinafyClient:
         assert "X-Api-Key" not in requests[0].headers
         assert requests[0].headers["Authorization"] == "Bearer oauth-access-token"
         client.close()
+
+    def test_signer_code_always_suppresses_bearer_even_on_userinfo(self) -> None:
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(403)
+
+        with AssinafyClient(token="workspace-token") as client:
+            client._http._transport = httpx.MockTransport(handler)
+            client.get_http_client().get(
+                "oauth/userinfo", params={"signer-access-code": "synthetic-code"}
+            )
+        assert "Authorization" not in seen[0].headers
+        assert "X-Api-Key" not in seen[0].headers
 
     def test_oauth_factory_returns_a_resource_bound_to_the_shared_transport(self) -> None:
         client = AssinafyClient(api_key="k", account_id="acc")
@@ -501,3 +525,19 @@ def test_api_error_without_rate_limit_headers_leaves_them_unset() -> None:
     assert err.retry_after is None
     assert err.rate_limit_limit is None
     assert ApiError("x", 400).rate_limit_remaining is None
+
+
+def test_oversized_retry_after_preserves_the_api_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "9" * 5000},
+            json={"status": 429, "message": "Too Many Requests", "data": None},
+        )
+
+    with AssinafyClient(account_id="account-id") as client:
+        client._http._transport = httpx.MockTransport(handler)
+        with pytest.raises(ApiError) as error:
+            client.documents.list()
+    assert error.value.status_code == 429
+    assert error.value.retry_after is None

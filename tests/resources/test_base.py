@@ -68,3 +68,21 @@ def test_signer_query_aliases_the_access_code_and_drops_unset_extras() -> None:
             resource._signer_query("  ")
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("payload", [{"id": "id"}, {}, [], None, [1], "", 0])
+def test_object_or_empty_array_response_keeps_other_shapes_invalid(payload: object) -> None:
+    with httpx.Client(
+        base_url="https://example.test/v1/",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"status": 200, "data": payload})
+        ),
+    ) as client:
+        resource = DocumentResource(client)
+        if isinstance(payload, dict) or payload == []:
+            assert resource._call_dict_or_empty("fetch", lambda: client.get("test")) == (
+                payload if isinstance(payload, dict) else {}
+            )
+        else:
+            with pytest.raises(AssinafyError, match="invalid payload"):
+                resource._call_dict_or_empty("fetch", lambda: client.get("test"))

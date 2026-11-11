@@ -3,9 +3,11 @@ from __future__ import annotations
 import builtins
 import mimetypes
 from typing import Any
+from urllib.parse import urlsplit
 
 from ..errors import ValidationError
-from ..utils import load_file_source, stats_params
+from ..types import NOTIFICATION_POLICY_CODES
+from ..utils import clean_params, load_file_source, stats_params, validate_boolean_preferences
 from .base import BaseResource
 
 _NOTIFICATION_SENDERS = frozenset({"User", "Account"})
@@ -62,13 +64,17 @@ class AccountResource(BaseResource):
             "Failed to create account", lambda: self._http.post("accounts", json=body)
         )
 
-    def get(self, account_id: str | None = None) -> dict[str, Any]:
+    def get(self, account_id: str | None = None, *, expand: str | None = None) -> dict[str, Any]:
         """``GET /accounts/{account_id}`` — return one workspace.
 
         Returns the complete account payload documented on
         :class:`AccountResource`, plus ``limits`` for the current plan.
         ``limits.webhook_endpoints`` is 1 or 3; other limit keys may be added.
         This field is absent from account lists. OAuth requires ``account:read``.
+        ``expand="signing_features"`` adds boolean DigitalCertificate,
+        VerificationIdDocumentFaceMatchBasic, WhatsappNotification,
+        VerificationBypass and Embed keys under ``signing_features``. These
+        indicate plan eligibility; credits and assignment rules still apply.
 
         Request body: none.
 
@@ -80,9 +86,157 @@ class AccountResource(BaseResource):
              "is_delete_allowed": true, "limits": {"webhook_endpoints": 1},
              "created_at": "2026-06-03T03:54:16Z"}
         """
+        if expand is not None and expand != "signing_features":
+            raise ValidationError("expand must be signing_features")
         acc_id = self._account_id(account_id)
         return self._call_dict(
-            "Failed to fetch account", lambda: self._http.get(f"accounts/{acc_id}")
+            "Failed to fetch account",
+            lambda: self._http.get(f"accounts/{acc_id}", params=clean_params({"expand": expand})),
+        )
+
+    def usage(self, account_id: str | None = None) -> dict[str, Any]:
+        """``GET /accounts/{account_id}/usage`` — read plan and balances.
+
+        No request body. Billing data is unavailable to third-party OAuth
+        applications (403), regardless of scope. Response::
+
+            {"plan": "Pro", "documents_renewal_date": "2026-12-01",
+             "balances": {"documents": {"balance": 100, "limit": 100, "spent": 0},
+                          "credits": {"balance": 10, "limit": null, "spent": 0}}}
+
+        Plan and renewal date can be null. A null balance means unlimited;
+        a null limit means no cycle limit or unlimited.
+        """
+        acc_id = self._account_id(account_id)
+        return self._call_dict(
+            "Failed to fetch account usage", lambda: self._http.get(f"accounts/{acc_id}/usage")
+        )
+
+    def notification_policy(self, account_id: str | None = None) -> dict[str, Any]:
+        """``GET /accounts/{account_id}/notification-policy`` — read workspace alerts.
+
+        No request body. Every member can read; only owners can edit.
+        Third-party OAuth applications receive 403. Response::
+
+            {"editable": true, "owners_receive_all": false,
+             "events": {"DocumentCompleted": true, "SignerDeclined": true,
+              "DocumentCancelled": true, "DocumentAboutToExpire": true,
+              "DocumentExpired": true, "DocumentExpirationReset": true,
+              "DocumentProcessingFailed": true, "TemplateProcessingFailed": true,
+              "SignerWhatsappFailed": true, "ContractRenewalNotice": true,
+              "ContractExpiring": true, "ContractExpired": true, "ContractRenewed": true,
+              "SignerViewed": false, "SignerSigned": true, "SignerIdentityReviewRequired": true}}
+
+        Disabled events reach nobody on any channel, except the identity review
+        email, which is always sent. ``owners_receive_all`` gives owners push
+        alerts for every member's documents, subject to their own preferences.
+        """
+        acc_id = self._account_id(account_id)
+        return self._call_dict(
+            "Failed to fetch notification policy",
+            lambda: self._http.get(f"accounts/{acc_id}/notification-policy"),
+        )
+
+    def update_notification_policy(
+        self, payload: dict[str, Any], account_id: str | None = None
+    ) -> dict[str, Any]:
+        """``PUT /accounts/{account_id}/notification-policy`` — merge alert rules.
+
+        Owners only; third-party OAuth applications receive 403. Send a partial
+        ``events`` map and/or boolean ``owners_receive_all``. Omitted values stay
+        unchanged. Example JSON::
+
+            {"events": {"SignerViewed": true}, "owners_receive_all": true}
+
+        Returns the full policy shown in :meth:`notification_policy`, including
+        ``editable`` and all event flags. Unknown fields/codes, non-boolean values
+        and an empty update are rejected before sending.
+        """
+        if not isinstance(payload, dict) or not payload:
+            raise ValidationError("Notification policy must be a non-empty mapping")
+        if payload.keys() - {"events", "owners_receive_all"}:
+            raise ValidationError("Unknown notification policy fields")
+        if "events" in payload:
+            if not isinstance(payload["events"], dict):
+                raise ValidationError("Notification policy events must be a mapping")
+            if payload["events"]:
+                validate_boolean_preferences(payload["events"], NOTIFICATION_POLICY_CODES)
+        if "owners_receive_all" in payload and not isinstance(payload["owners_receive_all"], bool):
+            raise ValidationError("owners_receive_all must be boolean")
+        acc_id = self._account_id(account_id)
+        return self._call_dict(
+            "Failed to update notification policy",
+            lambda: self._http.put(f"accounts/{acc_id}/notification-policy", json=payload),
+        )
+
+    def list_embed_origins(self, account_id: str | None = None) -> builtins.list[dict[str, Any]]:
+        """``GET /accounts/{account_id}/embed-origins`` — read allowed iframe origins.
+
+        No request body. Requires the Embed plan feature; OAuth applications
+        cannot use this endpoint. Returns oldest first::
+
+            [{"id": "origin-id", "origin": "https://app.example.com",
+              "created_at": "2026-11-04T12:05:00Z"}]
+        """
+        acc_id = self._account_id(account_id)
+        return self._call_plain_list(
+            "Failed to list embed origins",
+            lambda: self._http.get(f"accounts/{acc_id}/embed-origins"),
+        )
+
+    def add_embed_origin(self, origin: str, account_id: str | None = None) -> dict[str, Any]:
+        """``POST /accounts/{account_id}/embed-origins`` — allow an iframe origin.
+
+        Sends ``{"origin": "https://app.example.com"}``. Use an exact HTTPS
+        origin, without a path, query, fragment, credentials or wildcard; HTTP
+        is allowed only for localhost and 127.0.0.1. A trailing slash is accepted.
+        The server lowercases hosts and removes the slash and default port.
+        Duplicate origins or more than ten entries return 400. Requires Embed;
+        OAuth applications are refused. Response::
+
+            {"id": "origin-id", "origin": "https://app.example.com",
+             "created_at": "2026-11-04T12:05:00Z"}
+        """
+        _validate_embed_origin(origin)
+        acc_id = self._account_id(account_id)
+        return self._call_dict(
+            "Failed to add embed origin",
+            lambda: self._http.post(f"accounts/{acc_id}/embed-origins", json={"origin": origin}),
+        )
+
+    def update_embed_origin(
+        self, origin_id: str, origin: str, account_id: str | None = None
+    ) -> dict[str, Any]:
+        """``PUT /accounts/{account_id}/embed-origins/{origin_id}`` — replace an origin.
+
+        Sends ``{"origin": "https://app.example.com"}``, retaining the entry ID.
+        Validation, plan and OAuth rules are the same as :meth:`add_embed_origin`.
+        Returns ``{"id": "origin-id", "origin": "https://app.example.com",
+        "created_at": "2026-11-04T12:05:00Z"}``; another entry with the same
+        origin returns 400, and a missing ID returns 404.
+        """
+        _validate_embed_origin(origin)
+        acc_id = self._account_id(account_id)
+        oid = self._path_id(origin_id, "Origin ID")
+        return self._call_dict(
+            "Failed to update embed origin",
+            lambda: self._http.put(
+                f"accounts/{acc_id}/embed-origins/{oid}", json={"origin": origin}
+            ),
+        )
+
+    def delete_embed_origin(self, origin_id: str, account_id: str | None = None) -> None:
+        """``DELETE /accounts/{account_id}/embed-origins/{origin_id}`` — remove an origin.
+
+        No request body; ``data: []`` becomes ``None``. Requires Embed; OAuth
+        applications are refused. Missing entries return 404. Removing the last
+        origin disables embedding: new sessions return 409/embed_origins_missing.
+        """
+        acc_id = self._account_id(account_id)
+        oid = self._path_id(origin_id, "Origin ID")
+        self._call_void(
+            "Failed to delete embed origin",
+            lambda: self._http.delete(f"accounts/{acc_id}/embed-origins/{oid}"),
         )
 
     def update(
@@ -241,3 +395,29 @@ class AccountResource(BaseResource):
 def _validate_notification_sender(value: Any) -> None:
     if not isinstance(value, str) or value not in _NOTIFICATION_SENDERS:
         raise ValidationError('notification_sender_type must be "User" or "Account"')
+
+
+def _validate_embed_origin(origin: Any) -> None:
+    if not isinstance(origin, str) or any(c.isspace() or ord(c) < 32 for c in origin):
+        raise ValidationError("Embed origin must be an exact HTTP(S) origin")
+    try:
+        parsed = urlsplit(origin)
+        port = parsed.port
+        valid = (
+            parsed.hostname
+            and not any(c in origin for c in "*\\?#")
+            and not parsed.username
+            and not parsed.password
+            and "@" not in parsed.netloc
+            and not parsed.netloc.endswith(":")
+            and parsed.path in {"", "/"}
+            and (port is None or port > 0)
+            and (
+                parsed.scheme == "https"
+                or (parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"})
+            )
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValidationError("Embed origin must be an exact HTTPS origin or local HTTP origin")

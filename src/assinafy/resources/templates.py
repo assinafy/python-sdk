@@ -48,12 +48,12 @@ class TemplateResource(BaseResource):
                             "created_at": "2024-07-19T15:23:03Z",
                             "updated_at": "2024-07-19T15:23:03Z"}],
                  "tags": [{"id": "fa8c09f3...", "name": "HR"}],
-                 "default_document_tags": [{"id": "fa8c09f4...", "name": "Signed"}],
                  "created_at": "2024-07-19T15:23:03Z",
                  "updated_at": "2024-07-19T15:23:03Z"}
              ],
              "meta": {"current_page": 1, "per_page": 20, "total": 1, "last_page": 1}}
 
+        ``default_document_tags`` is omitted in lists; use :meth:`get` for it.
         Request body: none.
         """
         acc_id = self._account_id(account_id)

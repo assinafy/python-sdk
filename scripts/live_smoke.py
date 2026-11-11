@@ -265,6 +265,12 @@ def main() -> int:
         step("accounts.list()", lambda: client.accounts.list(), failures)
         step("accounts.get()", lambda: client.accounts.get(), failures)
         step("accounts.theme()", lambda: client.accounts.theme(), failures)
+        optional_404_step("accounts.usage()", lambda: client.accounts.usage(), failures)
+        optional_404_step(
+            "accounts.notification_policy()",
+            lambda: client.accounts.notification_policy(),
+            failures,
+        )
         optional_404_step("accounts.stats()", lambda: client.accounts.stats(), failures)
         step("users.me()", lambda: client.users.me(), failures)
         optional_404_step("users.stats()", lambda: client.users.stats(), failures)
@@ -278,6 +284,12 @@ def main() -> int:
             if isinstance(original, bool):
                 preference_restore = {"DocumentCompleted": original}
 
+        optional_404_step(
+            "users.push_preferences()", lambda: client.users.push_preferences(), failures
+        )
+        optional_404_step(
+            "envelopes.list(per_page=5)", lambda: client.envelopes.list({"per_page": 5}), failures
+        )
         step("documents.statuses()", lambda: client.documents.statuses(), failures)
         step("fields.list_types()", lambda: client.fields.list_types(), failures)
         step("webhooks.list_event_types()", lambda: client.webhooks.list_event_types(), failures)
@@ -705,10 +717,8 @@ def main() -> int:
                         failures,
                     )
                     step(
-                        "signer_documents.download() public artifact",
-                        lambda: client.signer_documents.download(
-                            primary_signer_id, document_id, artifact_name="original"
-                        ),
+                        "documents.download() workspace artifact",
+                        lambda: client.documents.download(document_id, "original"),
                         failures,
                     )
                     step(

@@ -55,14 +55,15 @@ class ContractResource(BaseResource):
         ``per_page`` becomes ``per-page``. Statuses are comma-separated, sort is
         ``end_date`` or ``updated_at`` with optional ``-``, and ``expand=document``
         includes the document. ``ending_within_days`` is 0–3650, inclusive, using
-        Brasília calendar days. Pages contain at most 100 records.
+        Brasília calendar days. Pages contain at most 50 records; larger page sizes
+        are capped by the API.
         Filters combine; omit any unused filter.
         Default order is most recently updated first. Page until ``updated_at``
         predates the last sync to recover changes after a missed webhook.
 
         Response (pagination metadata comes from headers)::
 
-            {"data": [{"resource": "document_contract", "document_id": "doc-1",
+            {"data": [{"document_id": "doc-1",
               "status": "active", "counterparty_name": "Example Company",
               "counterparty_taxpayer_id": null, "value": 1200.50, "currency": "BRL",
               "start_date": "2026-11-01", "end_date": "2027-10-31",
@@ -95,7 +96,7 @@ class ContractResource(BaseResource):
                     value,
                     key,
                     0 if key == "ending_within_days" else 1,
-                    {"ending_within_days": 3650, "per-page": 100}.get(key),
+                    {"ending_within_days": 3650}.get(key),
                 )
             elif not isinstance(value, str):
                 raise ValidationError(f"{key} must be a string")
@@ -216,10 +217,13 @@ class ContractResource(BaseResource):
             raise ValidationError("Contract terms require at least one field")
         return self._call_dict("Failed to update contract", lambda: self._http.put(path, json=body))
 
-    def related(self, document_id: str, account_id: str | None = None) -> dict[str, Any]:
+    def related(
+        self, document_id: str, account_id: str | None = None, *, expand: str | None = None
+    ) -> dict[str, Any]:
         """GET /v1/accounts/{accountId}/documents/{documentId}/contract/related.
 
-        No body or query. Reads a family's root from any member document.
+        No body. Optional query ``expand=document`` includes the root's document
+        under ``document``, including its name. Reads a family's root from any member document.
         Missing terms raise ``ApiError`` (404). Response::
 
             {"resource": "document_contract", "document_id": "doc-1", "status": "active",
@@ -233,9 +237,12 @@ class ContractResource(BaseResource):
         ``amendments`` contains links with the complete shape shown in :meth:`get`,
         applied first by number, then pending instruments.
         """
+        if expand is not None and expand != "document":
+            raise ValidationError("expand must be document")
         path = self._path(document_id, account_id)
         return self._call_dict(
-            "Failed to get related contracts", lambda: self._http.get(f"{path}/related")
+            "Failed to get related contracts",
+            lambda: self._http.get(f"{path}/related", params=clean_params({"expand": expand})),
         )
 
     def renew(

@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+from decimal import FloatOperation, localcontext
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
 from assinafy.errors import ApiError, AssinafyError, NetworkError, ValidationError
-from assinafy.utils import clean_params, handle_assinafy_response, to_sdk_error
+from assinafy.utils import (
+    clean_params,
+    handle_assinafy_response,
+    normalize_expand,
+    to_sdk_error,
+    validate_credit_ceiling,
+    validate_expiration,
+    validate_signer_methods,
+)
 
 
 class TestHandleAssinafyResponse:
@@ -92,3 +101,64 @@ class TestCleanParams:
     def test_rejects_conflicting_aliases(self) -> None:
         with pytest.raises(ValidationError, match="Conflicting"):
             clean_params({"per_page": 20, "per-page": 50}, {"per_page": "per-page"})
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, 0.45, "0", " 1.50 ", ".5", "1e2", "-0"])
+def test_credit_ceiling_accepts_nonnegative_numbers_and_numeric_text(value: object) -> None:
+    validate_credit_ceiling(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, False, -1, "-0.01", float("inf"), float("nan"), "NaN", "1_0", "", [], {}, "one"],
+)
+def test_credit_ceiling_rejects_invalid_values(value: object) -> None:
+    with pytest.raises(ValidationError, match="max_total_credits"):
+        validate_credit_ceiling(value)
+
+
+@pytest.mark.parametrize("value", ["pages,assignment", ["pages", "assignment"]])
+def test_normalize_expand_accepts_supported_lists_and_comma_strings(value: str | list[str]) -> None:
+    assert normalize_expand(value, frozenset({"pages", "assignment"})) == "pages,assignment"
+    assert normalize_expand(None, frozenset({"pages"})) is None
+
+
+@pytest.mark.parametrize("value", ["", [], "unknown", [1], "pages,,assignment", True])
+def test_normalize_expand_rejects_invalid_expansions(value: object) -> None:
+    with pytest.raises(ValidationError, match="expand"):
+        normalize_expand(value, frozenset({"pages", "assignment"}))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("verification", [None, "Email", "Whatsapp"])
+def test_embedded_signers_accept_code_verification(verification: str | None) -> None:
+    validate_signer_methods(verification, None, True)
+
+
+@pytest.mark.parametrize("verification", ["DigitalCertificate", "IdDocumentFaceMatchBasic"])
+def test_embedded_signers_reject_other_verification(verification: str) -> None:
+    with pytest.raises(ValidationError, match="embedded"):
+        validate_signer_methods(verification, None, True)
+    validate_signer_methods(verification, None, False)
+
+
+def test_embedded_flag_requires_a_boolean() -> None:
+    with pytest.raises(ValidationError, match="embedded"):
+        validate_signer_methods("Email", None, "true")
+
+
+@pytest.mark.parametrize("value", [0, "", 1924991940, 1924991940.5, "1924991940", "1.92499194e9"])
+def test_expiration_accepts_documented_unix_and_clear_forms(value: object) -> None:
+    validate_expiration(value)
+
+
+@pytest.mark.parametrize("value", [True, float("inf"), float("nan"), "NaN", "1_0", [], {}])
+def test_expiration_rejects_malformed_unix_values(value: object) -> None:
+    with pytest.raises(ValidationError, match="expires_at"):
+        validate_expiration(value)
+
+
+def test_numeric_validation_does_not_depend_on_decimal_float_traps() -> None:
+    with localcontext() as context:
+        context.traps[FloatOperation] = True
+        validate_credit_ceiling(0.45)
+        validate_expiration(1924991940.5)

@@ -114,6 +114,21 @@ NotificationPreferenceCode = Literal[
 ]
 NOTIFICATION_PREFERENCE_CODES = frozenset(get_args(NotificationPreferenceCode))
 
+PushPreferenceCode = Literal[
+    "SignerViewed",
+    "SignerSigned",
+    "DocumentCompleted",
+    "SignerDeclined",
+    "DocumentAboutToExpire",
+    "DocumentExpired",
+    "SignerIdentityReviewRequired",
+    "SignerWhatsappFailed",
+]
+PUSH_PREFERENCE_CODES = frozenset(get_args(PushPreferenceCode))
+
+NotificationPolicyCode = Literal[NotificationPreferenceCode, PushPreferenceCode]
+NOTIFICATION_POLICY_CODES = NOTIFICATION_PREFERENCE_CODES | PUSH_PREFERENCE_CODES
+
 
 class Logger(Protocol):
     """Structural type for ``logger`` on :class:`~assinafy.client.AssinafyClient`.

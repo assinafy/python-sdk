@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -218,7 +218,7 @@ class WebhookResource(BaseResource):
                              "object": {"id": "abc123", "type": "Document"},
                              "subject": {"id": "def456", "type": "User"}},
                  "delivered": true, "webhook_id": "message-id", "attempt": 1,
-                 "kind": "scheduled", "will_retry": false,
+                 "kind": "scheduled", "will_retry": false, "duration_ms": 184,
                  "http_status": 200, "response_body": "OK",
                  "error": null, "created_at": "2026-06-05T20:50:55Z",
                  "updated_at": "2026-06-05T20:50:56Z"}
@@ -255,7 +255,7 @@ class WebhookResource(BaseResource):
              "activity_id": 456, "endpoint_id": "65f1c2a9b3e4d5f60718293a4b5c6d7e",
              "endpoint": "https://example.com/webhook", "payload": null,
              "delivered": true, "webhook_id": "message-id", "attempt": 2,
-             "kind": "manual", "will_retry": false,
+             "kind": "manual", "will_retry": false, "duration_ms": 184,
              "http_status": 200, "response_body": "OK",
              "error": null, "created_at": "2026-06-05T20:50:55Z",
              "updated_at": "2026-06-05T20:50:56Z"}
@@ -456,25 +456,89 @@ class WebhookResource(BaseResource):
         path = self._endpoint_path(endpoint_id, account_id) + "/secret"
         return self._secret("Failed to fetch webhook endpoint secret", lambda: self._http.get(path))
 
-    def rotate_endpoint_secret(self, endpoint_id: str, account_id: str | None = None) -> str:
+    def rotate_endpoint_secret(
+        self,
+        endpoint_id: str,
+        account_id: str | None = None,
+        *,
+        keep_previous: bool = False,
+    ) -> str:
         """``POST /accounts/{account_id}/webhooks/endpoints/{endpoint_id}/secret/rotate``.
 
-        Replaces the signing secret and returns the new one. The old secret
-        stops working immediately: deliveries sent after the rotation are
-        signed only with the new secret, so update the receiver right away. The
-        API answers ``400`` when signing is disabled. OAuth applications can
-        rotate with ``webhooks:write``. Request body: none. The wire response
-        ``{"secret": "whsec_..."}`` is reduced to its secret string.
+        Replaces the signing secret and returns the new secret string, e.g.
+        ``"whsec_c2VjcmV0"``. By default no body is sent and the old secret stops
+        working immediately. ``keep_previous=True`` sends
+        ``{"keep_previous": true}`` to keep the old key signing for 24 hours.
+        During that window deliveries carry both signatures; receivers accept
+        any valid one. A further rotation replaces the retained old key.
 
-        Example response (``data`` envelope unwrapped)::
-
-            "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
+        Use :meth:`rotate_endpoint_secret_details` for the complete response,
+        including ``previous_secret_expires_at``. Signing must be enabled (400
+        otherwise); OAuth requires ``webhooks:write``. Never log the secret.
         """
+        result = self.rotate_endpoint_secret_details(
+            endpoint_id, account_id, keep_previous=keep_previous
+        )
+        return cast(str, result["secret"])
+
+    def rotate_endpoint_secret_details(
+        self,
+        endpoint_id: str,
+        account_id: str | None = None,
+        *,
+        keep_previous: bool = False,
+    ) -> dict[str, Any]:
+        """``POST /accounts/{account_id}/webhooks/endpoints/{endpoint_id}/secret/rotate``.
+
+        Same request and permissions as :meth:`rotate_endpoint_secret`, but
+        returns the complete unwrapped object. With ``keep_previous=True``::
+
+            {"secret": "whsec_c2VjcmV0",
+             "previous_secret_expires_at": "2026-11-12T15:00:00Z"}
+
+        Without it the request has no body and the response contains only
+        ``secret``. The expiry applies to the immediately previous key only.
+        Store secrets securely; no automatic retries are performed.
+        """
+        if not isinstance(keep_previous, bool):
+            raise ValidationError("keep_previous must be boolean")
         path = self._endpoint_path(endpoint_id, account_id) + "/secret/rotate"
         self._logger.info("Rotating webhook endpoint secret")
-        return self._secret(
-            "Failed to rotate webhook endpoint secret", lambda: self._http.post(path)
+        result = self._call_dict(
+            "Failed to rotate webhook endpoint secret",
+            lambda: (
+                self._http.post(path, json={"keep_previous": True})
+                if keep_previous
+                else self._http.post(path)
+            ),
         )
+        if not isinstance(result.get("secret"), str) or not result["secret"]:
+            raise AssinafyError("Failed to rotate webhook endpoint secret: API returned no secret")
+        return result
+
+    def test_endpoint(self, endpoint_id: str, account_id: str | None = None) -> dict[str, Any]:
+        """``POST /accounts/{account_id}/webhooks/endpoints/{endpoint_id}/test``.
+
+        Sends one ``webhook_test`` delivery, even to an inactive or held endpoint,
+        with its normal signing settings. No request body. Requires
+        ``webhooks:write`` for OAuth; limited to 10 tests per user per 10 minutes.
+        The endpoint gets ten seconds to respond. Testing neither lifts nor
+        contributes to a delivery hold. Response::
+
+            {"resource": "activity_dispatching_history", "id": "dispatch-id",
+             "event": "webhook_test", "activity_id": 456, "endpoint_id": "endpoint-id",
+             "endpoint": "https://example.com/webhook", "payload": null,
+             "delivered": true, "webhook_id": "message-id", "attempt": 1,
+             "kind": "manual", "will_retry": false, "duration_ms": 184,
+             "http_status": 200, "response_body": "OK", "error": null,
+             "created_at": "2026-11-11T12:00:00Z", "updated_at": "2026-11-11T12:00:00Z"}
+
+        The delivered event names the endpoint as subject/object and carries no
+        secret or member/billing data. Its payload/origin are null. It is never
+        subscribable and does not appear in the event catalog.
+        """
+        path = self._endpoint_path(endpoint_id, account_id) + "/test"
+        return self._call_dict("Failed to test webhook endpoint", lambda: self._http.post(path))
 
     def _endpoint_path(self, endpoint_id: str, account_id: str | None) -> str:
         acc_id = self._account_id(account_id)

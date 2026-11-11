@@ -54,6 +54,7 @@ class FakeClient:
             "authentication",
             "contracts",
             "documents",
+            "envelopes",
             "fields",
             "signer_documents",
             "signers",
@@ -294,6 +295,12 @@ def test_read_only_mode_needs_no_emails_and_never_mutates(
     assert "fields.create" not in names
     assert "documents.upload" not in names
     assert "users.update_notification_preferences" not in names
+    assert {
+        "accounts.usage",
+        "accounts.notification_policy",
+        "users.push_preferences",
+        "envelopes.list",
+    } <= set(names)
     assert client.closed is True
 
 
@@ -463,7 +470,8 @@ def test_notification_opt_in_exercises_assignment_and_resend(
         args[2] for name, args, _ in client.calls if name == "assignments.reset_expiration"
     ]
     assert expirations == ["2031-01-31T00:00:00Z", None]
-    assert "signer_documents.download" in names
+    assert "documents.download" in names
+    assert "signer_documents.download" not in names
     assert names.index("assignments.create") < names.index("documents.delete")
 
 

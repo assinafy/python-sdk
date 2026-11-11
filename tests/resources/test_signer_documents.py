@@ -158,7 +158,7 @@ class TestSignerDocumentResource:
         assert http.last_kwargs["params"] == {"signer-access-code": "code"}
         assert content == b"pdf"
 
-    def test_download_is_public_without_access_code(self) -> None:
+    def test_download_preserves_legacy_no_code_arguments(self) -> None:
         http = MockHttp()
         resource = SignerDocumentResource(http)
 
@@ -166,7 +166,7 @@ class TestSignerDocumentResource:
 
         assert http.last_kwargs["params"] == {}
 
-    def test_download_supports_pades_and_rejects_unknown_artifacts(self) -> None:
+    def test_download_preserves_legacy_artifacts_and_rejects_unknown_names(self) -> None:
         http = MockHttp()
         resource = SignerDocumentResource(http)
 

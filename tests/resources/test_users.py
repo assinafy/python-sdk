@@ -134,3 +134,30 @@ class TestUserResource:
         finally:
             client.close()
         assert json.loads(requests[0].content) == {code: False}
+
+
+def test_push_preferences_are_separate_and_preserve_unknown_response_keys() -> None:
+    requests: list[httpx.Request] = []
+    preferences = {"SignerViewed": False, "FutureEvent": True}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"status": 200, "data": preferences})
+
+    resource, client = _resource(httpx.MockTransport(handler))
+    with client:
+        assert resource.push_preferences() == preferences
+        assert resource.update_push_preferences({"SignerViewed": False}) == preferences
+    assert [(r.method, r.url.path) for r in requests] == [
+        ("GET", "/v1/users/self/push-preferences"),
+        ("PUT", "/v1/users/self/push-preferences"),
+    ]
+    assert not requests[0].content
+    assert json.loads(requests[1].content) == {"SignerViewed": False}
+
+
+@pytest.mark.parametrize("preferences", [[], {}, {"DocumentCancelled": False}, {"SignerViewed": 1}])
+def test_push_preference_input_validation(preferences: Any) -> None:
+    resource, client = _resource(httpx.MockTransport(lambda r: pytest.fail("unexpected I/O")))
+    with client, pytest.raises(ValidationError):
+        resource.update_push_preferences(preferences)

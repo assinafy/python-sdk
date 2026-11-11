@@ -482,6 +482,22 @@ class TestUserinfo:
 
 
 class TestDiscovery:
+    def test_origin_root_base_url_still_sends_no_credentials_to_metadata(self) -> None:
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={})
+
+        with AssinafyClient(api_key="workspace-key", base_url="https://example.test") as client:
+            client._http._transport = httpx.MockTransport(handler)
+            oauth = client.oauth("client-id")
+            oauth.protected_resource_metadata()
+            oauth.authorization_server_metadata("https://example.test")
+        assert len(seen) == 2
+        assert all("X-Api-Key" not in request.headers for request in seen)
+        assert all("Authorization" not in request.headers for request in seen)
+
     def test_reads_the_protected_resource_metadata_from_the_api_origin(self) -> None:
         seen: list[httpx.Request] = []
 

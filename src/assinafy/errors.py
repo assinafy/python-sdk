@@ -92,7 +92,12 @@ def _int_header(headers: Mapping[str, str] | None, name: str) -> int | None:
     if headers is None:
         return None
     value = next((v.strip() for k, v in headers.items() if k.lower() == name), "")
-    return int(value) if value.isascii() and value.isdigit() else None
+    if not value.isascii() or not value.isdigit():
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 class ValidationError(AssinafyError):

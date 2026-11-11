@@ -6,6 +6,7 @@ import math
 import os
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -23,6 +24,7 @@ _RFC3339_RE = re.compile(
     r"(?:\.[0-9]+)?(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$"
 )
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+_NUMBER_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 
 
 def handle_assinafy_response(response: Any) -> Any:
@@ -112,12 +114,27 @@ def validate_datetime(value: Any, name: str, *, allow_none: bool = False) -> Non
 
 
 def validate_expiration(value: Any, name: str = "expires_at", *, allow_none: bool = False) -> None:
-    """Accept RFC 3339, a UTC datetime without offset, or a UTC end-of-day date.
+    """Accept ISO dates, UTC datetimes, and finite Unix seconds without rewriting them.
 
     The API interprets date-only expirations as 23:59 UTC and checks that the
-    expiration is at least one hour in the future. Preserve the caller's value.
+    expiration is at least one hour in the future. Numeric text is Unix seconds;
+    numeric fractions are dropped by the server. Zero and empty text clear expiration.
     """
     if value is None and allow_none:
+        return
+    if value == "":
+        return
+    if not isinstance(value, bool) and (
+        isinstance(value, (int, float))
+        or isinstance(value, str)
+        and _NUMBER_RE.fullmatch(value.strip())
+    ):
+        try:
+            number = Decimal(str(value) if isinstance(value, float) else value)
+        except InvalidOperation:
+            raise ValidationError(f"{name} must be a finite Unix timestamp") from None
+        if not number.is_finite():
+            raise ValidationError(f"{name} must be a finite Unix timestamp")
         return
     candidate = value
     if isinstance(value, str):
@@ -243,7 +260,44 @@ def build_signer_payload(payload: dict[str, Any], require_full_name: bool) -> di
     )
 
 
-def validate_signer_methods(verification: Any, notifications: Any) -> None:
+def validate_credit_ceiling(value: Any) -> None:
+    """Validate an optional finite, nonnegative credit ceiling without changing its value."""
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValidationError("max_total_credits must be a finite nonnegative number")
+    if isinstance(value, str) and not _NUMBER_RE.fullmatch(value.strip()):
+        raise ValidationError("max_total_credits must be a finite nonnegative number")
+    try:
+        number = Decimal(str(value) if isinstance(value, float) else value)
+    except InvalidOperation:
+        raise ValidationError("max_total_credits must be a finite nonnegative number") from None
+    if not number.is_finite() or number < 0:
+        raise ValidationError("max_total_credits must be a finite nonnegative number")
+
+
+def idempotency_headers(key: str | None) -> dict[str, str]:
+    """Build an optional idempotency header without allowing header control characters."""
+    if key is None:
+        return {}
+    if not isinstance(key, str) or any(ord(char) < 32 or ord(char) > 126 for char in key):
+        raise ValidationError("idempotency_key must be printable ASCII")
+    return {"Idempotency-Key": key}
+
+
+def normalize_expand(expand: str | list[str] | None, allowed: frozenset[str]) -> str | None:
+    """Normalize supported expansions to the comma-separated query value."""
+    if expand is None:
+        return None
+    values = expand.split(",") if isinstance(expand, str) else expand
+    if not isinstance(values, list) or not values:
+        raise ValidationError("expand must name at least one supported expansion")
+    if any(not isinstance(value, str) or value.strip() not in allowed for value in values):
+        raise ValidationError("expand contains an unsupported expansion")
+    return ",".join(value.strip() for value in values)
+
+
+def validate_signer_methods(verification: Any, notifications: Any, embedded: Any = None) -> None:
     """Validate the coupled verification and single notification channel."""
     if verification is not None and (
         not isinstance(verification, str) or verification not in VERIFICATION_METHODS
@@ -259,6 +313,10 @@ def validate_signer_methods(verification: Any, notifications: Any) -> None:
             raise ValidationError("notification_methods must contain exactly one Email or Whatsapp")
         if verification in {"Email", "Whatsapp"} and notifications != [verification]:
             raise ValidationError("notification_methods must match the verification_method")
+    if embedded is not None and not isinstance(embedded, bool):
+        raise ValidationError("embedded must be boolean")
+    if embedded and verification not in {None, "Email", "Whatsapp"}:
+        raise ValidationError("embedded signers require Email or Whatsapp verification")
 
 
 def validate_decline_reason(value: Any) -> str:
@@ -268,3 +326,16 @@ def validate_decline_reason(value: Any) -> str:
     if len(value) > 2000:
         raise ValidationError("Decline reason must be 2000 characters or fewer")
     return value
+
+
+def validate_boolean_preferences(preferences: Any, allowed: frozenset[str]) -> None:
+    """Validate a partial notification preference map before sending it."""
+    if not isinstance(preferences, dict):
+        raise ValidationError("Notification preferences must be a mapping")
+    if not preferences:
+        raise ValidationError("At least one notification preference is required")
+    for code, enabled in preferences.items():
+        if code not in allowed:
+            raise ValidationError("Unknown notification preference")
+        if not isinstance(enabled, bool):
+            raise ValidationError("Notification preference must be boolean")

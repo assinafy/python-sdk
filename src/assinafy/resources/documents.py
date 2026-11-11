@@ -12,7 +12,10 @@ from ..types import (
 from ..utils import (
     QUERY_PARAM_ALIASES,
     clean_params,
+    idempotency_headers,
     load_file_source,
+    normalize_expand,
+    validate_credit_ceiling,
     validate_email,
     validate_expiration,
     validate_signer_methods,
@@ -26,7 +29,9 @@ _READY_STATUSES = frozenset(
     {"metadata_ready", "pending_signature", "pending_identity_review", "certificated"}
 )
 _FAILED_STATUSES = frozenset({"failed", "rejected_by_signer", "rejected_by_user", "expired"})
-_TEMPLATE_OPTIONS = frozenset({"name", "message", "expires_at", "editor_fields", "tags"})
+_TEMPLATE_OPTIONS = frozenset(
+    {"name", "message", "expires_at", "editor_fields", "tags", "max_total_credits"}
+)
 _TEMPLATE_SIGNER_FIELDS = frozenset(
     {
         "role_id",
@@ -36,6 +41,7 @@ _TEMPLATE_SIGNER_FIELDS = frozenset(
         "whatsapp_phone_number",
         "verification_method",
         "notification_methods",
+        "embedded",
         "step",
     }
 )
@@ -125,7 +131,7 @@ class DocumentResource(BaseResource):
         ``params`` accepts ``page``, ``per_page`` (sent as ``per-page``),
         ``search``, ``sort`` (``name`` or ``updated_at``, prefixed by ``-`` for
         descending; default ``-updated_at``), ``status``, ``method``,
-        and ``tags`` (comma-separated tag IDs). Returns
+        ``envelope_id`` and ``tags`` (comma-separated tag IDs). Returns
         ``{"data": [...], "meta": {...}}`` where ``meta`` is built from the
         documented ``x-pagination-*`` response headers.
 
@@ -182,7 +188,13 @@ class DocumentResource(BaseResource):
             lambda: self._http.get("documents/statuses"),
         )
 
-    def get(self, document_id: str) -> dict[str, Any]:
+    def get(
+        self,
+        document_id: str,
+        *,
+        expand: str | builtins.list[str] | None = None,
+        signer_access_code: str | None = None,
+    ) -> dict[str, Any]:
         """``GET /documents/{document_id}`` — fetch a single document.
 
         The single-document response embeds ``assignment`` (or ``null``) and
@@ -191,6 +203,11 @@ class DocumentResource(BaseResource):
         true means contract terms are available on this document or the contract
         it amends. An absent key means unknown, including when the lookup fails.
         ``decline_reason`` is visible only to the document's creator.
+        Workspace reads accept ``expand="envelope_id,envelope"`` (or a list)
+        to include the envelope ID and/or ``{id, name}``, null outside one.
+        An optional ``signer_access_code`` uses only that code and returns only
+        the signer's assignment items, omitting other signers and their links.
+        Envelope expansion is for workspace reads.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -212,18 +229,25 @@ class DocumentResource(BaseResource):
         Request body: none.
         """
         doc_id = self._path_id(document_id, "Document ID")
+        query = self._signer_query(signer_access_code) if signer_access_code is not None else {}
+        expansion = normalize_expand(expand, frozenset({"envelope_id", "envelope"}))
+        if expansion is not None:
+            query["expand"] = expansion
         return self._call_dict(
             "Failed to fetch document details",
-            lambda: self._http.get(f"documents/{doc_id}"),
+            lambda: self._http.get(f"documents/{doc_id}", params=query),
         )
 
-    def rename(self, document_id: str, name: str) -> dict[str, Any]:
+    def rename(
+        self, document_id: str, name: str, *, expand: str | builtins.list[str] | None = None
+    ) -> dict[str, Any]:
         """``PATCH /documents/{document_id}`` — rename a document.
 
         Only allowed before the signature process starts (the document is in
         ``uploaded`` or ``metadata_ready`` status with no signers yet); once an
         assignment exists or the document is certificated the API locks the name
-        and returns a 400. Server-side the name is normalized (diacritics
+        and returns a 400. ``expand="assignment,pages"`` optionally includes
+        those document fields in the response. Server-side the name is normalized (diacritics
         removed) and capped at 255 characters.
 
         Example request body (JSON)::
@@ -251,9 +275,12 @@ class DocumentResource(BaseResource):
                 "Document name must be 255 characters or fewer",
                 {"length": len(new_name)},
             )
+        query = clean_params(
+            {"expand": normalize_expand(expand, frozenset({"assignment", "pages"}))}
+        )
         return self._call_dict(
             "Failed to rename document",
-            lambda: self._http.patch(f"documents/{doc_id}", json={"name": new_name}),
+            lambda: self._http.patch(f"documents/{doc_id}", json={"name": new_name}, params=query),
         )
 
     def search(
@@ -266,7 +293,7 @@ class DocumentResource(BaseResource):
         A compact counterpart to :meth:`list`: it returns documents **without**
         the expanded ``assignment`` / ``pages`` fields, which makes it cheaper
         for autocomplete/typeahead. ``params`` accepts ``search`` (partial match
-        on document name / signer name / signer email), ``status``, ``sort``
+        on document name / signer name / signer email), ``status``, ``envelope_id``, ``sort``
         (``name``/``updated_at`` with optional ``-`` for descending), and the
         usual ``page`` / ``per_page`` (sent as ``per-page``) pagination keys.
         Returns ``{"data": [...], "meta": {...}}`` when the API returns the
@@ -375,12 +402,16 @@ class DocumentResource(BaseResource):
         self,
         document_id: str,
         artifact_name: DocumentArtifactName = "certificated",
+        *,
+        signer_access_code: str | None = None,
     ) -> bytes:
         """``GET /documents/{document_id}/download/{artifact_name}`` — raw bytes.
 
         Valid artifacts: ``original``, ``certificated``, ``certificate-page``,
         ``pades``, and ``bundle``. ``pades`` exists only for documents signed
         with ICP-Brasil certificates. Returns the raw PDF/ZIP bytes.
+        With ``signer_access_code``, only ``original`` is available (HTTP 403
+        for other artifacts), and workspace credentials are omitted.
 
         Request body: none.
         """
@@ -388,35 +419,63 @@ class DocumentResource(BaseResource):
         artifact = self._require_id(artifact_name, "Artifact name")
         if artifact not in DOCUMENT_ARTIFACT_NAMES:
             raise ValidationError(f"Unknown document artifact: {artifact}")
+        query = self._signer_query(signer_access_code) if signer_access_code is not None else {}
         return self._call_binary(
             "Failed to download document",
-            lambda: self._http.get(f"documents/{doc_id}/download/{artifact}"),
+            lambda: self._http.get(f"documents/{doc_id}/download/{artifact}", params=query),
         )
 
-    def thumbnail(self, document_id: str) -> bytes:
+    def thumbnail(
+        self,
+        document_id: str,
+        *,
+        artifact: str | None = None,
+        signer_access_code: str | None = None,
+    ) -> bytes:
         """``GET /documents/{document_id}/thumbnail`` — first-page thumbnail (JPEG bytes).
 
+        ``artifact="certificated"`` renders signatures and stamps for workspace
+        callers. It returns 404 before certification or with a signer code,
+        and 503 with ``Retry-After`` while rendering is busy. Other artifact
+        values are ignored by the API. Signed renders are not cacheable.
+        An optional ``signer_access_code`` sends only that code.
         Request body: none.
         """
         doc_id = self._path_id(document_id, "Document ID")
+        query = _render_query(self, artifact, signer_access_code)
         return self._call_binary(
             "Failed to download document thumbnail",
-            lambda: self._http.get(f"documents/{doc_id}/thumbnail"),
+            lambda: self._http.get(f"documents/{doc_id}/thumbnail", params=query),
         )
 
-    def download_page(self, document_id: str, page_id: str) -> bytes:
+    def download_page(
+        self,
+        document_id: str,
+        page_id: str,
+        *,
+        artifact: str | None = None,
+        signer_access_code: str | None = None,
+    ) -> bytes:
         """``GET /documents/{document_id}/pages/{page_id}/download`` — page image (JPEG bytes).
 
+        An optional ``signer_access_code`` sends only that code; the server
+        checks that the signer can access the document.
         ``page_id`` comes from the ``pages[].id`` of :meth:`get` once metadata
-        processing has produced page renders.
+        processing has produced page renders. ``artifact="certificated"``
+        renders signatures and stamps for workspace callers, with the same
+        404/503 behavior as :meth:`thumbnail`. Certificate pages have no page
+        IDs; digital-certificate seals are visible only in the PAdES artifact.
+        The first render may wait up to 30 seconds; use a suitable client
+        timeout and honor ``ApiError.retry_after`` on HTTP 503. No automatic retry.
 
         Request body: none.
         """
         doc_id = self._path_id(document_id, "Document ID")
         pid = self._path_id(page_id, "Page ID")
+        query = _render_query(self, artifact, signer_access_code)
         return self._call_binary(
             "Failed to download page",
-            lambda: self._http.get(f"documents/{doc_id}/pages/{pid}/download"),
+            lambda: self._http.get(f"documents/{doc_id}/pages/{pid}/download", params=query),
         )
 
     def activities(
@@ -471,6 +530,8 @@ class DocumentResource(BaseResource):
         signers: builtins.list[dict[str, Any]],
         options: dict[str, Any] | None = None,
         account_id: str | None = None,
+        *,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """``POST /accounts/{account_id}/templates/{template_id}/documents``.
 
@@ -483,7 +544,9 @@ class DocumentResource(BaseResource):
         ``editor_fields`` only. The API requires
         contiguous signing ``step`` values and a DigitalCertificate signer to
         be alone in its step; copy-receiver roles ignore ``step``. At most one
-        notification method is allowed per template signer. A template role
+        notification method is allowed per template signer. ``embedded=True``
+        uses an iframe session (Email/Whatsapp only, Embed feature required),
+        returns a null signing link and still sends the normal invitation. A template role
         with placed fields produces a collect assignment and therefore cannot
         use ``DigitalCertificate``, which requires a virtual assignment.
 
@@ -493,7 +556,21 @@ class DocumentResource(BaseResource):
         ``{"field_id": "...", "value": "..."}``, and a list of tag names.
         Every placed Editor field needs a non-empty string value.
         Missing tag names are auto-created and merged with the template's
-        default document tags.
+        default document tags. ``max_total_credits`` caps spending at a finite,
+        nonnegative number (numeric text accepted). A higher estimate returns
+        HTTP 409 ``CreditCeilingExceeded`` without charges; if costs rise during
+        background processing the document fails without charges instead.
+        Numeric expiration values/text are Unix seconds, fractions dropped;
+        None, zero and empty text mean no expiration.
+
+        ``idempotency_key`` sends the optional ``Idempotency-Key`` header.
+        Use a new, case-sensitive key per intended document. A retry with the
+        same key returns the first document without creating or charging again,
+        regardless of body changes. The key belongs to this template and never
+        expires: a failed document still answers it, deletion returns HTTP 404,
+        and an in-progress request returns HTTP 409 ``IdempotencyKeyInUse``.
+        Rejection before the job is queued leaves the key free. The SDK makes
+        one request per call and never retries automatically.
 
         Example request body (JSON)::
 
@@ -525,6 +602,7 @@ class DocumentResource(BaseResource):
         """
         tmpl_id = self._path_id(template_id, "Template ID")
         acc_id = self._account_id(account_id)
+        headers = idempotency_headers(idempotency_key)
         if not isinstance(signers, list) or not signers:
             raise ValidationError("At least one signer is required")
         _validate_template_signers(signers)
@@ -544,6 +622,7 @@ class DocumentResource(BaseResource):
             lambda: self._http.post(
                 f"accounts/{acc_id}/templates/{tmpl_id}/documents",
                 json=body,
+                headers=headers,
             ),
         )
 
@@ -797,6 +876,15 @@ class DocumentResource(BaseResource):
         )
 
 
+def _render_query(
+    resource: DocumentResource, artifact: str | None, signer_access_code: str | None
+) -> dict[str, Any]:
+    if artifact is not None and not isinstance(artifact, str):
+        raise ValidationError("artifact must be a string")
+    query = resource._signer_query(signer_access_code) if signer_access_code is not None else {}
+    return {**query, **clean_params({"artifact": artifact})}
+
+
 def _validate_upload(buffer: bytes, file_name: str) -> None:
     if not buffer:
         raise ValidationError("File buffer is empty", {"file_name": file_name})
@@ -844,7 +932,7 @@ def _validate_template_signers(signers: list[dict[str, Any]], *, estimate: bool 
                     raise ValidationError(f"Template signer {key} must be a non-empty string")
         verification = signer.get("verification_method")
         notifications = signer.get("notification_methods")
-        validate_signer_methods(verification, notifications)
+        validate_signer_methods(verification, notifications, signer.get("embedded"))
         step = signer.get("step")
         if step is not None and (not isinstance(step, int) or isinstance(step, bool) or step < 1):
             raise ValidationError("Template signer step must be a positive integer")
@@ -863,6 +951,7 @@ def _validate_template_options(options: dict[str, Any]) -> dict[str, Any]:
     expires_at = options.get("expires_at")
     if expires_at is not None:
         validate_expiration(expires_at, "expires_at")
+    validate_credit_ceiling(options.get("max_total_credits"))
     tags = options.get("tags")
     if tags is not None and (
         not isinstance(tags, list)

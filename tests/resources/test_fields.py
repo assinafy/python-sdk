@@ -100,11 +100,16 @@ class TestFieldResource:
         assert http.last_kwargs["params"] == {"signer-access-code": "code"}
         assert http.last_kwargs["json"] == {"value": "123"}
 
-    def test_validate_requires_a_value(self) -> None:
-        resource = FieldResource(MockHttp(), "acc")
-
-        with pytest.raises(ValidationError, match="value is required"):
+    @pytest.mark.parametrize("workspace", [False, True])
+    def test_validate_preserves_explicit_null(self, workspace: bool) -> None:
+        http = MockHttp()
+        resource = FieldResource(http, "acc")
+        if workspace:
+            resource.validate_as_workspace("field-1", None)
+        else:
             resource.validate("field-1", None, "code")
+        assert http.last_kwargs["json"] == {"value": None}
+        assert http.last_kwargs["params"] == ({} if workspace else {"signer-access-code": "code"})
 
     def test_validate_multiple_posts_documented_endpoint(self) -> None:
         class ListHttp(MockHttp):

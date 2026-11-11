@@ -24,7 +24,7 @@ class BaseResource:
     All resources share the same ``httpx.Client`` from
     :class:`~assinafy.client.AssinafyClient`,
     a default account ID, and a logger. Response handling goes through a small
-    set of helpers (``_call``, ``_call_dict``, ``_call_nullable_dict``,
+    set of helpers (``_call``, ``_call_dict``, ``_call_nullable_dict``, ``_call_dict_or_empty``,
     ``_call_optional``, ``_call_void``, ``_call_binary``, ``_call_list``,
     ``_call_plain_list``)
     so envelope handling, error normalization, and pagination meta parsing live
@@ -118,6 +118,17 @@ class BaseResource:
         result = self._call(label, request_fn)
         if result is None or isinstance(result, dict):
             return result
+        raise AssinafyError(f"{label}: API returned an invalid payload", {"response": result})
+
+    def _call_dict_or_empty(
+        self, label: str, request_fn: Callable[[], httpx.Response]
+    ) -> dict[str, Any]:
+        """Return an object, mapping the documented empty array success to an empty object."""
+        result = self._call(label, request_fn)
+        if isinstance(result, dict):
+            return result
+        if isinstance(result, list) and not result:
+            return {}
         raise AssinafyError(f"{label}: API returned an invalid payload", {"response": result})
 
     def _call_optional(

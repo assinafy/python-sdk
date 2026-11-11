@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from ..errors import ValidationError
-from ..types import NOTIFICATION_PREFERENCE_CODES, NotificationPreferenceCode
-from ..utils import stats_params
+from ..types import (
+    NOTIFICATION_PREFERENCE_CODES,
+    PUSH_PREFERENCE_CODES,
+    NotificationPreferenceCode,
+    PushPreferenceCode,
+)
+from ..utils import stats_params, validate_boolean_preferences
 from .base import BaseResource
 
 
@@ -128,19 +132,51 @@ class UserResource(BaseResource):
         Third-party OAuth applications receive ``403`` regardless of scope;
         changes apply to the user across all their workspaces.
         """
-        if not isinstance(preferences, dict):
-            raise ValidationError("Notification preferences must be a mapping")
-        if not preferences:
-            raise ValidationError("At least one notification preference is required")
-        for code, enabled in preferences.items():
-            if code not in NOTIFICATION_PREFERENCE_CODES:
-                raise ValidationError(f"Unknown notification preference: {code}")
-            if not isinstance(enabled, bool):
-                raise ValidationError(f"Notification preference {code} must be boolean")
+        validate_boolean_preferences(preferences, NOTIFICATION_PREFERENCE_CODES)
         return cast(
             dict[NotificationPreferenceCode, bool],
             self._call_dict(
                 "Failed to update notification preferences",
                 lambda: self._http.put("users/self/notification-preferences", json=preferences),
+            ),
+        )
+
+    def push_preferences(self) -> dict[PushPreferenceCode, bool]:
+        """``GET /users/self/push-preferences`` — read phone push alert settings.
+
+        No request body. Independent of email settings; third-party OAuth
+        applications receive 403. All keys default to true; new keys may be
+        added. Response::
+
+            {"SignerViewed": true, "SignerSigned": true, "DocumentCompleted": true,
+             "SignerDeclined": true, "DocumentAboutToExpire": true,
+             "DocumentExpired": true, "SignerIdentityReviewRequired": true,
+             "SignerWhatsappFailed": true}
+        """
+        return cast(
+            dict[PushPreferenceCode, bool],
+            self._call_dict(
+                "Failed to fetch push preferences",
+                lambda: self._http.get("users/self/push-preferences"),
+            ),
+        )
+
+    def update_push_preferences(
+        self, preferences: dict[PushPreferenceCode, bool]
+    ) -> dict[PushPreferenceCode, bool]:
+        """``PUT /users/self/push-preferences`` — merge phone push alert settings.
+
+        Example JSON: ``{"SignerViewed": false}``. Send one or more keys from
+        :meth:`push_preferences`, with boolean values. Omitted keys retain their
+        values. Returns the complete eight-key map shown there. Changes affect
+        this user's push notifications across workspaces; email settings stay
+        unchanged. Third-party OAuth applications receive 403.
+        """
+        validate_boolean_preferences(preferences, PUSH_PREFERENCE_CODES)
+        return cast(
+            dict[PushPreferenceCode, bool],
+            self._call_dict(
+                "Failed to update push preferences",
+                lambda: self._http.put("users/self/push-preferences", json=preferences),
             ),
         )

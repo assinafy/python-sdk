@@ -9,6 +9,8 @@ from ..types import SignerReference
 from ..utils import (
     QUERY_PARAM_ALIASES,
     clean_params,
+    normalize_expand,
+    validate_credit_ceiling,
     validate_decline_reason,
     validate_expiration,
     validate_signer_methods,
@@ -17,10 +19,19 @@ from .base import BaseResource
 
 _ASSIGNMENT_METHODS = frozenset({"virtual", "collect"})
 _SIGNER_REFERENCE_FIELDS = frozenset(
-    {"id", "signer_id", "verification_method", "notification_methods", "step"}
+    {"id", "signer_id", "verification_method", "notification_methods", "embedded", "step"}
 )
 _ASSIGNMENT_FIELDS = frozenset(
-    {"method", "signers", "signer_ids", "message", "expires_at", "copy_receivers", "entries"}
+    {
+        "method",
+        "signers",
+        "signer_ids",
+        "message",
+        "expires_at",
+        "copy_receivers",
+        "entries",
+        "max_total_credits",
+    }
 )
 _ESTIMATE_FIELDS = frozenset({"method", "signers", "signer_ids", "entries"})
 _ESTIMATE_SIGNER_FIELDS = frozenset(
@@ -36,7 +47,7 @@ def build_assignment_payload(
     """Normalize assignment payloads into the documented request body.
 
     Accepts ``signers`` as a list of either plain string IDs (legacy convenience)
-    or ``{id, verification_method, notification_methods, step}`` dicts. Also
+    or ``{id, verification_method, notification_methods, embedded, step}`` dicts. Also
     accepts the legacy ``signer_ids`` key as a synonym for ``signers``. Drops
     ``None`` values from the optional fields (``message``, ``expires_at``,
     ``copy_receivers``, ``entries``) so the request body matches the API docs
@@ -70,6 +81,7 @@ def build_assignment_payload(
     expires_at = payload.get("expires_at")
     if expires_at is not None:
         validate_expiration(expires_at, "expires_at")
+    validate_credit_ceiling(payload.get("max_total_credits"))
     copy_receivers = payload.get("copy_receivers")
     if copy_receivers is not None and (
         not isinstance(copy_receivers, list)
@@ -92,6 +104,7 @@ def build_assignment_payload(
             "expires_at": payload.get("expires_at"),
             "copy_receivers": copy_receivers,
             "entries": entries,
+            "max_total_credits": payload.get("max_total_credits"),
         }
     )
     if signers:
@@ -181,7 +194,7 @@ def _normalise_signer_ref(ref: SignerReference, allow_without_id: bool) -> dict[
             raise ValidationError("Signer ID must be a non-empty string")
         verification_method = ref.get("verification_method")
         notification_methods = ref.get("notification_methods")
-        validate_signer_methods(verification_method, notification_methods)
+        validate_signer_methods(verification_method, notification_methods, ref.get("embedded"))
         step = ref.get("step")
         if step is not None and (not isinstance(step, int) or isinstance(step, bool) or step < 1):
             raise ValidationError("Signer step must be a positive integer")
@@ -190,6 +203,7 @@ def _normalise_signer_ref(ref: SignerReference, allow_without_id: bool) -> dict[
                 "id": signer_id,
                 "verification_method": verification_method,
                 "notification_methods": notification_methods,
+                "embedded": ref.get("embedded"),
                 "step": step,
             }
         )
@@ -299,12 +313,14 @@ class AssignmentResource(BaseResource):
          "summary": {"signer_count": 1, "completed_count": 0,
                      "signers": [{"id": "signer-id", "full_name": "Example Signer",
                                   "email": "signer@example.com", "completed": false}]},
-         "signing_urls": [{"signer_id": "signer-id",
+         "signing_urls": [{"signer_id": "signer-id", "embedded": false,
                            "url": "https://api.example/sign/document-id"}]}
 
     ``copy_receivers`` entries are objects, but the current OpenAPI does not
     define fields for those objects. Virtual/legacy items may return an empty
     or non-object ``display_settings`` value; collect items use the object shown.
+    Embedded signers have ``embedded: true`` and ``url: null`` in
+    ``signing_urls``; mint a fresh iframe URL with :meth:`create_embed_session`.
     ``document_id`` is null after document deletion; ``sender_email`` is null
     after the sender deletes their user account.
 
@@ -388,12 +404,23 @@ class AssignmentResource(BaseResource):
 
         ``payload`` may contain ``method`` (``virtual``/``collect``),
         ``signers``, ``signer_ids`` (legacy alias), ``message``, ``expires_at``,
-        ``copy_receivers``, and (collect-only) ``entries``. Each ``signers``
+        ``copy_receivers``, ``max_total_credits``, and (collect-only) ``entries``.
+        ``max_total_credits`` is a finite nonnegative number (numeric text is
+        accepted); pass the last estimate's ``total_credits`` to cap spending.
+        A higher cost returns HTTP 409 ``CreditCeilingExceeded`` without charges.
+        After a lost response, read the document before retrying creation: a
+        document takes only one assignment. Each ``signers``
         entry may carry ``verification_method``, ``notification_methods`` and a
-        ``step`` (sequential signing order). See :func:`build_assignment_payload`
+        ``step`` (sequential signing order), and boolean ``embedded``. Embedded
+        signers use Email or Whatsapp verification and need the Embed feature.
+        They still receive their invitation, but their signing URL is null;
+        use :meth:`create_embed_session` to open an iframe.
+        See :func:`build_assignment_payload`
         for full normalization rules. ``expires_at`` accepts an ISO 8601
         timestamp (a missing offset means UTC) or a date (23:59 UTC that day).
-        The server requires an expiration at least one hour in the future.
+        Numeric values/text are Unix seconds; fractions are dropped by the API.
+        None, zero and empty text mean no expiration. The server requires a
+        nonzero expiration at least one hour in the future.
 
         Example request body (JSON)::
 
@@ -532,13 +559,14 @@ class AssignmentResource(BaseResource):
         self,
         document_id: str,
         assignment_id: str,
-        expires_at: str | None,
+        expires_at: str | int | float | None,
     ) -> dict[str, Any]:
         """``PUT /documents/{document_id}/assignments/{assignment_id}/reset-expiration``.
 
         ``expires_at`` accepts an ISO 8601 timestamp (e.g.
-        ``2030-08-03T21:00:00Z``), a date, or ``None`` to clear the expiration.
-        An offset is honored; without one the timestamp is UTC, and a date
+        ``2030-08-03T21:00:00Z``), a date, Unix seconds (number or numeric text),
+        or ``None``/zero/empty text to clear the expiration. Numeric fractions
+        are dropped by the API. An offset is honored; without one the timestamp is UTC, and a date
         means 23:59 UTC that day. The API requires at least one hour in the
         future and rejects changes after the document closes. The key is always
         sent so the server can apply the change.
@@ -603,6 +631,9 @@ class AssignmentResource(BaseResource):
         self,
         signer_access_code: str,
         has_accepted_terms: bool | None = None,
+        *,
+        expand: str | builtins.list[str] | None = None,
+        document_id: str | None = None,
     ) -> dict[str, Any]:
         """``GET /sign?signer-access-code=...`` — assignment view for a signer.
 
@@ -611,6 +642,21 @@ class AssignmentResource(BaseResource):
         verification flow; an invalid/expired code returns 401, and a 409 is
         returned while a virtual assignment's document is still being prepared.
 
+        ``expand="envelope"`` adds the code's envelope ``{id, name}`` or null.
+        ``document_id`` opens another document in the same envelope that this
+        signer is on; their channel verification carries across. After the
+        signer finishes all their documents for more than 30 minutes (or the
+        workspace is deleted), the response is a minimal closed-code summary::
+
+            {"id": "document-id", "name": "contract.pdf", "status": "certificated",
+             "current_signer": {"id": "signer-id", "verification_method": "Email",
+                                "notification_methods": ["Email"], "completed": true},
+             "is_signer_access_closed": true,
+             "certified_copy": {"available": true, "notification_method": "Email",
+                                "resends_left": null}}
+
+        Other signer operations then return HTTP 410; certified-copy requests
+        still work. An open-code response includes these status/copy keys too.
         The unwrapped document includes ``current_signer`` with their
         ``verification_method``, ``notification_methods`` and ``completed``
         state. Its assignment contains only this signer's items and omits
@@ -652,7 +698,14 @@ class AssignmentResource(BaseResource):
         """
         if has_accepted_terms is not None and not isinstance(has_accepted_terms, bool):
             raise ValidationError("has_accepted_terms must be boolean")
-        query = self._signer_query(signer_access_code, has_accepted_terms=has_accepted_terms)
+        expansion = normalize_expand(expand, frozenset({"envelope"}))
+        doc_id = None if document_id is None else self._path_id(document_id, "Document ID")
+        query = self._signer_query(
+            signer_access_code,
+            has_accepted_terms=has_accepted_terms,
+            expand=expansion,
+            document_id=doc_id,
+        )
         return self._call_dict(
             "Failed to fetch signer assignment",
             lambda: self._http.get("sign", params=query),
@@ -776,7 +829,9 @@ class AssignmentResource(BaseResource):
         Direct provider approval has no evidence here; see the
         ``signer_identity_verified`` document activity instead.
         OAuth applications can read this summary with ``documents:read``;
-        evidence images and review decisions require a person in Assinafy.
+        evidence images and review decisions require a person in Assinafy or
+        its own apps. An envelope has one identity check per signer, accessible
+        from any of their documents; a rejection cancels the whole envelope.
 
         Complete response example (``data`` envelope unwrapped)::
 
@@ -817,8 +872,9 @@ class AssignmentResource(BaseResource):
         Returns JPEG/PNG bytes, or PDF bytes for a digital document. The API
         sends ``Cache-Control: no-store``; keep evidence out of caches and logs.
         All images return HTTP 404 once the review is decided, or when absent.
-        OAuth applications receive HTTP 403; images are for a person reviewing
-        the verification in Assinafy.
+        Third-party OAuth applications receive HTTP 403; images are for a
+        person reviewing in Assinafy. Assinafy's own apps can use
+        ``documents:read`` for their signed-in user.
         """  # noqa: E501
         path = self._identity_verification_path(document_id, assignment_id, signer_id)
         if not isinstance(name, str) or name not in {
@@ -851,8 +907,10 @@ class AssignmentResource(BaseResource):
         review is approved. Rejection cancels the document as rejected_by_user
         and sends cancellation notices to signers and copy receivers. The note
         is recorded in activity and sent to the provider, never to the signer.
-        OAuth applications receive HTTP 403: the certificate identifies the
-        person who reviewed, so the decision is made in Assinafy.
+        Third-party OAuth applications receive HTTP 403: the certificate
+        identifies the reviewer. Assinafy's own apps can use ``documents:write``
+        for their signed-in user. An envelope's shared check is decided from
+        any of the signer's documents; rejection cancels the whole envelope.
 
         Request body (JSON)::
 
@@ -893,6 +951,38 @@ class AssignmentResource(BaseResource):
         asg_id = self._path_id(assignment_id, "Assignment ID")
         sid = self._path_id(signer_id, "Signer ID")
         return f"documents/{doc_id}/assignments/{asg_id}/signers/{sid}/identity-verification"
+
+    def create_embed_session(
+        self, document_id: str, assignment_id: str, signer_id: str
+    ) -> dict[str, Any]:
+        """``POST /documents/{document_id}/assignments/{assignment_id}/signers/{signer_id}/embed-sessions``.
+
+        Create a single-use iframe URL for a signer marked ``embedded=True``.
+        Uses workspace credentials; request body: none. Load the URL on a
+        configured workspace embed origin within five minutes. Opening it
+        spends its token; mint a fresh session whenever the signer reopens the
+        page. Treat the returned URL as a credential and never log it.
+
+        Response (``data`` envelope unwrapped)::
+
+            {"url": "https://app.assinafy.com.br/embed/example-token",
+             "expires_at": "2030-01-01T12:05:00Z"}
+
+        HTTP 400: signer is not embedded; 403: plan lacks Embed; 404: unknown
+        document/assignment/signer; 409: already signed, document not ready or
+        unavailable, or embed origins missing; 429: over 30 sessions per signer
+        per hour. No retries are automatic. For envelopes, a session on a
+        pending document lists all of that signer's remaining documents.
+        """  # noqa: E501
+        doc_id = self._path_id(document_id, "Document ID")
+        asg_id = self._path_id(assignment_id, "Assignment ID")
+        sid = self._path_id(signer_id, "Signer ID")
+        return self._call_dict(
+            "Failed to create embed session",
+            lambda: self._http.post(
+                f"documents/{doc_id}/assignments/{asg_id}/signers/{sid}/embed-sessions"
+            ),
+        )
 
     def resend_notification(
         self,

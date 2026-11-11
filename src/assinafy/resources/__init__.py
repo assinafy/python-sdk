@@ -3,6 +3,8 @@ from .assignments import AssignmentResource
 from .authentication import AuthenticationResource
 from .contracts import ContractResource
 from .documents import DocumentResource
+from .embed import EmbedResource
+from .envelopes import EnvelopeResource
 from .fields import FieldResource
 from .oauth import OAuthResource
 from .signer_documents import SignerDocumentResource
@@ -18,6 +20,8 @@ __all__ = [
     "AuthenticationResource",
     "ContractResource",
     "DocumentResource",
+    "EmbedResource",
+    "EnvelopeResource",
     "FieldResource",
     "OAuthResource",
     "SignerDocumentResource",

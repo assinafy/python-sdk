@@ -6,7 +6,7 @@ Cliente Python síncrono para a [API Assinafy](https://api.assinafy.com.br/v1/do
 
 ## Instalação
 
-Requer Python 3.10+ e TLS 1.2 ou superior.
+Requer Python 3.10+ e TLS 1.2 ou superior; prefira Python 3.15 em produção. Python não tem edição LTS; 3.10 permanece por compatibilidade.
 
 ```bash
 pip install assinafy
@@ -33,29 +33,11 @@ client = AssinafyClient(
 | Código do signatário | `signer-access-code` na query | ações da pessoa que assina |
 | OAuth 2.1 + PKCE | `Authorization: Bearer` | aplicativos de marketplace |
 
-O cliente remove credenciais das rotas públicas, OAuth bearer-only e rotas autenticadas pelo código do signatário. Use `https://sandbox.assinafy.com.br/v1` em `base_url` para o sandbox. URLs não loopback devem usar HTTPS. O cliente compartilha um pool de conexões; use `with` ou chame `close()`.
+O cliente remove credenciais de workspace das rotas públicas e de signatário; no OAuth userinfo, remove a chave de API e mantém o bearer explícito. Use `https://sandbox.assinafy.com.br/v1` em `base_url` para o sandbox. URLs não loopback devem usar HTTPS. O cliente compartilha um pool de conexões; use `with` ou chame `close()`.
 
 ## Fluxo completo de assinatura
 
-O atalho abaixo envia o PDF, cria os signatários, espera o processamento e cria um assignment virtual:
-
-```python
-with AssinafyClient(
-    api_key=os.environ["ASSINAFY_API_KEY"],
-    account_id=os.environ["ASSINAFY_ACCOUNT_ID"],
-) as client:
-    result = client.upload_and_request_signatures(
-        source={"file_path": "./contrato.pdf"},
-        signers=[
-            {"full_name": "Pessoa Exemplo", "email": "signer@example.com"},
-        ],
-        message="Por favor, assine o documento.",
-    )
-    document_id = result["document"]["id"]
-    assignment_id = result["assignment"]["id"]
-```
-
-As etapas não são transacionais. Se uma etapa falhar, `AssinafyError.context` contém os IDs já criados. Para estimar custos, escolher o método de verificação ou controlar cada resposta, use os recursos diretamente:
+O atalho `upload_and_request_signatures()` envia o PDF, cria signatários, espera o processamento e solicita assinaturas virtuais. As etapas não são transacionais: em caso de falha, `AssinafyError.context` contém os IDs já criados. Para controlar métodos, respostas e custos, use os recursos:
 
 ```python
 document = client.documents.upload({"file_path": "./contrato.pdf"})
@@ -63,7 +45,6 @@ document = client.documents.wait_until_ready(document["id"])
 signer = client.signers.create({
     "full_name": "Pessoa Exemplo",
     "email": "signer@example.com",
-    "government_id": "<cpf-ou-cnpj>",
 })
 request = {
     "method": "virtual",
@@ -75,12 +56,16 @@ request = {
         "step": 1,
     }],
 }
-estimate = client.assignments.estimate_cost(document["id"], request)
-if estimate["has_sufficient_resources"]:
-    assignment = client.assignments.create(document["id"], request)
+estimate = client.assignments.estimate_cost(document["id"], {
+    "method": "virtual", "signers": [{"verification_method": "Email"}],
+})
+if not estimate["has_sufficient_resources"]:
+    raise RuntimeError("Saldo insuficiente para solicitar assinaturas")
+request["max_total_credits"] = estimate["total_credits"]
+assignment = client.assignments.create(document["id"], request)
 
 status = client.documents.get(document["id"])
-if status["status"] == "completed":
+if status["status"] == "certificated":
     pdf = client.documents.download(document["id"], "certificated")
 ```
 
@@ -104,18 +89,18 @@ capture = client.signers.start_identity_verification(signer_access_code, consent
 
 O workspace consulta a evidência com `assignments.identity_verification()` e conclui a análise com `assignments.review_identity_verification()`.
 
-As ações do signatário usam apenas o código de acesso:
+As ações de e-mail/WhatsApp/biometria usam apenas o código de acesso; A1/A3 conclui a assinatura no fluxo hospedado da Assinafy:
 
 ```python
 public_client = AssinafyClient()
 public_client.signers.verify_code(signer_access_code, verification_code)
 view = public_client.assignments.get_for_signer(signer_access_code)
-public_client.signers.confirm_data(document_id, signer_access_code, {
-    "full_name": "Pessoa Exemplo", "email": "signer@example.com",
+public_client.signers.confirm_data(document["id"], signer_access_code, {
+    "email": "signer@example.com", "has_accepted_terms": True,
 })
 public_client.signers.accept_terms(signer_access_code)
 signed = public_client.assignments.sign(
-    document_id, assignment_id, [], signer_access_code
+    document["id"], assignment["id"], [], signer_access_code
 )
 ```
 
@@ -132,7 +117,25 @@ document = client.documents.create_from_template(
 document = client.documents.wait_until_ready(document["id"])
 ```
 
+Use `idempotency_key=` para recuperar uma criação de template após resposta perdida. Templates criam assignments de forma assíncrona: aguarde `assignment_created` antes de acessá-los; `wait_until_ready()` espera apenas a renderização.
+
 `client.contracts` lista, lê e atualiza termos, relaciona instrumentos, renova e encerra contratos. Escritas aceitam `updated_at` para impedir a sobrescrita de uma versão mais recente.
+
+## Envelopes e assinatura dentro do aplicativo
+
+Como alternativa aos assignments individuais, envie até 20 documentos processados e ainda sem assignment aos mesmos signatários; cada documento mantém sua assinatura, status e certificado:
+
+```python
+payload = {"name": "Contrato e anexos", "signers": [{"id": signer["id"]}],
+           "documents": [{"id": unassigned_document_id, "signer_ids": [signer["id"]]}]}
+cost = client.envelopes.estimate_cost(payload)
+payload["max_total_credits"] = cost["total_credits"]
+envelope = client.envelopes.create(payload, idempotency_key="pedido-exemplo-001")
+```
+
+Use uma chave nova por envelope; reutilize-a somente para recuperar a mesma criação. O recurso também lista, atualiza, cancela, remove/adiciona documentos, reenvia convites e baixa ZIPs. Certificado digital fica sozinho em cada documento; envelopes não aceitam passos de assinatura.
+
+Para incorporar e-mail/WhatsApp, configure `accounts.add_embed_origin("https://app.example.com")`, adicione `"embedded": True` à entrada do signatário no assignment e use `assignments.create_embed_session(document_id, assignment_id, signer_id)`. Carregue `url` no iframe em até cinco minutos; cada abertura exige uma sessão nova. `embed.exchange()` pertence à página incorporada e consome o token. Origens e sessões exigem o recurso Embed; nunca exponha a chave do workspace ao navegador.
 
 ## OAuth 2.1 para marketplace
 
@@ -145,7 +148,7 @@ oauth = client.oauth(
 )
 transaction = oauth.start_authorization(
     "https://app.example.com/oauth/callback",
-    ["documents:read", "documents:write"],
+    ["documents:read", "documents:write", "offline_access"],
 )
 # Salve transaction na sessão autenticada e redirecione para authorization_url.
 authorization_url = transaction["authorization_url"]
@@ -182,7 +185,7 @@ Objetos e listas são devolvidos sem o envelope `{status, message, data}`. Lista
 
 Capture `AssinafyError`; use `ApiError.status_code`, `response_data`, `retry_after` e os campos `rate_limit_*` para erros HTTP e limites. `ValidationError` ocorre antes de I/O e `NetworkError` representa falhas de transporte.
 
-Cada método público documenta verbo, rota, corpo completo e resposta desembrulhada. Recursos disponíveis em `AssinafyClient`: `accounts`, `assignments`, `authentication`, `contracts`, `documents`, `fields`, `signer_documents`, `signers`, `tags`, `templates`, `users`, `webhooks` e a fábrica `oauth()`.
+Veja [todos os recursos e payloads](README.en.md#resource-reference), incluindo uso do workspace, políticas de notificação, preferências push, cópias certificadas e rotação de webhook com sobreposição de 24 horas. Cada método público documenta verbo, rota, corpo e resposta. Recursos disponíveis em `AssinafyClient`: `accounts`, `assignments`, `authentication`, `contracts`, `documents`, `embed`, `envelopes`, `fields`, `signer_documents`, `signers`, `tags`, `templates`, `users`, `webhooks` e a fábrica `oauth()`.
 
 ## Desenvolvimento
 

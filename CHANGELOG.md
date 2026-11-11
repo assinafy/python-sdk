@@ -2,6 +2,37 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [2.2.0] - 2026-11-11
+
+### Added
+
+- Envelope creation, estimates, updates, cancellation, document membership,
+  reminders, activity history and ZIP downloads, with idempotency keys and
+  optional spending limits. Template creation also supports idempotency keys.
+- Embedded Email/WhatsApp signing, workspace origin management and single-use
+  embed sessions for assignments, templates and envelopes.
+- Signer branding and certified-copy request, download and resend methods.
+- Account usage, signing capabilities, notification policies and separate push
+  preferences; envelope and related-contract document expansions.
+- Signed page/thumbnail renders, signer-authorized document reads, webhook test
+  deliveries and optional 24-hour signing-secret overlap.
+
+### Fixed
+
+- OTP verification and signer data confirmation accept empty success results
+  while preserving existing dictionary returns.
+- Signer codes suppress workspace credentials on every route, and discovery
+  remains credential-free when the client uses an origin-root base URL.
+- Oversized rate-limit headers no longer hide the original API error.
+- Single-field validation forwards explicit JSON null values to the field rules.
+- Expiration values accept Unix seconds and numeric text; credit validation
+  works independently of the caller's Decimal settings.
+
+### Changed
+
+- Integration examples include spending limits, envelope and embedded-signing
+  flows, current certified-copy behavior and a compact Portuguese README.
+
 ## [2.1.1] - 2026-11-02
 
 ### Changed

@@ -297,6 +297,9 @@ class AuthenticationResource(BaseResource):
     def create_api_key(self, password: str) -> dict[str, Any]:
         """``POST /users/api-keys`` — create the current user's API key.
 
+        Replaces the previous key immediately. The full new key is returned
+        only once; store it securely on the server, never in browser or mobile code.
+
         Example request body (JSON)::
 
             {"password": "secret"}
@@ -349,6 +352,9 @@ class AuthenticationResource(BaseResource):
         new_password: str,
     ) -> dict[str, Any]:
         """``PUT /authentication/change-password`` — change a known password.
+
+        Requires authentication. ``email`` must belong to the authenticated user
+        (case-insensitive); another address receives ``403``.
 
         Example request body (JSON)::
 

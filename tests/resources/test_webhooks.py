@@ -423,3 +423,48 @@ class TestWebhookEndpoints:
 
         with pytest.raises(AssinafyError):
             WebhookResource(_RecordingHttp({}), "acc").get_endpoint_secret("ep1")
+
+
+@pytest.mark.parametrize("keep_previous", [False, True])
+def test_rotation_details_preserve_expiry_and_legacy_string_return(keep_previous: bool) -> None:
+    data = {"secret": "whsec_c2VjcmV0", "previous_secret_expires_at": "2026-11-12T12:00:00Z"}
+    http = _RecordingHttp(data)
+    resource = WebhookResource(http, "acc")
+    assert resource.rotate_endpoint_secret_details("ep1", keep_previous=keep_previous) == data
+    assert resource.rotate_endpoint_secret("ep1", keep_previous=keep_previous) == data["secret"]
+    assert (
+        http.calls
+        == [
+            (
+                "POST",
+                "accounts/acc/webhooks/endpoints/ep1/secret/rotate",
+                {"keep_previous": True} if keep_previous else None,
+            )
+        ]
+        * 2
+    )
+
+
+@pytest.mark.parametrize("keep_previous", [None, 1, "true"])
+def test_rotation_rejects_non_boolean_before_io(keep_previous: object) -> None:
+    http = _RecordingHttp({})
+    with pytest.raises(ValidationError):
+        WebhookResource(http, "acc").rotate_endpoint_secret(
+            "ep1",
+            keep_previous=keep_previous,  # type: ignore[arg-type]
+        )
+    assert not http.calls
+
+
+def test_rotation_missing_secret_and_test_endpoint_response() -> None:
+    from assinafy.errors import AssinafyError
+
+    http = _RecordingHttp({"secret": None})
+    resource = WebhookResource(http, "acc")
+    with pytest.raises(AssinafyError):
+        resource.rotate_endpoint_secret_details("ep1")
+    http.data = {"event": "webhook_test", "kind": "manual", "duration_ms": 184}
+    assert resource.test_endpoint("ep1", "other") == http.data
+    assert http.calls[-1] == ("POST", "accounts/other/webhooks/endpoints/ep1/test", None)
+    with pytest.raises(ValidationError):
+        resource.test_endpoint("../other")

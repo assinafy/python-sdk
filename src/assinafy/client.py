@@ -16,6 +16,8 @@ from .resources.assignments import AssignmentResource, build_assignment_payload
 from .resources.authentication import AuthenticationResource
 from .resources.contracts import ContractResource
 from .resources.documents import DocumentResource
+from .resources.embed import EmbedResource
+from .resources.envelopes import EnvelopeResource
 from .resources.fields import FieldResource
 from .resources.oauth import OAuthResource
 from .resources.signer_documents import SignerDocumentResource
@@ -32,7 +34,11 @@ _DEFAULT_BASE_URL = "https://api.assinafy.com.br/v1"
 _USER_AGENT = f"Assinafy-Python-SDK/v{__version__}"
 _NO_CLIENT_AUTH_OPERATIONS = frozenset(
     {
+        ("GET", ".well-known/oauth-authorization-server"),
+        ("GET", ".well-known/oauth-protected-resource"),
         ("GET", "sign"),
+        ("GET", "sign/logo"),
+        ("GET", "sign/theme"),
         ("GET", "signers/self"),
         ("GET", "signers/identity-verification"),
         ("POST", "authentication/mfa/verify"),
@@ -41,6 +47,7 @@ _NO_CLIENT_AUTH_OPERATIONS = frozenset(
         ("POST", "oauth/revoke"),
         ("POST", "oauth/token"),
         ("POST", "signature"),
+        ("POST", "sign/certified-copy"),
         ("POST", "signers/identity-verification"),
         ("POST", "verify"),
         ("PUT", "authentication/request-password-reset"),
@@ -56,9 +63,12 @@ _NO_CLIENT_AUTH_OPERATION_PATTERNS = tuple(
         ("GET", r"documents/[^/]+/verify"),
         ("GET", r"public/documents/[^/]+"),
         ("GET", r"signature/[^/]+"),
+        ("GET", r"signers/downloads/[^/]+(?:/pades)?"),
         ("GET", r"signers/[^/]+/document"),
         ("GET", r"signers/[^/]+/documents/[^/]+/download/[^/]+"),
         ("POST", r"documents/[^/]+/assignments/(?!estimate-cost$)[^/]+"),
+        ("POST", r"embed/sessions/[^/]+/exchange"),
+        ("POST", r"signers/downloads/[^/]+/resend"),
         ("PUT", r"documents/[^/]+/assignments/[^/]+/reject"),
         ("PUT", r"documents/[^/]+/signers/confirm-data"),
         ("PUT", r"public/documents/[^/]+/send-token"),
@@ -174,6 +184,8 @@ class AssinafyClient:
         self.accounts = AccountResource(self._http, account_id, self._logger)
         self.users = UserResource(self._http, account_id, self._logger)
         self.documents = DocumentResource(self._http, account_id, self._logger)
+        self.embed = EmbedResource(self._http, account_id, self._logger)
+        self.envelopes = EnvelopeResource(self._http, account_id, self._logger)
         self.contracts = ContractResource(self._http, account_id, self._logger)
         self.signers = SignerResource(self._http, account_id, self._logger)
         self.signer_documents = SignerDocumentResource(self._http, account_id, self._logger)
@@ -192,7 +204,7 @@ class AssinafyClient:
         wait_for_ready: bool = True,
         wait_timeout: float = 30.0,
         wait_poll_interval: float = 2.0,
-        expires_at: str | None = None,
+        expires_at: str | int | float | None = None,
         copy_receivers: list[str] | None = None,
         account_id: str | None = None,
     ) -> dict[str, Any]:
@@ -228,7 +240,8 @@ class AssinafyClient:
                 ``wait_for_ready`` is ``True``.
             wait_poll_interval: Forwarded to ``documents.wait_until_ready`` when
                 ``wait_for_ready`` is ``True``.
-            expires_at: Optional ISO 8601 expiration timestamp.
+            expires_at: Optional ISO 8601 expiration or Unix seconds. The server
+                treats zero and empty text as no expiration.
             copy_receivers: Optional signer IDs that receive a copy of the
                 completed document.
             account_id: Override the client's default account ID for this call.
@@ -356,7 +369,11 @@ class AssinafyClient:
             request.url.host,
             request.url.port,
         ) == self._base_origin and in_base_path
-        if in_api and operation in _BEARER_ONLY_OPERATIONS:
+        if (
+            in_api
+            and operation in _BEARER_ONLY_OPERATIONS
+            and _SIGNER_ACCESS_CODE_PARAM not in request.url.params
+        ):
             request.headers.pop("X-Api-Key", None)
             return
         if (

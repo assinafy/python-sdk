@@ -190,7 +190,8 @@ class FieldResource(BaseResource):
         operation prose describes this signer-flow use, although the published
         ``security`` lists only the workspace credentials; use
         :meth:`validate_as_workspace` for that. ``value`` is required by the
-        published schema and may be of any JSON type, but not ``None``.
+        published schema and may be of any JSON type, including ``None``
+        (sent as JSON null). The field definition decides whether it is valid.
 
         Example request body (JSON)::
 
@@ -215,7 +216,8 @@ class FieldResource(BaseResource):
 
         Validates a single value with the configured API key or bearer token,
         the ``security`` published for this operation. No signer access code is
-        sent. ``value`` may be of any JSON type, but not ``None``.
+        sent. ``value`` may be of any JSON type, including ``None`` (JSON null);
+        the returned success flag reports whether the field accepts it.
 
         Example request body (JSON)::
 
@@ -279,8 +281,6 @@ class FieldResource(BaseResource):
     def _validate(
         self, field_id: str, value: Any, query: dict[str, Any], account_id: str | None
     ) -> dict[str, Any]:
-        if value is None:
-            raise ValidationError("value is required")
         acc_id = self._account_id(account_id)
         fid = self._path_id(field_id, "Field ID")
         return self._call_dict(

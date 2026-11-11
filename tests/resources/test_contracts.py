@@ -534,7 +534,6 @@ def test_invalid_terms_fail_before_http(
         {"status": "pending"},
         {"page": 0},
         {"per_page": True},
-        {"per_page": 101},
         {"ending_within_days": -1},
         {"ending_within_days": 3651},
         {"ending_within_days": "30"},
@@ -623,3 +622,16 @@ def test_every_document_operation_rejects_invalid_path_ids_before_http(
     with pytest.raises(ValidationError):
         getattr(client.contracts, operation)(bad_id, *args[1:])
     assert not requests
+
+
+def test_related_document_expansion_and_large_page_size_are_forwarded(
+    recording_client: tuple[AssinafyClient, list[httpx.Request]],
+) -> None:
+    client, requests = recording_client
+    client.contracts.related("document-id", expand="document")
+    client.contracts.list({"per_page": 101})
+    assert dict(requests[0].url.params) == {"expand": "document"}
+    assert dict(requests[1].url.params) == {"per-page": "101"}
+    with pytest.raises(ValidationError, match="expand"):
+        client.contracts.related("document-id", expand="unknown")
+    assert len(requests) == 2

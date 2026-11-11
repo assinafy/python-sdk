@@ -230,6 +230,8 @@ class SignerResource(BaseResource):
         Approved, Declined and Abandoned sessions cannot be restarted here.
         Declined/Abandoned require a new document and assignment. InReview lets
         the signer continue signing while the account reviews the evidence.
+        For an envelope, every code of this signer shares one verification;
+        ``can_start`` is false once none of their remaining documents needs signing.
 
         Example response (``data`` envelope unwrapped)::
 
@@ -257,6 +259,8 @@ class SignerResource(BaseResource):
         One live session is allowed per signer; only an Expired session can be
         replaced. Restarting does not bill again: pricing is per signer at
         assignment creation. Other existing session states return HTTP 400.
+        An envelope shares one check per signer, started from any of their
+        document codes and billed once for the envelope.
 
         Request body (JSON)::
 
@@ -287,8 +291,12 @@ class SignerResource(BaseResource):
         """``PUT /signers/accept-terms`` — record terms acceptance for a signer.
 
         The access code is sent in the documented ``signer-access-code`` query
-        parameter. The request has no body. Success returns the no-data envelope
-        ``{"status": 200, "message": ""}``.
+        parameter. The request has no body. Response (``data`` unwrapped)::
+
+            {"full_name": "Example Signer", "email": "signer@example.com",
+             "has_accepted_terms": true}
+
+        ``email`` may be null. Legacy no-data envelopes are also preserved.
         """
         query = self._signer_query(signer_access_code)
         return self._call_dict(
@@ -309,7 +317,8 @@ class SignerResource(BaseResource):
 
             {"verification-code": "123456"}
 
-        Response: ``{"status": 200, "message": ""}`` (no data payload).
+        Response: ``{}`` for the current empty ``data: []`` success. Legacy
+        object/no-data-envelope responses are preserved.
         """
         return self.verify_code(signer_access_code, verification_code)
 
@@ -321,18 +330,21 @@ class SignerResource(BaseResource):
         """``POST /verify`` — confirm a signer verification code.
 
         The signer access code is sent in the documented query parameter; the
-        verification code is the only JSON field. Success is a no-data envelope
-        containing ``status`` and ``message``.
+        verification code is the only JSON field. Five wrong codes within
+        fifteen minutes lock the request until that window ends (HTTP 429),
+        including correct attempts during the lock. Envelope codes share the
+        attempt count across the signer's documents.
 
         Example request body (JSON)::
 
             {"verification-code": "123456"}
 
-        Success returns the no-data envelope ``{"status": 200, "message": ""}``.
+        Success ``data: []`` maps to ``{}``; legacy object/no-data-envelope
+        responses are preserved. A closed signer code returns HTTP 410.
         """
         query = self._signer_query(signer_access_code)
         code = self._require_id(verification_code, "Verification code")
-        return self._call_dict(
+        return self._call_dict_or_empty(
             "Failed to verify signer code",
             lambda: self._http.post("verify", params=query, json={"verification-code": code}),
         )
@@ -345,24 +357,22 @@ class SignerResource(BaseResource):
     ) -> dict[str, Any]:
         """``PUT /documents/{document_id}/signers/confirm-data``.
 
-        The current contract accepts ``full_name``, ``email``, and
-        ``government_id``. ``whatsapp_phone_number`` and ``has_accepted_terms``
-        remain accepted for compatibility with earlier deployed signer flows.
-        Required fields depend on the signer's verification channel. The access
-        code is sent as the ``signer-access-code`` query parameter.
+        The current contract accepts ``email``, ``whatsapp_phone_number`` and
+        ``has_accepted_terms``. Send the contact needed by the verification or
+        notification channel; it must match the signer's existing contact, or
+        is saved when absent. ``full_name`` and ``government_id`` remain
+        accepted for compatibility with earlier deployments; set identity on
+        workspace signer creation/update for current flows. The access code
+        is sent as the ``signer-access-code`` query parameter. With an envelope
+        code, ``document_id`` may name another document of that envelope the
+        signer is on, carrying the code's channel verification to it.
 
         Example request body (JSON)::
 
-            {"full_name": "Example Signer", "email": "signer@example.com",
-             "government_id": "00000000000"}
+            {"email": "signer@example.com", "has_accepted_terms": true}
 
-        Returns the complete signer payload documented on :class:`SignerResource`.
-
-        Example response (``data`` envelope unwrapped)::
-
-            {"resource": "signer", "id": "signer-id", "full_name": "Example Signer",
-             "email": "signer@example.com", "whatsapp_phone_number": null,
-             "government_id": null, "has_accepted_terms": false}
+        Success ``data: []`` maps to ``{}``. Older deployments returning a
+        signer object keep that object unchanged. A closed code returns 410.
         """
         doc_id = self._path_id(document_id, "Document ID")
         query = self._signer_query(signer_access_code)
@@ -391,7 +401,7 @@ class SignerResource(BaseResource):
         )
         if not body:
             raise ValidationError("At least one signer-data field is required")
-        return self._call_dict(
+        return self._call_dict_or_empty(
             "Failed to confirm signer data",
             lambda: self._http.put(
                 f"documents/{doc_id}/signers/confirm-data", params=query, json=body
@@ -413,8 +423,8 @@ class SignerResource(BaseResource):
         ``image/jpeg`` remains supported for compatibility with earlier API
         documentation. ``reuse`` sets the signer's
         ``is_signature_reusable`` flag when given; omit it to leave the flag
-        unchanged. Success is ``None``; the API envelope contains only
-        ``status`` and ``message``.
+        unchanged. Success is ``None``; the API returns ``data: []``. Legacy
+        envelopes containing only ``status`` and ``message`` also work.
         """
         _assert_signature_type(signature_type)
         if not isinstance(content, (bytes, bytearray, memoryview)) or not content:
