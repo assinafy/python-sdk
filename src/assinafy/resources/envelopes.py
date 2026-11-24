@@ -72,7 +72,8 @@ def _document(payload: Any, signers: dict[str, dict[str, Any]] | None = None) ->
     return clean_params(dict(payload))
 
 
-def _create_payload(payload: Any) -> dict[str, Any]:
+def build_envelope_payload(payload: Any) -> dict[str, Any]:
+    """Validate the shared immediate and scheduled envelope creation body."""
     body = _editable(payload, {"name", "message", "signers", "documents", "max_total_credits"})
     if "name" not in body:
         raise ValidationError("Envelope name is required")
@@ -204,7 +205,7 @@ class EnvelopeResource(BaseResource):
         means the total exceeds the ceiling. The SDK never retries automatically.
         """
         path = self._collection_path(account_id)
-        body = _create_payload(payload)
+        body = build_envelope_payload(payload)
         headers = idempotency_headers(idempotency_key)
         return self._call_dict(
             "envelopes.create", lambda: self._http.post(path, json=body, headers=headers)
@@ -227,7 +228,7 @@ class EnvelopeResource(BaseResource):
         path = f"{self._collection_path(account_id)}/estimate-cost"
         if isinstance(payload, dict):
             payload = {k: v for k, v in payload.items() if k != "max_total_credits"}
-        body = _create_payload(payload)
+        body = build_envelope_payload(payload)
         return self._call_dict("envelopes.estimate_cost", lambda: self._http.post(path, json=body))
 
     def update(
@@ -275,10 +276,31 @@ class EnvelopeResource(BaseResource):
         for the envelope, charging paid channels once per sent message. 400 if the
         signer has nothing left to sign/insufficient credits, 409 EnvelopeClosed
         if all documents closed, 404 if signer/envelope absent.
+        Staging enforces two minutes between reminders and ten in 24 hours per
+        signer, shared with reminders through any document of the envelope.
         """
         signer_id = self._path_id(signer_id, "signer_id")
         path = f"{self._path(envelope_id, account_id)}/signers/{signer_id}/resend"
         return self._call_dict("envelopes.resend_notification", lambda: self._http.put(path))
+
+    def estimate_resend_cost(
+        self, envelope_id: str, signer_id: str, account_id: str | None = None
+    ) -> dict[str, Any]:
+        """POST /accounts/{accountId}/envelopes/{envelopeId}/signers/{id}/estimate-resend-cost.
+
+        No body; sends and charges nothing. Returns::
+
+            {"total": 0, "breakdown": [{"code": "NotificationEmailResend",
+             "name": "Email Notification Resend", "cost": 0}],
+             "credit_balance": null, "has_sufficient_credits": true}
+
+        One reminder covers all envelope documents. This estimate does not check
+        whether the signer can be reminded now; resend applies state/rate limits.
+        OAuth requires documents:write. Available on staging before production.
+        """
+        signer_id = self._path_id(signer_id, "signer_id")
+        path = f"{self._path(envelope_id, account_id)}/signers/{signer_id}/estimate-resend-cost"
+        return self._call_dict("envelopes.estimate_resend_cost", lambda: self._http.post(path))
 
     def add_document(
         self, envelope_id: str, payload: dict[str, Any], account_id: str | None = None

@@ -97,6 +97,33 @@ WebhookEventType = Literal[
 
 SignerReference = str | dict[str, Any]
 
+SignerCapacity = Literal[
+    "Sign",
+    "Approve",
+    "Acknowledge",
+    "Party",
+    "Witness",
+    "Intervening",
+    "Receipt",
+    "IssuerEndorserGuarantor",
+    "IssuerEndorserGuarantorSurety",
+    "Surety",
+    "PartySurety",
+    "JointDebtor",
+    "PartyJointDebtor",
+    "ContractingParty",
+    "ContractedParty",
+    "Landlord",
+    "Tenant",
+    "Buyer",
+    "Seller",
+    "AttorneyInFact",
+    "LegalRepresentative",
+    "Employer",
+    "Employee",
+]
+SIGNER_CAPACITIES = frozenset(get_args(SignerCapacity))
+
 NotificationPreferenceCode = Literal[
     "ContractRenewalNotice",
     "ContractExpiring",

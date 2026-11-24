@@ -18,6 +18,7 @@ from .resources.embed import EmbedResource
 from .resources.envelopes import EnvelopeResource
 from .resources.fields import FieldResource
 from .resources.oauth import OAuthResource
+from .resources.scheduled_sends import ScheduledSendResource
 from .resources.signer_documents import SignerDocumentResource
 from .resources.signers import SignerResource
 from .resources.tags import TagResource
@@ -39,6 +40,7 @@ from .types import (
     OAuthScope,
     OAuthTokenTypeHint,
     PushPreferenceCode,
+    SignerCapacity,
     SignerReference,
     VerificationMethod,
     WebhookEventType,
@@ -71,6 +73,8 @@ __all__ = [
     "OAuthScope",
     "OAuthTokenTypeHint",
     "PushPreferenceCode",
+    "ScheduledSendResource",
+    "SignerCapacity",
     "SignerDocumentResource",
     "SignerReference",
     "SignerResource",

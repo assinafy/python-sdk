@@ -541,3 +541,12 @@ def test_oversized_retry_after_preserves_the_api_error() -> None:
             client.documents.list()
     assert error.value.status_code == 429
     assert error.value.retry_after is None
+
+
+def test_invalid_base_url_does_not_expose_input_in_traceback() -> None:
+    import traceback
+
+    secret = "PRIVATE_PORT_VALUE"
+    with pytest.raises(ValidationError) as caught:
+        AssinafyClient(base_url=f"https://example.test:{secret}/v1")
+    assert secret not in "".join(traceback.format_exception(caught.value))

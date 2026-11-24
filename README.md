@@ -33,7 +33,7 @@ client = AssinafyClient(
 | Código do signatário | `signer-access-code` na query | ações da pessoa que assina |
 | OAuth 2.1 + PKCE | `Authorization: Bearer` | aplicativos de marketplace |
 
-O cliente remove credenciais de workspace das rotas públicas e de signatário; no OAuth userinfo, remove a chave de API e mantém o bearer explícito. Use `https://sandbox.assinafy.com.br/v1` em `base_url` para o sandbox. URLs não loopback devem usar HTTPS. O cliente compartilha um pool de conexões; use `with` ou chame `close()`.
+O cliente remove credenciais de workspace das rotas públicas e de signatário; no OAuth userinfo, remove a chave de API e mantém o bearer explícito. Use `https://sandbox.assinafy.com.br/v1` ou `https://api.angry-pisco.stage.assinafy.com.br/v1` em `base_url` para sandbox ou staging. URLs não loopback devem usar HTTPS. O cliente compartilha um pool de conexões; use `with` ou chame `close()`.
 
 ## Fluxo completo de assinatura
 
@@ -80,12 +80,7 @@ if status["status"] == "certificated":
 
 Sem métodos informados, a API usa e-mail. Certificado digital aceita A1/A3 ICP-Brasil, exige que o signatário fique sozinho no passo e produz o artefato PAdES. Biometria usa uma captura hospedada; a URL retornada é uma credencial e não deve ser registrada.
 
-No fluxo biométrico, consulte e inicie a captura somente após obter consentimento:
-
-```python
-state = client.signers.identity_verification(signer_access_code)
-capture = client.signers.start_identity_verification(signer_access_code, consent=True)
-```
+No fluxo biométrico, consulte `signers.identity_verification(code)` e inicie `signers.start_identity_verification(code, consent=True)` somente após obter consentimento.
 
 O workspace consulta a evidência com `assignments.identity_verification()` e conclui a análise com `assignments.review_identity_verification()`.
 
@@ -94,11 +89,10 @@ As ações de e-mail/WhatsApp/biometria usam apenas o código de acesso; A1/A3 c
 ```python
 public_client = AssinafyClient()
 public_client.signers.verify_code(signer_access_code, verification_code)
-view = public_client.assignments.get_for_signer(signer_access_code)
 public_client.signers.confirm_data(document["id"], signer_access_code, {
     "email": "signer@example.com", "has_accepted_terms": True,
 })
-public_client.signers.accept_terms(signer_access_code)
+view = public_client.assignments.get_for_signer(signer_access_code)
 signed = public_client.assignments.sign(
     document["id"], assignment["id"], [], signer_access_code
 )
@@ -136,6 +130,12 @@ envelope = client.envelopes.create(payload, idempotency_key="pedido-exemplo-001"
 Use uma chave nova por envelope; reutilize-a somente para recuperar a mesma criação. O recurso também lista, atualiza, cancela, remove/adiciona documentos, reenvia convites e baixa ZIPs. Certificado digital fica sozinho em cada documento; envelopes não aceitam passos de assinatura.
 
 Para incorporar e-mail/WhatsApp, configure `accounts.add_embed_origin("https://app.example.com")`, adicione `"embedded": True` à entrada do signatário no assignment e use `assignments.create_embed_session(document_id, assignment_id, signer_id)`. Carregue `url` no iframe em até cinco minutos; cada abertura exige uma sessão nova. `embed.exchange()` pertence à página incorporada e consome o token. Origens e sessões exigem o recurso Embed; nunca exponha a chave do workspace ao navegador.
+
+## Agendamentos e acompanhamento
+
+Em staging, `scheduled_sends.create_assignment(document_id, {**request, "send_at": "2026-12-01T12:00:00Z"})` agenda o envio; `create_envelope()` recebe o corpo do envelope mais `send_at`. Use uma data de uma hora a 90 dias no futuro. `list()`, `cancel()` e `send()` acompanham, cancelam ou enviam agora. Nenhum crédito é reservado ao agendar.
+
+Também em staging: `sign_as="Witness"` na entrada do signatário define a capacidade impressa no certificado; leia-a com `documents.signer_capacities()`. `documents.notification_history()` informa entrega/abertura. `documents.set_watchers(id, [signer_id])` define contatos que recebem aviso ao concluir, recusar ou expirar, sem acesso ao documento. Veja [o fluxo detalhado](README.en.md#scheduled-sends-and-document-follow-up).
 
 ## OAuth 2.1 para marketplace
 
@@ -185,7 +185,7 @@ Objetos e listas são devolvidos sem o envelope `{status, message, data}`. Lista
 
 Capture `AssinafyError`; use `ApiError.status_code`, `response_data`, `retry_after` e os campos `rate_limit_*` para erros HTTP e limites. `ValidationError` ocorre antes de I/O e `NetworkError` representa falhas de transporte.
 
-Veja [todos os recursos e payloads](README.en.md#resource-reference), incluindo uso do workspace, políticas de notificação, preferências push, cópias certificadas e rotação de webhook com sobreposição de 24 horas. Cada método público documenta verbo, rota, corpo e resposta. Recursos disponíveis em `AssinafyClient`: `accounts`, `assignments`, `authentication`, `contracts`, `documents`, `embed`, `envelopes`, `fields`, `signer_documents`, `signers`, `tags`, `templates`, `users`, `webhooks` e a fábrica `oauth()`.
+Veja [todos os recursos e payloads](README.en.md#resource-reference), incluindo uso do workspace, políticas de notificação, preferências push, cópias certificadas e rotação de webhook com sobreposição de 24 horas. Cada método público documenta verbo, rota, corpo e resposta. Recursos disponíveis em `AssinafyClient`: `accounts`, `assignments`, `authentication`, `contracts`, `documents`, `embed`, `envelopes`, `fields`, `scheduled_sends`, `signer_documents`, `signers`, `tags`, `templates`, `users`, `webhooks` e a fábrica `oauth()`.
 
 ## Desenvolvimento
 

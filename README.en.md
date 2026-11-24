@@ -7,7 +7,7 @@ Brazilian electronic-signature platform.
 
 The SDK is synchronous, built on `httpx`, and provides the Assinafy API resources: accounts, users, authentication, OAuth,
 documents, signers, signer documents, assignments, field definitions,
-templates, tags, contracts, envelopes, embedded signing, and webhooks. Every public method names the verb and path it
+templates, tags, contracts, envelopes, scheduled sends, embedded signing, and webhooks. Every public method names the verb and path it
 calls and documents its request body and unwrapped response; shared resource
 shapes are documented once and referenced by the methods that return them.
 
@@ -28,6 +28,7 @@ shapes are documented once and referenced by the methods that return them.
   - [7. Download the signed document](#7-download-the-signed-document)
   - [Starting from a template instead](#starting-from-a-template-instead)
 - [Envelopes and embedded signing](#envelopes-and-embedded-signing)
+- [Scheduled sends and document follow-up](#scheduled-sends-and-document-follow-up)
 - [Contract lifecycle management (CLM)](#contract-lifecycle-management-clm)
 - [OAuth for marketplace applications](#oauth-for-marketplace-applications)
   - [1. Register the application](#1-register-the-application)
@@ -186,8 +187,8 @@ missing side is inferred, and sending neither defaults both to `Email`.
 | Method | How it works | Cost per signer |
 | --- | --- | --- |
 | `Email` *(default)* | A one-time code (OTP) by email, required before signing | Free |
-| `Whatsapp` | A one-time code (OTP) over WhatsApp | Verification free; the notification it requires costs 0.45 credits, on paid plans only |
-| `DigitalCertificate` | The signer signs with their **own ICP-Brasil certificate (A1/A3)** through the Web PKI browser extension, producing a qualified **PAdES** signature | 0.5 credits, plus its notification |
+| `Whatsapp` | A one-time code (OTP) over WhatsApp | Verification free; notification pricing and availability depend on the plan: use an estimate |
+| `DigitalCertificate` | The signer signs with their **own ICP-Brasil certificate (A1/A3)** through the Web PKI browser extension, producing a qualified **PAdES** signature | Plan-priced certificate charge plus notification: use an estimate |
 | `IdDocumentFaceMatchBasic` | Government ID photo, face match and liveness through a hosted verification session; requires the account feature and a valid CPF in `government_id` | Per-signer fee, plus its notification; use the cost estimate |
 
 Allowed pairings: `Email` → notify by `Email`; `Whatsapp` → notify by
@@ -224,7 +225,7 @@ client.assignments.create(document["id"], {
 
 Before the signer can open the assignment they must confirm their identity data
 **and** accept the terms — `confirm_data(..., {"has_accepted_terms": True})`
-covers both in one call, and `accept_terms()` is never gated. Sending
+covers both in one call, and confirms the required data before `accept_terms()` is called. Sending
 `has_accepted_terms` to `get_for_signer()` is too late to open that gate.
 
 The ordinary signing endpoint **rejects** certificate signers: their signature
@@ -489,29 +490,36 @@ channel again; call `estimate_resend_cost()` first when the cost must be known.
 
 ### 5. The signer's side
 
-Signers act with a one-time **signer access code**, not with your API key. The
+Signers act with a **signer access code**, not with your API key. The
 SDK sends it as the documented `signer-access-code` query parameter and never
 attaches your workspace credentials to these routes.
 
 ```python
 # The signer opens their link and verifies the emailed/WhatsApp code.
 client.signers.verify_code(signer_access_code, "123456")
-client.signers.accept_terms(signer_access_code)
-
-# Read what this signer is allowed to see.
-view = client.assignments.get_for_signer(signer_access_code)
 me = client.signers.get_self(signer_access_code)
 
-# Confirm identity data, then submit.
+# Confirm the required data before opening the assignment.
 client.signers.confirm_data(
     document["id"],
     signer_access_code,
     {"email": "signer@example.com", "has_accepted_terms": True},
 )
+view = client.assignments.get_for_signer(signer_access_code)
 ```
 
-A virtual assignment submits an empty item list; a collect assignment submits
-one entry per completed field:
+A virtual assignment submits an empty item list. Before collect signing, upload
+both `signature` and `initial` images, even if no initials field was placed:
+
+```python
+client.signers.upload_signature(signer_access_code, signature_png, "signature")
+client.signers.upload_signature(signer_access_code, initials_png, "initial")
+```
+
+A collect assignment submits one entry per required field. Signature/initial
+items use the stored images; signatureDate uses server time in UTC-3. Omitted
+read-only and optional items are filled automatically. Uploading an image replaces
+it for all of that signer's documents, including ones still awaiting certification:
 
 ```python
 client.assignments.sign(document["id"], assignment["id"], [], signer_access_code)
@@ -734,7 +742,7 @@ uses `embed.exchange(token, parent_origin)` once, returning signer_access_code,
 signer_id, document_id, verification_method and embed_origins. Calling exchange
 before loading the iframe spends its token. A 409 consumes it too; expired or
 reused tokens return 410. Check the parent message origin against the registered
-origin. Embedded signers have a null `signing_urls[].url`. Embedded biometric and
+origin. Embedded and WhatsApp-only signers have a null `signing_urls[].url` on staging. Email links open an invitation-request page, not the document itself. Embedded biometric and
 certificate verification are unsupported. For an envelope, a session on one
 pending document exposes that signer's remaining documents.
 
@@ -742,6 +750,100 @@ pending document exposes that signer's remaining documents.
 `delete_embed_origin(id)` manage the allowlist (at most ten). Origins require
 HTTPS without paths, credentials, query or fragment; HTTP is allowed for
 localhost/127.0.0.1. Removing the last origin prevents new embed sessions.
+
+## Scheduled sends and document follow-up
+
+These operations are published by [staging](https://api.angry-pisco.stage.assinafy.com.br/v1/docs)
+before production. Select the staging `base_url` when using them.
+
+Schedule an assignment with its normal creation body plus `send_at`, or an
+envelope with its normal envelope body plus `send_at`:
+
+```python
+from datetime import datetime, timedelta, timezone
+
+send_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+scheduled = client.scheduled_sends.create_assignment(unassigned_document_id, {
+    "send_at": send_at,
+    "method": "virtual",
+    "signers": [{"id": signer_id, "verification_method": "Email", "sign_as": "Witness"}],
+    "message": "Please sign", "max_total_credits": 0,
+})
+queue = client.scheduled_sends.list({"document_id": unassigned_document_id, "per_page": 20})
+# Choose one action: cancel, send now, or leave pending for its scheduled time.
+cancelled = client.scheduled_sends.cancel(scheduled["id"])
+# sent = client.scheduled_sends.send(scheduled["id"])
+
+scheduled_envelope = client.scheduled_sends.create_envelope({
+    "send_at": send_at, "name": "Agreement and appendix",
+    "signers": [{"id": signer_id}],
+    "documents": [{"id": unassigned_document_id, "signer_ids": [signer_id]}],
+})
+client.scheduled_sends.cancel(scheduled_envelope["id"])
+```
+
+Scheduling returns an unwrapped object:
+
+```json
+{"resource": "scheduled_send", "id": "send-id", "type": "assignment",
+ "document_ids": ["document-id"], "status": "pending",
+ "send_at": "2026-12-01T12:00:00Z", "assignment_id": null, "envelope_id": null,
+ "failure_reason": null, "created_at": "2026-11-24T12:00:00Z", "processed_at": null}
+```
+
+`type` is `assignment` or `envelope`; status is `pending`, `processing`, `sent`,
+`cancelled` or `failed`. Sent records contain their assignment/envelope ID;
+failed records contain a Portuguese `failure_reason`. `processed_at` is nullable.
+Listing returns `{data, meta}` with the same records, newest first, all statuses.
+All five methods require `documents:write` for OAuth, including listing.
+
+`send_at` accepts integer Unix seconds or an ISO datetime (missing offset means
+UTC), from one hour to 90 days ahead. Each document's expiration must be at least
+two hours later. The API checks timing, membership and state; its worker checks
+every five minutes. Scheduling reserves no documents or credits and sends nothing.
+Creation rules, permissions, balance and prices apply when the request executes.
+Only one pending/processing send can contain a document. A failed background send
+emails its scheduling member, or active owners if the member left. A refused
+manual `send()` stays pending; cancel it to prevent execution later. Only pending
+sends can be cancelled or sent now. Scheduling has no idempotency header and the
+SDK never retries it automatically; list after an ambiguous network failure.
+
+Assignment creation and estimates accept `sign_as` from the exported
+`SignerCapacity` literal: Sign, Approve, Acknowledge, Party, Witness, Intervening,
+Receipt, IssuerEndorserGuarantor, IssuerEndorserGuarantorSurety, Surety, PartySurety,
+JointDebtor, PartyJointDebtor, ContractingParty, ContractedParty, Landlord, Tenant,
+Buyer, Seller, AttorneyInFact, LegalRepresentative, Employer or Employee.
+Omitted/null means Sign. A capacity is fixed at creation, printed as the sender's
+statement on the certificate, and absent from invitations, signing pages and
+webhooks. Templates and envelopes do not accept `sign_as`.
+
+```python
+capacities = client.documents.signer_capacities(document_id)
+# [{"signer_id": "signer-id", "sign_as": "Witness"}]
+history = client.documents.notification_history(document_id)
+# [{"signer_id": "signer-id", "notification_history": [{"event": "signature_request",
+#   "status": "sent", "error_code": None, "error_message": None,
+#   "sent_at": "2026-11-24T12:00:00Z", "failed_at": None,
+#   "delivered_at": None, "opened_at": None}]}]
+watchers = client.documents.set_watchers(document_id, [watcher_signer_id])
+watchers = client.documents.watchers(document_id)
+client.documents.set_watchers(document_id, [])  # Clear all watchers before closure.
+estimate = client.envelopes.estimate_resend_cost(envelope_id, signer_id)
+# {"total": 0, "breakdown": [], "credit_balance": None, "has_sufficient_credits": True}
+```
+
+Capacities/history require `documents:read` for OAuth and return `[]` before
+assignment. History status is sent/delivered/opened/failed, with nullable ISO
+timestamps; opens/clicks and WhatsApp read receipts are hints, not proof of reading.
+Watchers require workspace credentials; OAuth applications receive 403. Up to ten
+workspace contacts with email receive a queued completion, decline or expiration
+email, with no link or file. Repeated IDs count once. Reads/writes return signer
+objects (`id`, `full_name`, `email`, `whatsapp_phone_number`, `government_id`,
+`has_accepted_terms`, and optional `resource`). Membership, email and whether the
+document has ended are checked by the API. Removed contacts disappear from reads.
+Envelope reminder estimates require `documents:write`, send/charge nothing, and
+cover all documents with one reminder. They do not check resend eligibility or
+rate limits. `breakdown` entries contain `code`, `name`, `cost`.
 
 ## Contract lifecycle management (CLM)
 
@@ -1331,7 +1433,6 @@ Signer-access-code endpoints:
 
 ```python
 client.signers.get_self(signer_access_code)
-client.signers.accept_terms(signer_access_code)
 client.signers.verify_code(signer_access_code, "123456")
 # verify_email(...) remains as a backward-compatible alias.
 client.signers.confirm_data(
@@ -1737,10 +1838,15 @@ except AssinafyError as err:        # unexpected response shape, etc.
 | --- | --- |
 | Production | `https://api.assinafy.com.br/v1` |
 | Sandbox | `https://sandbox.assinafy.com.br/v1` |
+| Staging | `https://api.angry-pisco.stage.assinafy.com.br/v1` |
 
 Use disposable resources in the sandbox. WhatsApp messages are simulated there.
 OAuth registration and consent use the production authorization server; token
 endpoints and protected-resource metadata are also available in the sandbox.
+Staging publishes its own authorization-server URL and canonical API resource
+in protected-resource metadata. Pass that issuer/resource explicitly to
+`start_authorization(issuer=..., resource=...)`; the SDK defaults to production
+consent. Use the token host from that issuer's discovery metadata.
 A1/A3 signing requires a real ICP-Brasil certificate on the signer's device
 and Assinafy's hosted signing flow.
 
@@ -1779,7 +1885,15 @@ ASSINAFY_TEST_USER_PREFERENCES=1 \
 python scripts/live_smoke.py
 ```
 
-The script refuses production and missing base URLs. It confirms read
+Set `ASSINAFY_TEST_EXTENDED_FLOWS=1` with the notification opt-in to exercise
+scheduled sends, watchers, capacities, notification history, contract changes,
+envelope membership/ZIP downloads and single-use embed exchanges. This requires
+staging and the relevant plan features. Test documents and embed origins are
+deleted, envelopes cancelled/deleted, and pending sends cancelled in cleanup.
+Cancelled/sent schedule history remains, as the API has no deletion endpoint.
+
+The script accepts only the exact sandbox and staging URLs; it refuses production
+and missing base URLs. It confirms read
 endpoints, signer/tag/field CRUD (including clearing a field's regex), template
 lookup and cost estimation, document upload, document tagging,
 `wait_until_ready` polling, cost estimation, and cleanup end-to-end. Every

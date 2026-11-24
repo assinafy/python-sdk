@@ -506,6 +506,84 @@ class DocumentResource(BaseResource):
             lambda: self._http.get(f"documents/{doc_id}/activities", params=query),
         )
 
+    def signer_capacities(self, document_id: str) -> builtins.list[dict[str, Any]]:
+        """GET /documents/{documentId}/signer-capacities; no body.
+
+        Returns [{"signer_id": "signer-id", "sign_as": "Witness"}] in assignment
+        signer order, or [] before assignment. Omitted capacities read as Sign.
+        Only this endpoint returns capacities; they are absent from webhooks.
+        OAuth requires documents:read. Available on staging before production.
+        """
+        doc_id = self._path_id(document_id, "Document ID")
+        return self._call_plain_list(
+            "Failed to fetch signer capacities",
+            lambda: self._http.get(f"documents/{doc_id}/signer-capacities"),
+        )
+
+    def notification_history(self, document_id: str) -> builtins.list[dict[str, Any]]:
+        """GET /documents/{documentId}/notification-history; no body.
+
+        Returns [] before assignment, otherwise one entry per signer::
+
+            [{"signer_id": "signer-id", "notification_history": [{
+                "event": "signature_request", "status": "sent", "error_code": null,
+                "error_message": null, "sent_at": "2026-11-24T12:00:00Z",
+                "failed_at": null, "delivered_at": null, "opened_at": null}]}]
+
+        Status is sent/delivered/opened/failed; timestamps are nullable ISO 8601.
+        An open/click or WhatsApp read receipt is a hint, not proof of reading.
+        OAuth requires documents:read. Available on staging before production.
+        """
+        doc_id = self._path_id(document_id, "Document ID")
+        return self._call_plain_list(
+            "Failed to fetch notification history",
+            lambda: self._http.get(f"documents/{doc_id}/notification-history"),
+        )
+
+    def watchers(self, document_id: str) -> builtins.list[dict[str, Any]]:
+        """GET /documents/{documentId}/watchers; no body.
+
+        Returns signer objects in the order set, excluding deleted contacts::
+
+            [{"id": "signer-id", "full_name": "Example Watcher",
+              "email": "watcher@example.com", "whatsapp_phone_number": null,
+              "government_id": null, "has_accepted_terms": false}]
+
+        Requires workspace credentials; OAuth applications receive 403.
+        Available on staging before production.
+        """
+        doc_id = self._path_id(document_id, "Document ID")
+        return self._call_plain_list(
+            "Failed to fetch document watchers",
+            lambda: self._http.get(f"documents/{doc_id}/watchers"),
+        )
+
+    def set_watchers(
+        self, document_id: str, watcher_ids: builtins.list[str]
+    ) -> builtins.list[dict[str, Any]]:
+        """PUT /documents/{documentId}/watchers.
+
+        JSON: {"watcher_ids": ["signer-id"]}; [] clears the list. Returns the
+        signer object array documented by watchers(). Up to ten workspace
+        contacts with email; repeated IDs count once. Contacts receive a queued
+        email when signing finishes, is declined or expires, with no file/link.
+        Watchers can change until the document ends. The server checks contact
+        membership, email and document state. OAuth applications receive 403.
+        Available on staging before production.
+        """
+        doc_id = self._path_id(document_id, "Document ID")
+        if not isinstance(watcher_ids, list) or any(
+            not isinstance(item, str) or not item.strip() for item in watcher_ids
+        ):
+            raise ValidationError("watcher_ids must be a list of nonempty contact IDs")
+        ids = list(dict.fromkeys(watcher_ids))
+        if len(ids) > 10:
+            raise ValidationError("A document allows at most 10 watchers")
+        return self._call_plain_list(
+            "Failed to set document watchers",
+            lambda: self._http.put(f"documents/{doc_id}/watchers", json={"watcher_ids": ids}),
+        )
+
     def delete(self, document_id: str) -> None:
         """``DELETE /documents/{document_id}`` — delete a document.
 
@@ -729,15 +807,19 @@ class DocumentResource(BaseResource):
         *,
         email: str | None = None,
     ) -> dict[str, Any]:
-        """``PUT /public/documents/{document_id}/send-token`` — email a one-time access token.
+        """``PUT /public/documents/{document_id}/send-token`` — resend an email invitation.
 
-        Sends a one-time token to a signer of a public document so they can
+        Sends the existing invitation link and verification code so the signer can
         view it. The document must be pending signature and ``recipient`` must
         be the email address of a signer who has not signed yet. ``email`` is
         the only supported channel: ``channel`` defaults to ``"email"`` and any
         other value raises :class:`~assinafy.errors.ValidationError`. The
         keyword ``email=`` is kept as an alias of ``recipient`` and sends the
         same body. Public endpoint: no client credentials are sent.
+        Staging resends the existing link/code without renewing it, at most once
+        per two minutes per signer across an envelope. The deadline must not
+        have passed and the signer's turn must have started. HTTP 200 means
+        accepted, not delivered; a failed send may still count toward the limit.
 
         Request body (JSON; both fields required)::
 

@@ -132,6 +132,7 @@ def _set_safe_env(monkeypatch: pytest.MonkeyPatch, emails: str = "user@example.t
         "ASSINAFY_SEND_TEST_NOTIFICATIONS",
         "ASSINAFY_TEST_ACCOUNT_LIFECYCLE",
         "ASSINAFY_TEST_USER_PREFERENCES",
+        "ASSINAFY_TEST_EXTENDED_FLOWS",
         "ASSINAFY_READ_ONLY",
         "ASSINAFY_WEBHOOK_TEST_EMAIL",
         "ASSINAFY_WEBHOOK_TEST_URL",
@@ -661,3 +662,83 @@ def test_cleanup_rate_limit_retry_is_bounded(monkeypatch: pytest.MonkeyPatch) ->
     assert len(attempts) == 4
     assert delays == [20, 20, 20]
     assert failures == ["disposable cleanup"]
+
+
+def test_staging_is_allowed_explicitly(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_safe_env(monkeypatch)
+    monkeypatch.setenv("ASSINAFY_BASE_URL", live_smoke.STAGING_BASE_URL + "/")
+    assert live_smoke._validated_configuration()[2] == live_smoke.STAGING_BASE_URL
+
+
+@pytest.mark.parametrize("phase", ["readiness", "contract", "send"])
+def test_extended_flow_cleans_resources_after_failures(
+    phase: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from unittest.mock import Mock
+
+    client = Mock()
+    client.documents.upload.side_effect = [{"id": f"doc-{i}"} for i in range(4)]
+    client.documents.set_watchers.side_effect = [[{"id": "signer"}], []]
+    client.documents.watchers.return_value = [{"id": "signer"}]
+    client.documents.signer_capacities.return_value = []
+    client.documents.notification_history.return_value = []
+    client.contracts.update.return_value = {"status": "active", "updated_at": "timestamp"}
+    client.contracts.get.return_value = {"value": 125.50}
+    client.contracts.terminate.return_value = {"status": "terminated"}
+    client.accounts.add_embed_origin.return_value = {"id": "origin"}
+    client.scheduled_sends.create_assignment.side_effect = [
+        {"id": "cancelled-send", "status": "pending"},
+        {"id": "pending-send"},
+    ]
+    client.scheduled_sends.cancel.return_value = {"status": "cancelled"}
+    target = {
+        "readiness": client.documents.wait_until_ready,
+        "contract": client.contracts.update,
+        "send": client.scheduled_sends.send,
+    }[phase]
+    target.side_effect = ApiError("PRIVATE_ERROR", 400)
+    failures: list[str] = []
+    live_smoke.step(
+        "extended flow", lambda: live_smoke._extended_flows(client, "signer", failures), failures
+    )
+    assert failures == ["extended flow"]
+    assert client.documents.delete.call_count == (1 if phase == "readiness" else 4)
+    if phase == "send":
+        client.scheduled_sends.cancel.assert_called_with("pending-send")
+        client.accounts.delete_embed_origin.assert_called_once_with("origin")
+    assert "PRIVATE_ERROR" not in capsys.readouterr().out
+
+
+def test_extended_flow_requires_notification_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_safe_env(monkeypatch)
+    monkeypatch.setenv("ASSINAFY_TEST_EXTENDED_FLOWS", "1")
+    client = FakeClient()
+    _install_client(monkeypatch, client)
+    assert live_smoke.main() == 2
+    assert not client.init_kwargs
+
+
+def test_smoke_png_has_valid_chunks_and_decodable_nonblank_pixels() -> None:
+    import struct
+    import zlib
+
+    png = live_smoke._make_minimal_png()
+    offset = 8
+    compressed = b""
+    width = height = 0
+    while offset < len(png):
+        length = int.from_bytes(png[offset : offset + 4], "big")
+        name = png[offset + 4 : offset + 8]
+        data = png[offset + 8 : offset + 8 + length]
+        crc = int.from_bytes(png[offset + 8 + length : offset + 12 + length], "big")
+        assert zlib.crc32(name + data) == crc
+        if name == b"IHDR":
+            width, height, depth, color, _, _, _ = struct.unpack("!2I5B", data)
+            assert (depth, color) == (8, 6)
+        elif name == b"IDAT":
+            compressed += data
+        offset += length + 12
+    raw = zlib.decompress(compressed)
+    assert len(raw) == height * (1 + width * 4)
+    assert b"\x00\x00\x00\xff" in raw
+    assert b"\xff\xff\xff\xff" in raw

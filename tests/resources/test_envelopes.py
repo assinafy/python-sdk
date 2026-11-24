@@ -83,6 +83,13 @@ def test_estimate_ignores_ceiling_and_sends_no_idempotency_header() -> None:
             {"is_sent": True},
         ),
         (
+            "estimate_resend_cost",
+            ("env", "signer"),
+            "POST",
+            "/env/signers/signer/estimate-resend-cost",
+            {"total": 0, "breakdown": [], "credit_balance": None, "has_sufficient_credits": True},
+        ),
+        (
             "add_document",
             ("env", {"id": "doc", "signer_ids": ["signer"], "max_total_credits": 0}),
             "POST",

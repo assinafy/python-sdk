@@ -17,6 +17,10 @@ and can consume sandbox credits.
 ``ASSINAFY_TEST_ACCOUNT_LIFECYCLE=1`` enables disposable account/logo CRUD.
 ``ASSINAFY_TEST_USER_PREFERENCES=1`` toggles one preference and restores its
 original value in ``finally``.
+``ASSINAFY_TEST_EXTENDED_FLOWS=1`` exercises scheduling, watchers, contracts,
+envelopes and embed sessions with disposable documents. It also requires
+``ASSINAFY_SEND_TEST_NOTIFICATIONS=1`` and the corresponding plan features.
+The base URL may also be https://api.angry-pisco.stage.assinafy.com.br/v1.
 
 Webhook mutation is disabled unless both ``ASSINAFY_WEBHOOK_TEST_URL`` and
 ``ASSINAFY_WEBHOOK_TEST_EMAIL`` are set and the existing subscription can be
@@ -31,11 +35,13 @@ import sys
 import time
 from base64 import b64decode
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from assinafy import ApiError, AssinafyClient, AssinafyError, NotificationPreferenceCode
 
 SANDBOX_BASE_URL = "https://sandbox.assinafy.com.br/v1"
+STAGING_BASE_URL = "https://api.angry-pisco.stage.assinafy.com.br/v1"
 
 
 def step(label: str, fn: Callable[[], Any], failures: list[str]) -> Any:
@@ -144,11 +150,11 @@ def _validated_configuration(
     )
     if not api_key or not account_id or (require_emails and not emails):
         raise ValueError("missing required smoke-test environment")
-    if not base_url or base_url.rstrip("/") != SANDBOX_BASE_URL:
-        raise ValueError("smoke test requires the canonical HTTPS sandbox URL")
+    if not base_url or base_url.rstrip("/") not in {SANDBOX_BASE_URL, STAGING_BASE_URL}:
+        raise ValueError("smoke test requires the canonical HTTPS sandbox or staging URL")
     for email in emails:
         _tagged_email(email, "validation")
-    return api_key, account_id, SANDBOX_BASE_URL, emails
+    return api_key, account_id, base_url.rstrip("/"), emails
 
 
 def _webhook_opt_in() -> tuple[str, str] | None:
@@ -169,10 +175,13 @@ def _opt_in(name: str) -> bool:
 
 
 def _make_minimal_png() -> bytes:
-    """Return a valid transparent one-pixel PNG."""
+    """Return a valid 64-by-32 PNG with a synthetic black diagonal on white."""
     return b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF"
-        "gAI/ScL7WQAAAABJRU5ErkJggg=="
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAgCAYAAACinX6EAAAAsElEQVR4nOXSSQqAQAxE"
+        "0dz/0roqEaXpMUMlH3pt5aGIyPV+1ZIvQDWI59KqEL8Lq0E0L6sC0b0oO8TwJVkh"
+        "pi/IBrG8PAvE9mJ2iGNLWSGOL2SDUFvGAqG+KDqE2ZKoEOYLokG4fTkKhPs/6A3h"
+        "DoC8IMIAIGuIcADICiIsANKGCA+AtCBoANBpCDoAdAqCFgDtQtADoFWINABoFiIdABqF"
+        "SAuAehDpAVALogwA+gLcGzGv6NJp3c4AAAAASUVORK5CYII="
     )
 
 
@@ -231,6 +240,162 @@ def _first_document_page_id(document: Any) -> str | None:
     return _resource_id(page)
 
 
+def _extended_flows(client: AssinafyClient, signer_id: str, failures: list[str]) -> None:
+    """Exercise disposable scheduled, envelope, contract and embed lifecycles."""
+    documents: list[str] = []
+    pending_sends: list[str] = []
+    envelope_id: str | None = None
+    origin_id: str | None = None
+    origin = f"https://sdk-smoke-{time.time_ns()}.example.com"
+    send_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    try:
+        for index in range(4):
+            doc = client.documents.upload(
+                {"buffer": _make_minimal_pdf(), "file_name": f"sdk-flow-{index}.pdf"}
+            )
+            documents.append(_required_resource_id(doc, "upload"))
+            client.documents.wait_until_ready(documents[-1], timeout=60)
+        document_id = documents[0]
+
+        print("  Watchers, capacities and notification history before sending")
+        watchers = client.documents.set_watchers(document_id, [signer_id, signer_id])
+        assert [item["id"] for item in watchers] == [signer_id]
+        assert client.documents.watchers(document_id)[0]["id"] == signer_id
+        assert client.documents.set_watchers(document_id, []) == []
+        assert client.documents.signer_capacities(document_id) == []
+        assert client.documents.notification_history(document_id) == []
+
+        print("  Contract update, read, related, renew and terminate")
+        terms = client.contracts.update(
+            document_id,
+            {
+                "status": "active",
+                "start_date": "2026-01-01",
+                "end_date": "2030-12-31",
+                "value": 125.50,
+                "currency": "BRL",
+                "metadata": {"purpose": "sdk-test"},
+                "external_references": [{"system": "sdk-test", "id": "example"}],
+            },
+        )
+        assert terms["status"] == "active"
+        assert client.contracts.get(document_id)["value"] is not None
+        client.contracts.related(document_id, expand="document")
+        client.contracts.renew(document_id, {"term": 1, "updated_at": terms["updated_at"]})
+        assert (
+            client.contracts.terminate(document_id, {"reason": "Disposable SDK test"})["status"]
+            == "terminated"
+        )
+
+        print("  Scheduled assignment cancel, send-now and signer capacity")
+        body = {
+            "send_at": send_at,
+            "signers": [{"id": signer_id, "embedded": True, "sign_as": "Witness"}],
+        }
+        scheduled = client.scheduled_sends.create_assignment(document_id, body)
+        scheduled_id = _required_resource_id(scheduled, "schedule assignment")
+        pending_sends.append(scheduled_id)
+        assert scheduled["status"] == "pending"
+        assert client.scheduled_sends.cancel(scheduled_id)["status"] == "cancelled"
+        pending_sends.remove(scheduled_id)
+        origin_id = _required_resource_id(client.accounts.add_embed_origin(origin), "embed origin")
+        scheduled = client.scheduled_sends.create_assignment(document_id, body)
+        scheduled_id = _required_resource_id(scheduled, "schedule assignment")
+        pending_sends.append(scheduled_id)
+        sent = client.scheduled_sends.send(scheduled_id)
+        pending_sends.remove(scheduled_id)
+        assert sent["status"] == "sent" and sent["assignment_id"]
+        assert client.documents.signer_capacities(document_id) == [
+            {"signer_id": signer_id, "sign_as": "Witness"}
+        ]
+        assert client.documents.notification_history(document_id)[0]["signer_id"] == signer_id
+        assert client.scheduled_sends.list({"document_id": document_id})["data"]
+
+        print("  Embed origin update, mint, exchange and one-time-token refusal")
+        client.accounts.update_embed_origin(origin_id, origin)
+        assert any(item["id"] == origin_id for item in client.accounts.list_embed_origins())
+        session = client.assignments.create_embed_session(
+            document_id, sent["assignment_id"], signer_id
+        )
+        token = session["url"].rstrip("/").rsplit("/", 1)[-1]
+        exchanged = client.embed.exchange(token, origin)
+        assert exchanged["document_id"] == document_id
+        assert exchanged["signer_id"] == signer_id and exchanged["signer_access_code"]
+        try:
+            client.embed.exchange(token, origin)
+        except ApiError as error:
+            assert error.status_code == 410
+        else:
+            raise AssertionError("Embed token was accepted twice")
+
+        print("  Envelope scheduling, estimates, idempotency, edits and cancellation")
+        body = {
+            "name": "SDK disposable envelope",
+            "signers": [{"id": signer_id}],
+            "documents": [{"id": doc_id, "signer_ids": [signer_id]} for doc_id in documents[1:3]],
+        }
+        scheduled = client.scheduled_sends.create_envelope({**body, "send_at": send_at})
+        scheduled_id = _required_resource_id(scheduled, "schedule envelope")
+        pending_sends.append(scheduled_id)
+        assert client.scheduled_sends.cancel(scheduled_id)["status"] == "cancelled"
+        pending_sends.remove(scheduled_id)
+        assert client.envelopes.estimate_cost(body)["has_sufficient_resources"]
+        key = f"sdk-smoke-{time.time_ns()}"
+        envelope_id = _required_resource_id(
+            client.envelopes.create(body, idempotency_key=key), "create envelope"
+        )
+        assert client.envelopes.create(body, idempotency_key=key)["id"] == envelope_id
+        assert client.envelopes.get(envelope_id)["id"] == envelope_id
+        client.envelopes.update(
+            envelope_id,
+            {
+                "name": "SDK disposable envelope renamed",
+                "message": None,
+                "document_ids": list(reversed(documents[1:3])),
+            },
+        )
+        assert client.envelopes.estimate_resend_cost(envelope_id, signer_id)["total"] >= 0
+        client.envelopes.activities(envelope_id, {"per_page": 2})
+        assert client.envelopes.download(envelope_id, "original").startswith(b"PK")
+        client.envelopes.add_document(
+            envelope_id,
+            {
+                "id": documents[3],
+                "signer_ids": [signer_id],
+            },
+        )
+        client.envelopes.remove_document(envelope_id, documents[3])
+        assert client.envelopes.cancel(envelope_id)
+        client.envelopes.delete(envelope_id)
+        envelope_id = None
+    finally:
+        for scheduled_id in reversed(pending_sends):
+            cleanup_step(
+                "cancel pending test send",
+                lambda: client.scheduled_sends.cancel(scheduled_id),
+                failures,
+            )
+        if envelope_id:
+            cleanup_step(
+                "cancel test envelope", lambda: client.envelopes.cancel(envelope_id), failures
+            )
+            cleanup_step(
+                "delete test envelope", lambda: client.envelopes.delete(envelope_id), failures
+            )
+        if origin_id:
+            cleanup_step(
+                "delete test embed origin",
+                lambda: client.accounts.delete_embed_origin(origin_id),
+                failures,
+            )
+        for document_id in reversed(documents):
+            cleanup_step(
+                "delete extended-flow document",
+                lambda: client.documents.delete(document_id),
+                failures,
+            )
+
+
 def main() -> int:
     try:
         read_only = _opt_in("ASSINAFY_READ_ONLY")
@@ -241,6 +406,9 @@ def main() -> int:
         send_test_notifications = _opt_in("ASSINAFY_SEND_TEST_NOTIFICATIONS")
         test_account_lifecycle = _opt_in("ASSINAFY_TEST_ACCOUNT_LIFECYCLE")
         test_user_preferences = _opt_in("ASSINAFY_TEST_USER_PREFERENCES")
+        test_extended_flows = _opt_in("ASSINAFY_TEST_EXTENDED_FLOWS")
+        if test_extended_flows and not read_only and not send_test_notifications:
+            raise ValueError("Extended flows require the notification opt-in")
     except ValueError:
         print("Unsafe or incomplete live-smoke configuration", file=sys.stderr)
         return 2
@@ -540,6 +708,12 @@ def main() -> int:
             signer_emails.append(tagged_email)
 
         primary_signer_id = signer_ids[0] if signer_ids else None
+        if primary_signer_id and test_extended_flows:
+            step(
+                "extended workflows",
+                lambda: _extended_flows(client, primary_signer_id, failures),
+                failures,
+            )
         if primary_signer_id:
             step("signers.get()", lambda: client.signers.get(primary_signer_id), failures)
             step(

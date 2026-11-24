@@ -2,6 +2,25 @@
 
 All notable changes to `assinafy` are documented in this file.
 
+## [2.3.0] - 2026-11-24
+
+### Added
+
+- Scheduled assignment and envelope creation, listing, cancellation and immediate
+  sending for the staging API, with shared creation validation.
+- Document watchers, signer capacities, delivery/open history and envelope reminder
+  cost estimates for staging. Assignment creation and estimates accept `sign_as`.
+- Staging support and disposable scheduling, contract, envelope and embed flows in
+  the opt-in live smoke runner.
+
+### Fixed
+
+- Blank signer IDs and conflicting capacities for the same signer fail before I/O.
+- Invalid base URLs no longer expose parser input through chained tracebacks.
+- The smoke runner uses a valid PNG for disposable logo uploads.
+- Signing examples confirm signer data before opening the assignment; channel
+  links and plan-dependent pricing are described in the integration guide.
+
 ## [2.2.1] - 2026-11-11
 
 ### Fixed

@@ -20,6 +20,7 @@ from .resources.embed import EmbedResource
 from .resources.envelopes import EnvelopeResource
 from .resources.fields import FieldResource
 from .resources.oauth import OAuthResource
+from .resources.scheduled_sends import ScheduledSendResource
 from .resources.signer_documents import SignerDocumentResource
 from .resources.signers import SignerResource
 from .resources.tags import TagResource
@@ -141,8 +142,8 @@ class AssinafyClient:
             raise ValidationError("base_url must be a non-empty HTTP(S) URL")
         try:
             parsed_base_url = httpx.URL(resolved_base_url)
-        except (TypeError, httpx.InvalidURL) as exc:
-            raise ValidationError("base_url must be a non-empty HTTP(S) URL") from exc
+        except (TypeError, httpx.InvalidURL):
+            raise ValidationError("base_url must be a non-empty HTTP(S) URL") from None
         if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.host:
             raise ValidationError("base_url must be a non-empty HTTP(S) URL")
         if parsed_base_url.userinfo:
@@ -186,6 +187,7 @@ class AssinafyClient:
         self.documents = DocumentResource(self._http, account_id, self._logger)
         self.embed = EmbedResource(self._http, account_id, self._logger)
         self.envelopes = EnvelopeResource(self._http, account_id, self._logger)
+        self.scheduled_sends = ScheduledSendResource(self._http, account_id, self._logger)
         self.contracts = ContractResource(self._http, account_id, self._logger)
         self.signers = SignerResource(self._http, account_id, self._logger)
         self.signer_documents = SignerDocumentResource(self._http, account_id, self._logger)

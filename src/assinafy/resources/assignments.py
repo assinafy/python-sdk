@@ -5,7 +5,7 @@ import math
 from typing import Any
 
 from ..errors import ValidationError
-from ..types import SignerReference
+from ..types import SIGNER_CAPACITIES, SignerReference
 from ..utils import (
     QUERY_PARAM_ALIASES,
     clean_params,
@@ -19,7 +19,15 @@ from .base import BaseResource
 
 _ASSIGNMENT_METHODS = frozenset({"virtual", "collect"})
 _SIGNER_REFERENCE_FIELDS = frozenset(
-    {"id", "signer_id", "verification_method", "notification_methods", "embedded", "step"}
+    {
+        "id",
+        "signer_id",
+        "verification_method",
+        "notification_methods",
+        "embedded",
+        "step",
+        "sign_as",
+    }
 )
 _ASSIGNMENT_FIELDS = frozenset(
     {
@@ -35,7 +43,7 @@ _ASSIGNMENT_FIELDS = frozenset(
 )
 _ESTIMATE_FIELDS = frozenset({"method", "signers", "signer_ids", "entries"})
 _ESTIMATE_SIGNER_FIELDS = frozenset(
-    {"id", "signer_id", "verification_method", "notification_methods"}
+    {"id", "signer_id", "verification_method", "notification_methods", "sign_as"}
 )
 
 
@@ -47,7 +55,7 @@ def build_assignment_payload(
     """Normalize assignment payloads into the documented request body.
 
     Accepts ``signers`` as a list of either plain string IDs (legacy convenience)
-    or ``{id, verification_method, notification_methods, embedded, step}`` dicts. Also
+    or ``{id, verification_method, notification_methods, embedded, step, sign_as}`` dicts. Also
     accepts the legacy ``signer_ids`` key as a synonym for ``signers``. Drops
     ``None`` values from the optional fields (``message``, ``expires_at``,
     ``copy_receivers``, ``entries``) so the request body matches the API docs
@@ -118,6 +126,12 @@ def build_assignment_payload(
             )
         if not allow_signers_without_id:
             _validate_signer_steps(normalised)
+            capacities: dict[str, str] = {}
+            for signer in normalised:
+                capacity = signer.get("sign_as", "Sign")
+                previous = capacities.setdefault(signer["id"], capacity)
+                if previous != capacity:
+                    raise ValidationError("Each signer must have one sign_as capacity")
         body["signers"] = normalised
     if entries is not None and not allow_signers_without_id:
         _validate_collect_entries(entries)
@@ -179,7 +193,7 @@ def _validate_collect_entries(entries: list[dict[str, Any]]) -> None:
 
 def _normalise_signer_ref(ref: SignerReference, allow_without_id: bool) -> dict[str, Any]:
     if isinstance(ref, str):
-        if not ref:
+        if not ref.strip():
             raise ValidationError("Signer ID cannot be empty")
         return {"id": ref}
 
@@ -189,12 +203,17 @@ def _normalise_signer_ref(ref: SignerReference, allow_without_id: bool) -> dict[
             raise ValidationError(f"Unknown signer fields: {', '.join(sorted(unknown))}")
         if "id" in ref and "signer_id" in ref:
             raise ValidationError("Use signer id or signer_id, not both")
-        signer_id = ref.get("id") or ref.get("signer_id")
-        if signer_id is not None and (not isinstance(signer_id, str) or not signer_id):
+        signer_id = ref.get("id") if "id" in ref else ref.get("signer_id")
+        if signer_id is not None and (not isinstance(signer_id, str) or not signer_id.strip()):
             raise ValidationError("Signer ID must be a non-empty string")
         verification_method = ref.get("verification_method")
         notification_methods = ref.get("notification_methods")
         validate_signer_methods(verification_method, notification_methods, ref.get("embedded"))
+        capacity = ref.get("sign_as")
+        if capacity is not None and (
+            not isinstance(capacity, str) or capacity not in SIGNER_CAPACITIES
+        ):
+            raise ValidationError("Invalid signer sign_as capacity")
         step = ref.get("step")
         if step is not None and (not isinstance(step, int) or isinstance(step, bool) or step < 1):
             raise ValidationError("Signer step must be a positive integer")
@@ -205,6 +224,7 @@ def _normalise_signer_ref(ref: SignerReference, allow_without_id: bool) -> dict[
                 "notification_methods": notification_methods,
                 "embedded": ref.get("embedded"),
                 "step": step,
+                "sign_as": capacity,
             }
         )
         if signer_id or allow_without_id:
@@ -268,7 +288,7 @@ def _build_estimate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             {
                 key: value
                 for key, value in signer.items()
-                if key in {"verification_method", "notification_methods"}
+                if key in {"verification_method", "notification_methods", "sign_as"}
             }
             for signer in body["signers"]
         ]
@@ -321,6 +341,8 @@ class AssignmentResource(BaseResource):
     or non-object ``display_settings`` value; collect items use the object shown.
     Embedded signers have ``embedded: true`` and ``url: null`` in
     ``signing_urls``; mint a fresh iframe URL with :meth:`create_embed_session`.
+    Email URLs open a page for requesting another invitation; they do not grant
+    signer access. WhatsApp-only signers also have a null URL on staging.
     ``document_id`` is null after document deletion; ``sender_email`` is null
     after the sender deletes their user account.
 
@@ -415,6 +437,10 @@ class AssignmentResource(BaseResource):
         signers use Email or Whatsapp verification and need the Embed feature.
         They still receive their invitation, but their signing URL is null;
         use :meth:`create_embed_session` to open an iframe.
+        Staging also accepts ``sign_as`` from :class:`~assinafy.types.SignerCapacity`
+        (for example Witness); omitted/null means Sign. It is fixed at creation
+        and printed on the certificate, absent from invitations and webhooks.
+        Read it with documents.signer_capacities(). Each signer has one capacity.
         See :func:`build_assignment_payload`
         for full normalization rules. ``expires_at`` accepts an ISO 8601
         timestamp (a missing offset means UTC) or a date (23:59 UTC that day).
@@ -514,8 +540,9 @@ class AssignmentResource(BaseResource):
         """``POST /documents/{document_id}/assignments/estimate-cost``.
 
         The published body accepts optional ``method``, ``entries``, and signer
-        pricing descriptors containing only ``verification_method`` and
-        ``notification_methods``. The document marks ``signers`` required only
+        pricing descriptors containing ``verification_method`` and
+        ``notification_methods``; staging also accepts ``sign_as`` (capacity).
+        The document marks ``signers`` required only
         for ``virtual``, but the API prices per signer in both modes and
         rejects a signer-less estimate with ``400``, so the SDK requires at
         least one signer locally. Legacy signer IDs are accepted as input but
@@ -669,8 +696,8 @@ class AssignmentResource(BaseResource):
         gate — call
         :meth:`~assinafy.resources.signers.SignerResource.confirm_data` with
         ``has_accepted_terms=True`` (or
-        :meth:`~assinafy.resources.signers.SignerResource.accept_terms`, which is
-        never gated) first.
+        :meth:`~assinafy.resources.signers.SignerResource.accept_terms` after
+        confirming their data) first.
 
         Request body: none.
 
@@ -724,6 +751,10 @@ class AssignmentResource(BaseResource):
         request body. Virtual assignments have no input fields and use ``[]``
         after :meth:`~assinafy.resources.signers.SignerResource.confirm_data`.
         Collect assignments use ``{itemId, fieldId, pageId, value}`` objects.
+        Upload both signature and initial images before collect signing, even
+        without an initials field. Those items use the stored images, not value;
+        signatureDate uses the server's signing time in UTC-3. Omitted read-only
+        and optional fields are filled automatically; required values must be sent.
 
         Example request body (JSON array)::
 
@@ -734,6 +765,8 @@ class AssignmentResource(BaseResource):
         payload. Repeating a completed signature changes nothing and returns
         the current assignment. DigitalCertificate signers must use the hosted
         certificate flow instead; this endpoint returns HTTP 400 for them.
+        The signer response exposes only their items, omits signing_urls and
+        redacts other parties' contact details and identity numbers.
         """
         doc_id = self._path_id(document_id, "Document ID")
         asg_id = self._path_id(assignment_id, "Assignment ID")
@@ -996,6 +1029,10 @@ class AssignmentResource(BaseResource):
         message. The notification channel is charged again; call
         :meth:`estimate_resend_cost` first when cost must be known.
         The signer must be incomplete and the document pending signature.
+        Staging also requires an unexpired deadline, at least two minutes since
+        the last reminder and fewer than ten reminders in 24 hours. Documents
+        in an envelope share this signer limit, including envelope reminders.
+        An ambiguous delivery counts; public invitation requests are separate.
         Request body: none.
 
         Example response (``data`` envelope unwrapped)::
@@ -1022,6 +1059,8 @@ class AssignmentResource(BaseResource):
         Estimates the cost of resending a signer's notification. A reminder
         uses no document. Request body: none. ``credit_balance`` is null when
         account credits are unlimited.
+        An estimate does not check the deadline or reminder throttles; sending
+        can still be refused even when the estimate reports sufficient credits.
 
         Example response (``data`` envelope unwrapped)::
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from assinafy.errors import ValidationError
@@ -476,3 +477,39 @@ class TestAssignmentResource:
             resource.estimate_resend_cost("doc-1", "", "s")
         with pytest.raises(ValidationError):
             resource.estimate_resend_cost("doc-1", "a", "")
+
+
+@pytest.mark.parametrize("capacity", ["Witness", "Party", "Sign", None])
+@pytest.mark.parametrize("method", ["create", "estimate_cost"])
+def test_signer_capacity_is_validated_and_sent(capacity: object, method: str) -> None:
+    import json
+
+    from tests.resources.test_envelopes import client_for
+
+    requests: list[httpx.Request] = []
+    with client_for({"id": "assignment"}, requests) as http:
+        resource = AssignmentResource(http)
+        getattr(resource, method)("doc", {"signers": [{"id": "s", "sign_as": capacity}]})
+    signer = json.loads(requests[0].content)["signers"][0]
+    if capacity is None:
+        assert "sign_as" not in signer
+    else:
+        assert signer["sign_as"] == capacity
+    assert ("id" in signer) == (method == "create")
+
+
+@pytest.mark.parametrize("capacity", ["witness", "", [], True, 1])
+def test_unknown_capacity_fails_before_io(capacity: object) -> None:
+    with pytest.raises(ValidationError, match="sign_as"):
+        build_assignment_payload({"signers": [{"id": "s", "sign_as": capacity}]})
+
+
+def test_one_signer_cannot_have_conflicting_capacities() -> None:
+    with pytest.raises(ValidationError, match="one sign_as"):
+        build_assignment_payload({"signers": [{"id": "s"}, {"id": "s", "sign_as": "Witness"}]})
+
+
+@pytest.mark.parametrize("signer", [" ", {"id": " "}, {"id": ""}])
+def test_blank_signer_ids_are_rejected(signer: object) -> None:
+    with pytest.raises(ValidationError):
+        build_assignment_payload({"signers": [signer]})

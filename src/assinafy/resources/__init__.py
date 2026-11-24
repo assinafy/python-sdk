@@ -7,6 +7,7 @@ from .embed import EmbedResource
 from .envelopes import EnvelopeResource
 from .fields import FieldResource
 from .oauth import OAuthResource
+from .scheduled_sends import ScheduledSendResource
 from .signer_documents import SignerDocumentResource
 from .signers import SignerResource
 from .tags import TagResource
@@ -24,6 +25,7 @@ __all__ = [
     "EnvelopeResource",
     "FieldResource",
     "OAuthResource",
+    "ScheduledSendResource",
     "SignerDocumentResource",
     "SignerResource",
     "TagResource",

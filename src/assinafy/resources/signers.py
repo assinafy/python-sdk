@@ -296,7 +296,9 @@ class SignerResource(BaseResource):
             {"full_name": "Example Signer", "email": "signer@example.com",
              "has_accepted_terms": true}
 
-        ``email`` may be null. Legacy no-data envelopes are also preserved.
+        ``email`` may be null. Verification and the signer's current step must
+        permit the request. Certificate signers must first confirm their data;
+        terms acceptance is mandatory for them and recorded for other methods.
         """
         query = self._signer_query(signer_access_code)
         return self._call_dict(
@@ -419,9 +421,12 @@ class SignerResource(BaseResource):
         """``POST /signature?signer-access-code=...&type={signature|initial}&reuse=...``.
 
         Uploads the signer's signature (or initials) image. ``content`` is the
-        raw image bytes. The current contract publishes ``image/png``;
-        ``image/jpeg`` remains supported for compatibility with earlier API
-        documentation. ``reuse`` sets the signer's
+        raw PNG or JPEG bytes; staging publishes both media types. Blank or invalid
+        images receive HTTP 400. Both image types are required for collect signing,
+        even without an initials field. The image replaces that type for all this
+        signer's documents; certification uses the image stored at that time.
+        Images over 1000 pixels on a side are scaled to fit, retaining transparency.
+        ``reuse`` sets the signer's
         ``is_signature_reusable`` flag when given; omit it to leave the flag
         unchanged. Success is ``None``; the API returns ``data: []``. Legacy
         envelopes containing only ``status`` and ``message`` also work.
